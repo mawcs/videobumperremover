@@ -59,6 +59,11 @@ public class BumperMatchProbe {
 		var log = new StringBuilder();
 		void Line(string s) { _out.WriteLine(s); log.AppendLine(s); }
 
+		// Compact local timestamp (yyyyMMddHHmm, no dashes) — used in the header and filename
+		// so successive runs are kept as distinct files instead of overwriting.
+		string stamp = DateTime.Now.ToString("yyyyMMddHHmm");
+		Line($"Probe run {stamp}");
+
 		uint[]? clipFp = ChromaprintEngine.ExtractFingerprint(clipPath!, extendedLogging: false);
 		Assert.True(clipFp is { Length: >= 2 },
 			$"Clip produced no usable audio fingerprint (blocks={clipFp?.Length ?? 0}). Does it have an audio track?");
@@ -93,7 +98,7 @@ public class BumperMatchProbe {
 		Line(new string('-', 78));
 		Line($"{matched}/{episodes.Count} episodes matched the clip at ≥80% audio similarity.");
 
-		string outPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(clipPath!))!, "bumper-probe-results.txt");
+		string outPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(clipPath!))!, $"bumper-probe-results-{stamp}.txt");
 		try { File.WriteAllText(outPath, log.ToString()); _out.WriteLine($"\nWrote results to: {outPath}"); }
 		catch (Exception e) { _out.WriteLine($"(could not write results file: {e.Message})"); }
 	}
