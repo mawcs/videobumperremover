@@ -207,12 +207,20 @@ Architecture: **audio = fast candidate generator for long bumpers; visual sequen
 primary signal for short bumpers** (combining inherited parts; empirically justifies
 matching-approaches Approach 3).
 
-**Caveat — VDF's dense sampling is coarse for our case.** `GetAiPartialIntervalSeconds` samples
-keyframes every **5–15s**, and the matcher needs **≥4 consistent hits**. So a 3–5s clip yields
-~1 frame and cannot match at all — the visual pass is under-sampled for short bumpers exactly
-where we need it. Validating the matcher works needs the ~40s clip (~8 frames); making it work
-on genuinely short bumpers requires **finer sampling** (lower the interval, or a standalone
-finer-grained extraction) — a net-new tuning task.
+**Caveat — VDF's dense sampling is too coarse *and* culls dark frames.** `GetAiPartialIntervalSeconds`
+samples every **5–15s**, and `SelectUsableDenseFrames` drops dark/duplicate frames; the matcher
+needs **≥4 consistent hits**. **Empirically (2026-07-15):** even the **40s** DW intro produced only
+**2 usable frames** (5s interval, and the dark vortex intro is mostly culled) → 0/13 matched. Both
+sides are affected — clip *and* episodes are coarsely sampled with dark culling — so a short and/or
+dark bumper has too few frames on either side. The DW dark-vortex intro is a **worst case**; bright
+motion idents (most real bumpers) would cull far fewer frames.
+
+**Task #22 (fine-grained visual):** needs finer sampling on **both** the clip and the episodes,
+plus reconsidering the dark-frame cull. The self-embed recipe is mapped and ready to build:
+`FfmpegEngine.GetDenseAiFrames(path, interval, …)` → `OnnxEmbedder.EmbedBatchQuantized(...)` (store
+byte format), with model/runtime/store resolved by setting `DatabaseUtils.CustomDatabaseFolder` to
+the GUI's DB folder. Requires re-embedding episodes at a finer interval too (a scan-setting change
+or in-probe episode embedding), so it's deliberate Phase-2 engineering, not a quick probe.
 
 ## Open questions / next tests
 
