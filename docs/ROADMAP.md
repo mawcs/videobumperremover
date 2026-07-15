@@ -359,6 +359,10 @@ Output / transcode options (natural add since Mode B already re-encodes — see
 
 - **Change container** (e.g. mp4 ↔ mkv) — a **remux**, so available even in lossless Mode A;
   watch subtitle-format and codec-legality differences between containers.
+- **Normalize/clear metadata** — clear or rewrite container tags, e.g. an embedded `title`
+  that disagrees with the filename (so players/Jellyfin fall back to the filename). Pure
+  metadata edit: stream-copy remux, or **in-place with `mkvpropedit`** for MKV — no re-encode.
+  Optionally set `title` = filename (sans extension) in bulk.
 - **Switch codec** — H.264 → **H.265/HEVC** or **AV1** (smaller files; slower; preserve
   10-bit/HDR; mind playback compatibility). Re-encode → Mode B.
 - **Optimize size/quality** — CRF vs. bitrate target, encoder preset, and GPU (NVENC) vs. CPU

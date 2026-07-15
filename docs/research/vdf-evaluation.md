@@ -97,6 +97,15 @@ failure**:
 shape ("is this file a clip of that longer movie"); bumpers are tiny relative to full episodes,
 so a ratio gate structurally excludes them.
 
+**Concrete confirmation (the integer 1% floor):** the *Min clip/source ratio* field is an
+integer percent with a floor of **1%**. In a 49-min episode (~2954s) that means the shortest
+detectable clip is **~30s**; a real 5s bumper is ~0.17% and a 14s clip ~0.47% — both filtered
+*before* any matching. Bumpers commonly run ~5–15s (the maintainer literally keeps a
+`front05sec` trim bucket), so VDF's ratio gate cannot see them in full-length episodes. Our
+matcher must gate on absolute seconds, not a percentage. (Also relevant to test design: an
+extracted test clip must exceed 1% of the source, i.e. ≥~30s here, to make VDF's partial-clip
+pass run at all.)
+
 **Matcher semantics — CONFIRMED (read `ScanEngine.cs` `ScanForPartialDuplicates` /
 `CollectPartialMatchCandidates` / `SlidingWindowCompare`).** VDF's audio partial-clip detection
 models exactly one shape: **a whole shorter file contained inside a longer file.** For each pair

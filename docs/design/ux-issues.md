@@ -7,6 +7,33 @@ each entry: **observation → why it matters → fix direction.**
 
 ## 2026-07-15 — seed entries (from hands-on evaluation)
 
+### The primary visual pass silently starves the partial-clip pass
+
+- **Observation:** partial-clip detection only considers files *not already grouped* by the
+  primary whole-file visual compare. With the Matching similarity threshold set very low (1%),
+  the visual pass grouped all 13 episodes, which excluded them from the partial pass — leaving
+  a single ungrouped file, so partial detection reported "fewer than 2 eligible videos" and did
+  nothing. Nothing indicated that one setting (visual threshold) had disabled a different
+  feature (partial detection).
+- **Why it matters:** two independent-looking settings interact invisibly; a reasonable value
+  in one silently turns off the other. Very hard to diagnose without reading source.
+- **Fix direction:** surface the interaction (warn when grouped files are being excluded from
+  partial detection), or decouple the passes so partial detection can still consider grouped
+  files, and explain eligibility counts in the results (“N of M files eligible; K excluded
+  because already grouped”).
+
+### Enabling a feature doesn't invalidate stale cache → silent no-op
+
+- **Observation:** turning on Partial Clip Detection and rescanning a previously-scanned folder
+  reused cached entries that had no audio fingerprint (the earlier scan didn't compute them).
+  The feature silently skipped with "fewer than 2 eligible videos" — nothing prompted that a
+  re-hash was required, and the hashing pass finished in 0.2s (all cache).
+- **Why it matters:** the user reasonably believes the feature ran; it produced no results and
+  no explanation, costing a long debugging detour.
+- **Fix direction:** when a feature needs data the cache lacks, detect it and either
+  auto-recompute the missing data or clearly tell the user "these files need re-fingerprinting
+  — rescan/clear cache to enable." Never silently no-op.
+
 ### Toggle switches give no clear on/off signal
 
 - **Observation:** the on/off toggles don't change color between states — only the knob
