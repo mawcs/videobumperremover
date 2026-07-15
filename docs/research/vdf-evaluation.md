@@ -222,6 +222,26 @@ byte format), with model/runtime/store resolved by setting `DatabaseUtils.Custom
 the GUI's DB folder. Requires re-embedding episodes at a finer interval too (a scan-setting change
 or in-probe episode embedding), so it's deliberate Phase-2 engineering, not a quick probe.
 
+## Positional windowing rescues short clips (2026-07-15)
+
+Constraining the offset search to the first/last N seconds shrinks the offset space, dropping the
+false-positive floor — the exact effect that killed short clips at full-file. **5s DW intro clip,
+head window 15s:**
+
+- E01 (intro genuinely at the head): head **96%** — true positive preserved.
+- All other DW episodes (intro after a cold-open → effectively head-negatives): head **50–68%**,
+  down from 72–86% at full-file. The noise floor cratered.
+- Gap widened from ~10–20pt (full-file) to **~28pt** (96% TP vs. ≤68% floor) — for a **5s** clip
+  that was undiscriminable before.
+
+**This validates the maintainer's variable-density + edge-tagging design:** dense-sample and match
+short edge bumpers only within the head/tail region — cheaper *and* more accurate (fewer offsets =
+lower FP floor). Design notes: targets are junk **edge idents** (e.g. "Coming to Blu-ray 2012" at
+the very start, "Bad Robot" 7s at the very end) — *not* title sequences (kept, integral). Bumpers
+sit at the true file edges (no cold-open issue for these), and a bumper appearing at both ends is
+fine as two region-tagged snippets. Data model needs per-frame timestamps (non-uniform density).
+Remaining confirmation: a real repeated **end** bumper (Caprica 5s outro, tail window).
+
 ## Open questions / next tests
 
 - **Corrected validation for video → catalog:** the same-length-episodes test can't work even
