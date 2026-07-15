@@ -272,8 +272,14 @@ Work:
   delete unattended.
 - **Catalog curation UI:** rename/label, edit boundaries, merge near-duplicate promos, split
   entries, manage sub-bumper parent/child links, retire obsolete entries.
-- **Import / export / share (stretch):** make the catalog portable so users can back it up or
-  share community bumper catalogs (fingerprints ± exemplars), consistent with the AGPL.
+- **Export / import — personal portability:** let users export the **catalog and fingerprint
+  index** as a portable bundle and re-import on another PC, after an OS reinstall, or from a
+  backup. This is the higher-priority, lower-risk mode and may include reference clips (same
+  owner's data). Needs **path remapping** (or media-root-relative paths) so an imported index
+  still resolves to the user's files.
+- **Community sharing (stretch, consider later):** share catalogs with other users as
+  **derived data only** (fingerprints/labels/boundaries), **never the clip media**, to avoid
+  copyright exposure. See [`design/bumper-catalog.md`](design/bumper-catalog.md).
 - **Stats:** per-bumper occurrence counts and time saved, from the removal manifest.
 
 Key decisions: how much automation to allow before human review; catalog interchange format.

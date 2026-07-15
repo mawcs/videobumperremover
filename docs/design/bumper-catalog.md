@@ -92,16 +92,28 @@ rules).
 - Rename/label, edit boundaries, merge near-duplicate entries, split an entry, manage
   sub-bumper parent/child links, retire obsolete entries.
 
-**Import / export / share (future)** — a catalog is portable data. Under the project's
-open-source license, users could share community bumper catalogs — but **share derived data
-only** (fingerprints, labels, boundaries, categories), **never the reference clip media**.
+**Export / import — two distinct modes.** The catalog (and the fingerprint index — see below)
+should be portable data, but there are two different use cases with different rules:
 
-The reasoning: distributing the actual bumper clips would invite copyright pushback even if a
-fair-use argument exists — rights holders have the resources to make that expensive regardless
-of the merits. Fingerprints are derived, non-reconstructive data, not the copyrighted work, so
-sharing them is a far more defensible position. Reference clips therefore stay local; the
-interchange format must be able to export a catalog *without* them. (Still a "consider later,"
-not a committed feature.)
+- **Personal portability (backup / migration).** A user should be able to export their catalog
+  *and* fingerprint index and re-import them on another PC, after an OS reinstall, or from a
+  backup. Because it's the same owner's data moving between their own machines, this export
+  **may include the reference clips** — nothing is being distributed to others. This is the
+  higher-priority, lower-risk mode and should be a real feature, not just a stretch.
+- **Community sharing (consider later).** Sharing a catalog with *other people* must export
+  **derived data only** (fingerprints, labels, boundaries, categories) and **never the
+  reference clip media**. Distributing the actual clips would invite copyright pushback even if
+  a fair-use argument exists — rights holders can make that expensive regardless of the merits.
+  Fingerprints are derived, non-reconstructive data, so sharing them is far more defensible.
+
+Design implication: the interchange format must support exporting **with** clips (personal) and
+**without** clips (shareable), and the index and catalog should ideally export together as a
+portable bundle.
+
+**Index portability caveat:** the fingerprint index keys off files, which may live at different
+paths on a different machine (different drive letters, mount points, SMB shares). Portable
+import likely needs **path remapping** (or storing paths relative to a configurable media root)
+so an imported index still resolves to the user's files.
 
 ## Matching at catalog scale
 

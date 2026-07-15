@@ -42,9 +42,15 @@ bumper now *adds it to the catalog* instead of discarding it.
   checked against the catalog without manual steps.
 - **Curate:** name/label entries, edit boundaries, merge near-duplicate promos, manage
   sub-bumper (parent/child) relationships, retire obsolete entries.
-- **Import / export / share (future):** a catalog is portable data; open-source users could
-  share community bumper catalogs — but **derived data only** (fingerprints/labels/boundaries),
-  **never the reference clip media**, to avoid copyright exposure.
+- **Export / import (two modes):**
+  - *Personal portability* (backup, new PC, OS reinstall): export/import the catalog **and the
+    fingerprint index** as a portable bundle — **may include reference clips** since it's the
+    same owner's data. Higher priority, lower risk.
+  - *Community sharing* (consider later): export **derived data only**
+    (fingerprints/labels/boundaries), **never the reference clip media**, to avoid copyright
+    exposure.
+  - Caveat: index portability likely needs **path remapping** (or media-root-relative paths)
+    since files live at different paths on a different machine.
 
 ## Impact on the VDF-based design
 
