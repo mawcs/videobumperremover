@@ -221,10 +221,15 @@ excising a segment. Everything here is ours to build.)*
 
 Work:
 
-- Trim via FFmpeg. Prefer stream-copy (`-c copy`) where frame accuracy allows; re-encode
-  only when necessary (note the cost and reasons).
-- Handle all three cases: front trim, end trim, and mid-video interstitial removal
-  (split + concat).
+- Trim via FFmpeg with two clear modes (see
+  [`design/removal-pipeline.md`](design/removal-pipeline.md)): **Mode A** lossless stream-copy
+  (fast, but keyframe-bound cut points) and **Mode B** a single re-encode pass
+  (`filter_complex` trim+concat, frame-accurate). Multiple segments removed in **one** ffmpeg
+  run in Mode B; multi-step in Mode A.
+- Build a **filter-graph builder** so removal and any enabled enhancements (Phase 8) compose
+  into a single re-encode command rather than multiple passes.
+- Handle all three cases: front trim, end trim, and mid-video interstitial removal.
+- **Recompute chapter/scene marks and timestamps** against the post-cut timeline.
 - Write outputs to a staging area; never overwrite originals until explicitly confirmed.
 - Maintain a **removal manifest** per file (source, snippet start/end, method, output path,
   reversible?, **catalog entry that triggered the cut**) so every cut can be audited and
@@ -247,6 +252,8 @@ Work:
 
 - Review list of processed videos: confirm correct snippet removed, no over/under-trim, no
   sub-bumper mistake left behind.
+- **Verify subtitle/audio/chapter tracks survived** — present, correct format for the
+  container, and still in sync after the cut.
 - Re-scan trimmed files to confirm the bumper fingerprint is gone.
 - Promote validated outputs into the library (replace originals per policy); keep the
   manifest and, if desired, backups.
@@ -292,6 +299,55 @@ candidates, and the catalog can be curated and (optionally) exported/imported.
 
 ---
 
+## Phase 8 — Optional per-video enhancements (stretch)
+
+**Goal:** offer optional clean-up transforms applied per video (opt-in, or "when noticed"
+during review). The pixel-filter enhancements below **require re-encoding**, so they **compose
+into the Mode B re-encode pass** alongside removal — no extra passes (see
+[`design/removal-pipeline.md`](design/removal-pipeline.md)). (The one exception is a container
+change, which is a stream-copy remux and works even in Mode A.) None run by default; each is a
+user choice per video/entry.
+
+Candidate options, with the rough ffmpeg mechanism and any caveats:
+
+- **Fix aspect ratio** — correct SAR/DAR. Note: a wrong *aspect flag* can sometimes be fixed
+  without re-encoding (bitstream/container metadata); an actual rescale re-encodes.
+- **Crop fixed letterbox bars + burned-in text** — `cropdetect` → `crop` to remove bars and
+  any "Now in 4K"/"Now on Blu-ray" text riding on them. (Ties into the letterbox/burned-in-text
+  work already noted in matching.)
+- **Deinterlace** — `bwdif`/`yadif`.
+- **Flip left↔right** — `hflip`.
+- **Remove/cover overlaid text or logos** — `delogo` (crude blur of a region); AI inpainting is
+  better but heavy/external. Flag as best-effort.
+- **Smooth framerate via frame interpolation** — `minterpolate` (slow, artifact-prone);
+  dedicated tools (e.g. RIFE) do better as an external step. Flag as heavy/optional.
+- **Mark scenes & chapter boundaries** — scene detection to propose cut/chapter points; write
+  as container metadata (computed against the post-cut timeline).
+
+Output / transcode options (natural add since Mode B already re-encodes — see
+[`design/removal-pipeline.md`](design/removal-pipeline.md)):
+
+- **Change container** (e.g. mp4 ↔ mkv) — a **remux**, so available even in lossless Mode A;
+  watch subtitle-format and codec-legality differences between containers.
+- **Switch codec** — H.264 → **H.265/HEVC** or **AV1** (smaller files; slower; preserve
+  10-bit/HDR; mind playback compatibility). Re-encode → Mode B.
+- **Optimize size/quality** — CRF vs. bitrate target, encoder preset, and GPU (NVENC) vs. CPU
+  (x265) quality/speed tradeoff; audio passthrough vs. re-encode. Re-encode → Mode B.
+- **Scope guardrail:** offer a *focused* set of output options, not a full HandBrake-style
+  transcoder.
+
+Key decisions: per-video vs. per-catalog-entry defaults; which enhancements are worth the
+re-encode cost; how much to lean on external tools for the heavy ones (interpolation, inpaint);
+how far to take output/transcode options before it becomes scope creep.
+
+Open questions: filter ordering for best quality; how "when noticed" surfaces in the UI
+(suggest an enhancement when review detects letterboxing/interlacing/a logo?).
+
+**Exit criteria:** a user can enable one or more enhancements for a video and have them applied
+in the same pass as removal, previewable before commit.
+
+---
+
 ## Cross-cutting concerns (apply to every phase)
 
 - **Mixed resolution & letterboxing:** the library spans multiple resolutions and some files
@@ -299,6 +355,13 @@ candidates, and the catalog can be curated and (optionally) exported/imported.
   and crop bars so the same bumper matches across copies; the burned-in text is both a
   matching hazard and a potential bumper signal. This is a first-class requirement, not an
   edge case.
+- **Subtitles & secondary streams (first-class):** the maintainer relies on subtitles, so
+  subtitle tracks must survive every operation. Preserve all subtitle, audio, and chapter
+  streams through remux and re-encode; convert subtitle formats when a container change
+  requires it (e.g. mp4 `mov_text` ↔ mkv SRT/ASS) rather than silently dropping them; and
+  **verify subtitle presence, format, and sync in post-cut review**. (Container/subtitle
+  mismatches are a likely cause of pre-existing subtitle problems in the current library —
+  worth checking as we go.)
 - **Safety:** originals are never mutated without explicit confirmation; everything auditable
   and reversible until then.
 - **Reproducibility:** deterministic fingerprints and recorded thresholds so results can be
