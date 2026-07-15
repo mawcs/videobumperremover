@@ -222,7 +222,8 @@ any catalog entry; a working catalog you can enroll into and apply against new m
 
 **Goal:** let a human quickly confirm which matches are real before anything is removed.
 *(Builds on VDF's Avalonia results UI, but reframed around confirming **cuts** rather than
-choosing which duplicate file to delete.)*
+choosing which duplicate file to delete. Fix the inherited UX problems logged in
+[`design/ux-issues.md`](design/ux-issues.md).)*
 
 Work:
 

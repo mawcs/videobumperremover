@@ -1,0 +1,60 @@
+# UX issues to fix (running list)
+
+A running log of usability problems observed in VDF, kept so our redesign fixes them instead
+of inheriting them. Many stem from VDF being a *duplicate-finder* (dedup jargon, whole-file
+framing); our bumper-focused tool reframes several of these away entirely. Newest at the top;
+each entry: **observation → why it matters → fix direction.**
+
+## 2026-07-15 — seed entries (from hands-on evaluation)
+
+### Toggle switches give no clear on/off signal
+
+- **Observation:** the on/off toggles don't change color between states — only the knob
+  position moves, and it's subtle. The only reliable tell that a toggle is *off* is that its
+  dependent fields grey out. Both the maintainer and Claude misread the Partial Clip Detection
+  toggle as off when it was on.
+- **Why it matters:** users can't tell whether a critical feature is enabled, and run scans
+  with the wrong configuration (we did — twice).
+- **Fix direction:** strong on/off differentiation — distinct color/fill for the "on" track,
+  an explicit On/Off (or checkbox) label, and clear disabled styling for the whole dependent
+  group.
+
+### Two different, easily-conflated "1%" settings
+
+- **Observation:** *Matching → "Similarity threshold"* (whole-file visual compare) and
+  *Partial clips → "Min clip / source ratio"* (audio partial detection) are both percentages on
+  adjacent tabs. Setting one thinking it was the other produced a misleading whole-file result
+  (16 equal-length episodes grouped at ~50%) with no partial-clip matches.
+- **Why it matters:** the two knobs control completely different pipelines; conflating them
+  wastes a full scan and produces confusing output.
+- **Fix direction:** disambiguating names, group each knob visibly with the feature it drives,
+  contextual help/examples, and (for us) surface only the settings relevant to the current
+  mode/workflow.
+
+### "Match %" column doesn't say *what* it matched
+
+- **Observation:** the maintainer couldn't tell what "Match" was measuring. It's whole-file
+  visual similarity to the group's reference file — but a row could also be an audio partial
+  match or an AI match, and the column doesn't distinguish them.
+- **Why it matters:** the number is meaningless without knowing the match *type* and what it's
+  relative to; users can't judge whether a match is trustworthy.
+- **Fix direction:** label the match *type* (visual / audio-partial / AI) per row, show what
+  it's measured against, and (for us) center the UI on "this is bumper X, found at HH:MM:SS."
+
+### "Wasted space" default sort is dedup jargon
+
+- **Observation:** the default sort is "Wasted space" (disk reclaimable by deleting all-but-one
+  in a group) — unclear on first encounter, and irrelevant to bumper removal.
+- **Why it matters:** the default framing assumes a delete-duplicates goal that isn't ours.
+- **Fix direction:** default sorts that match the actual task (e.g. by bumper, by occurrence
+  count, by confidence), with plain-language labels.
+
+### "Deeper" scans add matches but don't remove obvious false positives
+
+- **Observation:** AI/partial passes are *additive* — enabling them never removes the earlier
+  whole-file false positives (e.g. unrelated dark-scene matches), so a heavier scan can look
+  like it "didn't fix" the junk.
+- **Why it matters:** users expect a deeper/smarter scan to be *better*, not just *more*; the
+  leftover false positives erode trust.
+- **Fix direction:** show match provenance/confidence, let users filter or hide by match type,
+  and make the additive nature explicit rather than surprising.
