@@ -78,25 +78,36 @@ public class BumperMatchProbe {
 			.ToList();
 		Skip.If(episodes.Count == 0, "No episode files found in BUMPER_EPISODES_DIR.");
 
-		int matched = 0;
+		// Optional positional windows: constrain the offset search to the first
+		// BUMPER_HEAD_SECONDS and/or last BUMPER_TAIL_SECONDS of each episode (blocks ≈ 1s).
+		// Shrinking the offset space is the point — it should drop the false-positive floor,
+		// so a short edge-bumper becomes discriminable where a whole-file search failed.
+		int headSec = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_HEAD_SECONDS"), out var hs) && hs > 0 ? hs : 0;
+		int tailSec = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_TAIL_SECONDS"), out var ts) && ts > 0 ? ts : 0;
+		Line($"Windows: full{(headSec > 0 ? $" + head {headSec}s" : "")}{(tailSec > 0 ? $" + tail {tailSec}s" : "")}");
+		Line(new string('-', 78));
+
+		// Compare the clip against ep[start .. start+count]; returns (similarity, absolute offset).
+		(float sim, int off) Win(uint[] ep, int start, int count) {
+			if (count < clipFp!.Length) return (0f, -1);
+			var (s, o) = ScanEngine.SlidingWindowCompare(clipFp, ep[start..(start + count)], minSim: 0f);
+			return (s, start + o);
+		}
+
 		foreach (var ep in episodes) {
 			uint[]? epFp = ChromaprintEngine.ExtractFingerprint(ep, extendedLogging: false);
 			if (epFp is not { Length: >= 2 }) {
-				Line($"{Path.GetFileName(ep),-58}  (no audio fingerprint)");
+				Line($"{Path.GetFileName(ep),-48}  (no audio fingerprint)");
 				continue;
 			}
-
-			// The clip is expected to be the shorter sequence; guard just in case.
-			uint[] shorter = clipFp.Length <= epFp.Length ? clipFp : epFp;
-			uint[] longer = clipFp.Length <= epFp.Length ? epFp : clipFp;
-
-			var (sim, offsetBlocks) = ScanEngine.SlidingWindowCompare(shorter, longer, minSim: 0f);
-			if (sim >= 0.80f) matched++;
-			Line($"{Path.GetFileName(ep),-58}  sim={sim,7:P1}  offset≈{offsetBlocks,5}s  (ep {epFp.Length}s)");
+			var row = new StringBuilder($"{Path.GetFileName(ep),-48}");
+			var (fSim, fOff) = Win(epFp, 0, epFp.Length);
+			row.Append($"  full={fSim,6:P0}@{fOff,5}s");
+			if (headSec > 0) { var (s, o) = Win(epFp, 0, Math.Min(headSec, epFp.Length)); row.Append($"  head={s,6:P0}@{o,4}s"); }
+			if (tailSec > 0) { int n = Math.Min(tailSec, epFp.Length); var (s, o) = Win(epFp, epFp.Length - n, n); row.Append($"  tail={s,6:P0}@{o,5}s"); }
+			Line(row.ToString());
 		}
-
 		Line(new string('-', 78));
-		Line($"{matched}/{episodes.Count} episodes matched the clip at ≥80% audio similarity.");
 
 		string outPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(clipPath!))!, $"bumper-probe-results-{stamp}.txt");
 		try { File.WriteAllText(outPath, log.ToString()); _out.WriteLine($"\nWrote results to: {outPath}"); }
