@@ -154,7 +154,9 @@ Work:
   (pairs with `ratio >= 0.95` are skipped; the whole clip is averaged, not a sub-window). So:
   - **Video → catalog** (short catalog bumper vs. full episode) reuses VDF nearly as-is — just
     lower `PartialClipMinRatio` below the bumper/episode ratio. Match on **absolute duration**
-    (≥5s), not a % of source.
+    (≥5s), not a % of source. **Empirically validated (2026-07-15):** the `BumperMatchProbe`
+    found a 40s intro clip in 13/13 episodes at 85–98% with correct offsets, bypassing the
+    gates — see [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
   - **Discovery** (shared bumper between two full-length episodes) is **net-new**: a windowed/
     local matcher over VDF's chroma fingerprints that finds the best contiguous run of matching
     blocks. Reuse the fingerprints + Hamming primitives; write the shared-segment logic on top.

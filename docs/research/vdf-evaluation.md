@@ -143,6 +143,46 @@ fingerprint (`grayBytes`). Dark shows therefore produce **sparse visual fingerpr
 weakens visual matching on dark content and is another reason to **lean on the darkness-immune
 audio fingerprint** as the primary signal.
 
+## Direct probe result — matcher CONFIRMED WORKING (2026-07-15)
+
+Ran `BumperMatchProbe` (`VDF.IntegrationTests`) — calls `ChromaprintEngine.ExtractFingerprint`
++ `ScanEngine.SlidingWindowCompare` directly, bypassing every gate. A 40s Doctor Who S1
+title-sequence clip vs. all 13 season-1 episodes:
+
+- **13/13 episodes matched at ≥80% audio similarity.**
+- Source episode E01: **97.7% @ 0s**. Others: **84.8–95.0%** at offsets **36–199s**.
+- The varying offsets correctly locate each episode's intro *after its cold open* — i.e. the
+  matcher finds a shared segment at **any position**, not just the start (interstitial-capable).
+
+Conclusions:
+
+- The inherited fingerprint + sliding-window matcher **works**. Every earlier GUI failure was
+  gates/settings (ratio floor, 95% ceiling, already-grouped exclusion, stale cache), **not the
+  engine**. The **catalog-apply / snippet→library** path is proven on inherited code.
+- **Thresholds need tuning:** even the identical-source E01 scores 97.7% (not 100%) — block
+  quantization/alignment — and the lowest true positive is 84.8%. Before trusting an automated
+  cut we must characterize the **false-positive floor** (run the clip vs. unrelated shows) and
+  set the threshold in the gap.
+- Offsets are ~1s (block) resolution: good for locating, needs refinement for frame-accurate
+  trimming.
+
+### False-positive floor (2026-07-15)
+
+Same clip vs. an unrelated show (Avatar: The Last Airbender S1, 20 eps): **0/20 matched**,
+scores **59–65%**. So:
+
+- **Clean ~20-point gap:** false-positive ceiling ~65% vs. true-positive floor ~85%. A
+  threshold around **75%** separates them well.
+- The floor sits at ~60% (not ~50%) because `SlidingWindowCompare` returns the **best of ~N
+  offsets** — with a 40-block clip over ~1400-block episodes, chance finds a mediocre alignment
+  somewhere. Consequence: the false-positive floor **rises with longer sources and shorter
+  clips**. Very short bumpers (≈5s = ~5 blocks) will be much noisier → enforce a **minimum clip
+  length** and/or a higher bar for short clips.
+
+**Eval corpus:** assemble a small local labeled set — positives (DW S1), variants (DW S10,
+re-arranged same theme), negatives (Avatar, others) — reused for threshold tuning, the
+discovery algorithm, and regression tests.
+
 ## Open questions / next tests
 
 - **Corrected validation for video → catalog:** the same-length-episodes test can't work even
