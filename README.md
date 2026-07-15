@@ -28,14 +28,20 @@ error-prone.
 ## The goal
 
 1. **Identify** a bumper in one video — its exact length and position.
-2. **Fingerprint** that snippet and **scan the whole library** for videos containing the
-   same snippet (edge or mid-video).
-3. **Queue** the matches for removal.
-4. **Preview & verify** the matches before anything is cut (guard against wrong matches
+2. **Enroll** it into a persistent **bumper catalog** so it's recognized again in future
+   media, not forgotten after one cleanup.
+3. **Fingerprint** that snippet and **scan the whole library** for videos containing the
+   same snippet (edge or mid-video) — and match new media against the whole catalog.
+4. **Queue** the matches for removal.
+5. **Preview & verify** the matches before anything is cut (guard against wrong matches
    and sub-bumper mistakes).
-5. **Remove** the snippet from all confirmed videos.
-6. **Review** processed videos to confirm the correct snippet was removed and nothing was
+6. **Remove** the snippet from all confirmed videos.
+7. **Review** processed videos to confirm the correct snippet was removed and nothing was
    over- or under-trimmed.
+
+The **catalog** is the durable backbone: identify a bumper once, and the next DVD rip can be
+cleaned against everything you've already catalogued. See
+[`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md).
 
 ## Status
 

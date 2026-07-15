@@ -4,16 +4,25 @@ A phased roadmap for the Video Bumper Remover. This is a living plan meant to be
 not a fixed spec. Each phase lists its goal, the work, the key decisions to make, and the
 open questions to resolve before or during it.
 
-The problem decomposes into four hard parts, and it helps to name them up front:
+The problem decomposes into five hard parts, and it helps to name them up front:
 
 1. **Detection** — given one video, find where a bumper starts and ends.
 2. **Fingerprinting + matching** — represent a snippet so the *same* snippet can be found
    in other videos, robustly, despite re-encoding, resolution, or letterboxing differences.
-3. **Verification UX** — let a human confirm matches before and after cutting, with special
+3. **The bumper catalog** — persist identified bumpers as first-class, reusable entities so a
+   bumper identified once can be recognized and removed again in future media, not forgotten
+   after one cleanup. See [`decisions/0004-bumper-catalog.md`](decisions/0004-bumper-catalog.md)
+   and [`design/bumper-catalog.md`](design/bumper-catalog.md).
+4. **Verification UX** — let a human confirm matches before and after cutting, with special
    attention to sub-bumpers and mid-video interstitials.
-4. **Removal** — cut the confirmed snippet out of many files safely and auditably.
+5. **Removal** — cut the confirmed snippet out of many files safely and auditably.
 
-Everything else (storage, deployment shape, batching) is in service of these four.
+Everything else (storage, deployment shape, batching) is in service of these five.
+
+The catalog reframes the whole workflow: instead of *identify → scan → remove → forget*, the
+flow becomes *identify → **enroll** → remove → keep in catalog*, and future media is matched
+**video → catalog** (a fresh rip checked against every known bumper) rather than always
+starting from a hand-picked snippet.
 
 ## What we inherit from VDF vs. what's net-new
 
@@ -29,12 +38,15 @@ already implements most of parts 1–2:
   copies and locates trimmed clips with no audio. FFmpeg decode, GPU paths, and an Avalonia
   GUI + CLI + Web front-ends also come for free.
 - **Net-new (the real work):** VDF *finds and deletes whole duplicate files*; it does not cut
-  a segment out of a file. So our substantial additions are: (a) a **trim/removal engine**
-  that excises a snippet (front/end/mid-video) safely and auditably; (b) **bumper-centric
-  workflow** — take one identified snippet and act on every file containing it; (c) the
-  **sub-bumper boundary problem** (find a bumper's full extent, not a fragment); (d)
-  **interstitial** handling (mid-video, not just edges); (e) **auto-discovery** of recurring
-  segments; and (f) a **verification UX** tailored to previewing and confirming *cuts*.
+  a segment out of a file, and it has no persistent notion of a "bumper." So our substantial
+  additions are: (a) a **trim/removal engine** that excises a snippet (front/end/mid-video)
+  safely and auditably; (b) the **bumper catalog** — a persistent, curated store of known
+  bumpers plus **video → catalog** matching so a fresh rip is auto-checked against everything
+  identified before; (c) **bumper-centric workflow** — take one identified snippet and act on
+  every file containing it; (d) the **sub-bumper boundary problem** (find a bumper's full
+  extent, not a fragment); (e) **interstitial** handling (mid-video, not just edges); (f)
+  **auto-discovery** of recurring segments (which feeds catalog candidates); and (g) a
+  **verification UX** tailored to previewing and confirming *cuts*.
 
 The phases below are annotated accordingly.
 
@@ -139,32 +151,41 @@ wherever possible and documenting the gaps.
 
 ---
 
-## Phase 3 — Matching pipeline at library scale
+## Phase 3 — Matching pipeline + bumper catalog
 
-**Goal:** turn the spike into a dependable batch process over the whole library. *(The
-fingerprint index + incremental rescan are largely inherited from VDF's scan DB; the
-net-new parts are snippet-centric querying, confidence scoring for bumpers, and
-auto-discovery.)*
+**Goal:** turn the spike into a dependable batch process, and stand up the **persistent
+bumper catalog** with both matching directions. *(The fingerprint index + incremental rescan
+are largely inherited from VDF's scan DB; the catalog, video→catalog matching, snippet-centric
+querying, confidence scoring, and auto-discovery are net-new.)*
 
 Work:
 
 - Reuse/extend VDF's fingerprint index so scans don't reprocess unchanged files.
-- Run "find all videos containing snippet X" efficiently across the collection.
+- Run **snippet → library**: "find all videos containing snippet X" efficiently.
+- Stand up the **bumper catalog** store (per
+  [`design/bumper-catalog.md`](design/bumper-catalog.md)): persist bumper entries with
+  fingerprints, boundaries, exemplar, and curation metadata.
+- Implement **enroll**: promote an identified snippet (manual or auto-discovered) into the
+  catalog, running the sub-bumper extent check so stored boundaries are the full bumper.
+- Run **video → catalog**: match a video/folder against all active catalog entries
+  (audio-first, then visual), producing candidates tagged with the matched entry + confidence.
 - Rank/group results by match confidence; flag ambiguous or partial (sub-bumper) matches
   for extra scrutiny.
 - **Auto-discovery (stretch):** mine the fingerprint index for segments that recur across
-  many files to *propose* bumpers automatically, without the maintainer identifying one
-  first. Cluster recurrences by frequency and position; each cluster becomes a candidate for
-  the verification UI. See Approach 6 in
-  [`../docs/research/matching-approaches.md`](research/matching-approaches.md).
+  many files to *propose* catalog entries automatically, without the maintainer identifying
+  one first. Cluster recurrences by frequency and position; each cluster becomes an enroll
+  candidate. See Approach 6 in
+  [`research/matching-approaches.md`](research/matching-approaches.md).
 - Use the GPU where it actually helps (decode/feature extraction) and record where it does.
 
-Key decisions: index structure; incremental update strategy; confidence scoring model.
+Key decisions: catalog storage (shared vs. separate `catalog.db`); reference media vs.
+fingerprints-only; index structure; confidence scoring; auto-queue threshold for catalog hits.
 
-Open questions: memory/time budget for a full pass; how to handle near-duplicate-but-not-
-identical bumpers (slightly different promos).
+Open questions: memory/time budget for a full pass; near-duplicate promos as variants vs.
+distinct entries; catalog-scale matching (linear vs. ANN as the catalog grows).
 
-**Exit criteria:** a repeatable scan that returns a scored candidate list for any snippet.
+**Exit criteria:** a repeatable scan returning a scored candidate list for any snippet *or*
+any catalog entry; a working catalog you can enroll into and apply against new media.
 
 ---
 
@@ -206,7 +227,8 @@ Work:
   (split + concat).
 - Write outputs to a staging area; never overwrite originals until explicitly confirmed.
 - Maintain a **removal manifest** per file (source, snippet start/end, method, output path,
-  reversible?) so every cut can be audited and undone.
+  reversible?, **catalog entry that triggered the cut**) so every cut can be audited and
+  undone, and per-bumper statistics can be tallied.
 
 Key decisions: stream-copy vs. re-encode policy; keyframe handling for frame-accurate cuts;
 staging vs. in-place-with-backup.
@@ -234,6 +256,33 @@ Key decisions: replacement/backup policy; retention of manifests and staged orig
 Open questions: do we want a one-click undo per file from the manifest?
 
 **Exit criteria:** a closed loop — detect, match, verify, remove, validate, reconcile.
+
+---
+
+## Phase 7 — On-ingest automation & catalog curation
+
+**Goal:** make the catalog pay off continuously — new media is cleaned against known bumpers
+with minimal effort, and the catalog stays healthy over time.
+
+Work:
+
+- **On-ingest:** watch a folder or trigger on new media (e.g. a fresh DVD rip) to run a
+  **video → catalog** scan automatically, queuing candidates for verification. Cutting still
+  requires confirmation per the safety rules — automation gathers candidates, it doesn't
+  delete unattended.
+- **Catalog curation UI:** rename/label, edit boundaries, merge near-duplicate promos, split
+  entries, manage sub-bumper parent/child links, retire obsolete entries.
+- **Import / export / share (stretch):** make the catalog portable so users can back it up or
+  share community bumper catalogs (fingerprints ± exemplars), consistent with the AGPL.
+- **Stats:** per-bumper occurrence counts and time saved, from the removal manifest.
+
+Key decisions: how much automation to allow before human review; catalog interchange format.
+
+Open questions: dedupe/merge heuristics for near-identical promos; conflict handling when an
+imported catalog overlaps an existing one.
+
+**Exit criteria:** dropping new media in triggers a catalog scan that surfaces verified-removal
+candidates, and the catalog can be curated and (optionally) exported/imported.
 
 ---
 
