@@ -15,101 +15,140 @@ The problem decomposes into four hard parts, and it helps to name them up front:
 
 Everything else (storage, deployment shape, batching) is in service of these four.
 
+## What we inherit from VDF vs. what's net-new
+
+This project is a fork of Video Duplicate Finder (see
+[`decisions/0003-repository-structure.md`](decisions/0003-repository-structure.md)), which
+already implements most of parts 1–2:
+
+- **Inherited (build on, don't rebuild):** library scanning + a persisted scan database with
+  fast incremental rescan; perceptual hashing; **audio-fingerprint partial-clip detection**
+  (finds a shorter clip inside a longer video via Chromaprint-style matching with a clip
+  offset) — essentially our "find this snippet elsewhere" primitive; and **DINOv2/ONNX visual
+  partial matching** that already tolerates cropped, **letterboxed**, zoomed and color-graded
+  copies and locates trimmed clips with no audio. FFmpeg decode, GPU paths, and an Avalonia
+  GUI + CLI + Web front-ends also come for free.
+- **Net-new (the real work):** VDF *finds and deletes whole duplicate files*; it does not cut
+  a segment out of a file. So our substantial additions are: (a) a **trim/removal engine**
+  that excises a snippet (front/end/mid-video) safely and auditably; (b) **bumper-centric
+  workflow** — take one identified snippet and act on every file containing it; (c) the
+  **sub-bumper boundary problem** (find a bumper's full extent, not a fragment); (d)
+  **interstitial** handling (mid-video, not just edges); (e) **auto-discovery** of recurring
+  segments; and (f) a **verification UX** tailored to previewing and confirming *cuts*.
+
+The phases below are annotated accordingly.
+
 ---
 
 ## Phase 0 — Foundations & decisions
 
 **Goal:** lock the decisions that constrain everything downstream before writing app code.
 
-Work:
+**Mostly resolved:**
 
-- Decide the **platform shape**: GPU desktop app vs. Dockerized server service vs. a hybrid
-  (headless engine + thin UI). This drives the stack. See
-  [`decisions/0001-tech-stack.md`](decisions/0001-tech-stack.md).
-- Decide how the tool reaches the media: direct SMB/Windows share from the GPU desktop, or
-  running where the files live on TrueNAS.
-- Choose the **matching strategy** to prototype first (see Phase 2 and
-  [`research/matching-approaches.md`](research/matching-approaches.md)).
-- Define a small, representative **test corpus**: a handful of videos that share known
-  bumpers, including at least one sub-bumper case and one mid-video interstitial.
+- **Platform/stack — decided:** C#/.NET fork of VDF, Avalonia UI, ONNX for ML, desktop app
+  reaching media over SMB. See [`decisions/0002-tech-stack.md`](decisions/0002-tech-stack.md)
+  and [`decisions/0003-repository-structure.md`](decisions/0003-repository-structure.md).
+- **Library size — known:** >~5TB, many thousands of files → an index is mandatory (VDF's
+  scan DB provides it) and I/O over SMB is the expected bottleneck.
+- **Matching strategy — chosen:** start from VDF's audio-fingerprint partial-clip detection
+  (cheapest, letterbox/resolution-immune), then its DINOv2 visual partial matching for
+  audio-less cases. See [`research/matching-approaches.md`](research/matching-approaches.md).
 
-Key decisions: platform/stack; where compute runs; primary matching approach.
+**Still open:**
 
-Open questions:
+- Assemble a small, representative **test corpus**: a handful of videos that share known
+  bumpers, including at least one **sub-bumper** case and one mid-video **interstitial**.
+- What container formats/codecs are present? (Decides whether stream-copy trims are viable.)
+- Acceptable false-positive vs. false-negative tolerance for automated matching.
+- Measure **SMB throughput** (1GbE vs 10GbE) and confirm the desktop ffmpeg has NVDEC/NVENC.
 
-- How large is the library (file count, total TB)? This decides whether a full-library
-  scan can be brute force or needs an index.
-- What container formats/codecs are present? (Affects whether stream-copy trims are viable.)
-- Acceptable false-positive vs. false-negative tolerance for automated matching?
-
-**Exit criteria:** ADR 0001 marked `accepted`; test corpus assembled; matching approach
-chosen for the spike.
+**Exit criteria:** test corpus assembled; codecs surveyed; throughput measured; fork builds
+and runs locally.
 
 ---
 
 ## Phase 1 — Media access & metadata inventory
 
-**Goal:** reliably enumerate the library and read technical metadata, read-only.
+**Goal:** reliably enumerate the library and read technical metadata, read-only. *(Largely
+inherited — VDF already scans directories and persists a scan DB with incremental rescan;
+this phase is mostly validating and, if needed, extending it.)*
+
+**Subset or full library?** Both, in order — and the distinction matters because *inventory
+is cheap but fingerprinting is expensive*:
+
+- **Inventory is metadata-only.** Reading path, duration, codec, resolution, fps, and audio
+  streams uses `ffprobe`/container headers — it moves almost no data and doesn't decode
+  frames. So a **full-library inventory pass is realistic even early**, and is the right way
+  to answer the Phase 0 codec/format survey.
+- **Develop against the test corpus first** for fast iteration, then run the full inventory
+  once the capability is proven.
+- **Reserve subset-first caution for the fingerprinting passes (Phase 2/3)** — those are
+  decode- and I/O-heavy, so validate accuracy and throughput on the small corpus before ever
+  committing to a full fingerprint run.
 
 Work:
 
-- Walk the library over the chosen access path; build an inventory (path, duration,
-  resolution, codec, container, fps, audio streams).
-- Store the inventory in a lightweight local database/index.
+- Confirm VDF's scan reaches the media over SMB and inventories correctly; extend the stored
+  metadata if bumper work needs fields VDF doesn't already keep.
 - Establish an **absolute rule**: nothing in this phase (or ever) modifies source files.
 
-Key decisions: inventory storage format; how to detect changes/new files on re-scan.
+Key decisions: reuse VDF's DB schema as-is vs. extend it; how re-scan detects changed files.
 
 Open questions: are there symlinks, mixed mounts, or files that are actively being written?
 
-**Exit criteria:** a queryable inventory of the full library that refreshes incrementally.
+**Exit criteria:** a queryable inventory of the full library that refreshes incrementally,
+plus a completed codec/format survey from the first full inventory pass.
 
 ---
 
-## Phase 2 — Detection & fingerprinting spike
+## Phase 2 — Evaluate & adapt VDF's matching for snippets
 
-**Goal:** prove we can fingerprint a snippet from one video and find it in others. This is
-the technical heart of the project and deserves a throwaway spike before committing.
+**Goal:** confirm VDF's existing matching can find a *known bumper snippet* across the test
+corpus, and identify the gaps we must close. This replaces "build fingerprinting from
+scratch" — the spike is now mostly *evaluation and adaptation*, not invention.
 
 Work:
 
-- Implement snippet extraction: given a source video + start/end, pull the snippet.
-- Implement one or more fingerprinting methods and evaluate on the test corpus:
-  - **Perceptual video hashing** (per-frame pHash/dHash sequences).
-  - **Audio fingerprinting** (Chromaprint/landmark-style) — bumpers often share identical
-    audio and this is cheap and re-encode-resilient.
-  - **Combined / scene-boundary-assisted** detection.
-  - Note ML/embedding approaches as a later option if the cheap methods fall short.
-  - Details and trade-offs: [`research/matching-approaches.md`](research/matching-approaches.md).
-- Implement **frame normalization before hashing**: downscale to a common working size and
-  **detect + crop letterbox bars** (FFmpeg `cropdetect`) so mixed-resolution and letterboxed
-  copies of the same bumper produce matching fingerprints. Handle **studio text burned onto
-  letterbox bars** deliberately (see research notes) — it can both break matching and *be* a
-  bumper signal.
-- Measure: match precision/recall on the corpus, tolerance to re-encoding and resolution
-  changes, and speed per video.
+- **Evaluate VDF as-is on the test corpus:** run its audio-fingerprint partial-clip detection
+  and its DINOv2 visual partial matching against the known-bumper set. Measure precision/
+  recall, tolerance to re-encoding/resolution/letterboxing (VDF's AI pass claims letterbox
+  tolerance — verify it), and speed per file.
+- **Snippet-centric querying (net-new):** VDF pairs whole files; we need "given one snippet,
+  return every file containing it, with the in-file offset." Determine how much of this falls
+  out of VDF's clip-offset machinery vs. needs new code.
+- **Letterbox/burned-in text (verify, then fill gaps):** confirm how VDF's normalization
+  handles mixed resolution and cropped bars; add `cropdetect`-based handling only where its
+  coverage falls short. Treat burned-in studio text as both a hazard and a possible signal.
+- **Sub-bumper extent (net-new):** prototype growing a match's boundaries outward until the
+  fingerprint stops agreeing across all containing files — the true bumper is the largest
+  region that agrees everywhere.
+- Details and trade-offs: [`research/matching-approaches.md`](research/matching-approaches.md).
 
-Key decisions: primary fingerprint representation; similarity threshold; alignment method
-(how to locate the snippet's offset within a longer file, and its exact length).
+Key decisions: which VDF matcher is primary for our case; similarity thresholds; how to
+express "find this snippet everywhere" on top of VDF's APIs.
 
 Open questions:
 
-- Does audio-only matching get us most of the way with far less compute?
-- How do we detect the **full** extent of a bumper (to avoid the sub-bumper trap) — e.g.
-  grow the match boundaries until the fingerprint stops agreeing across files?
+- Does VDF's audio matching alone get us most of the way with far less compute?
+- Where exactly does VDF's clip detection stop and our net-new snippet/extent logic begin?
 
-**Exit criteria:** on the test corpus, we can point at one bumper and reliably list the
-other files containing it, with correct start/end, including the sub-bumper case.
+**Exit criteria:** on the test corpus, we can point at one bumper and reliably list the other
+files containing it, with correct start/end, including the sub-bumper case — reusing VDF
+wherever possible and documenting the gaps.
 
 ---
 
 ## Phase 3 — Matching pipeline at library scale
 
-**Goal:** turn the spike into a dependable batch process over the whole library.
+**Goal:** turn the spike into a dependable batch process over the whole library. *(The
+fingerprint index + incremental rescan are largely inherited from VDF's scan DB; the
+net-new parts are snippet-centric querying, confidence scoring for bumpers, and
+auto-discovery.)*
 
 Work:
 
-- Build/maintain a fingerprint index so scans don't reprocess unchanged files.
+- Reuse/extend VDF's fingerprint index so scans don't reprocess unchanged files.
 - Run "find all videos containing snippet X" efficiently across the collection.
 - Rank/group results by match confidence; flag ambiguous or partial (sub-bumper) matches
   for extra scrutiny.
@@ -132,6 +171,8 @@ identical bumpers (slightly different promos).
 ## Phase 4 — Verification UI (pre-cut)
 
 **Goal:** let a human quickly confirm which matches are real before anything is removed.
+*(Builds on VDF's Avalonia results UI, but reframed around confirming **cuts** rather than
+choosing which duplicate file to delete.)*
 
 Work:
 
@@ -153,7 +194,9 @@ removal queue with confidence.
 
 ## Phase 5 — Removal engine
 
-**Goal:** cut confirmed snippets from many files safely and auditably.
+**Goal:** cut confirmed snippets from many files safely and auditably. *(This is the single
+biggest net-new component — VDF finds and deletes whole duplicate files, but has no notion of
+excising a segment. Everything here is ours to build.)*
 
 Work:
 
@@ -212,7 +255,10 @@ Open questions: do we want a one-click undo per file from the manifest?
 
 ## Suggested first steps
 
-1. Answer the Phase 0 open questions (library size, codecs, access path).
-2. Record ADR 0001 (platform + stack).
-3. Assemble the test corpus.
-4. Run the Phase 2 fingerprinting spike (start with audio fingerprinting — cheapest signal).
+1. **Build and run the fork locally** (VDF as-is) to confirm the toolchain works end to end.
+2. **Assemble the test corpus** — a few videos sharing known bumpers, incl. a sub-bumper and
+   an interstitial case.
+3. **Run a full metadata inventory** (cheap) to survey codecs/formats and confirm SMB access.
+4. **Evaluate VDF's matching** (audio partial-clip + AI visual partial) on the test corpus to
+   see how far it gets us before we write anything (Phase 2).
+5. Measure SMB throughput and confirm NVDEC/NVENC in the desktop ffmpeg.
