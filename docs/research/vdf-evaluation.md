@@ -240,7 +240,14 @@ lower FP floor). Design notes: targets are junk **edge idents** (e.g. "Coming to
 the very start, "Bad Robot" 7s at the very end) — *not* title sequences (kept, integral). Bumpers
 sit at the true file edges (no cold-open issue for these), and a bumper appearing at both ends is
 fine as two region-tagged snippets. Data model needs per-frame timestamps (non-uniform density).
-Remaining confirmation: a real repeated **end** bumper (Caprica 5s outro, tail window).
+
+**Real target found — and it's visual-only (2026-07-15):** Caprica's ~5s end bumper is a class the
+audio path *cannot* touch — its audio varies per episode (credits music fading out on some,
+silence on others), so the fingerprint differs every time. This proves a real, common class of junk
+bumpers (studio/network **end-cards**) has no usable audio → **the visual path is required, not
+optional.** Testing it needs task #22: fine-sample the clip *and* each episode's **tail** (~last
+30s), embed via ONNX, and match with the tail window. This is the concrete target for the
+fine-grained visual build.
 
 ## Open questions / next tests
 
