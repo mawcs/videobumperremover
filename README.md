@@ -3,6 +3,11 @@
 A tool to find, verify, and remove repeated "bumpers" (channel/studio promos, banners,
 "coming soon" segments, mid-video interstitials) from a large personal video library.
 
+> **This repository is a fork of [Video Duplicate Finder](https://github.com/0x90d/videoduplicatefinder)**
+> (AGPLv3), whose matching engine we build on. VDF's original README is preserved at
+> [`README.vdf.md`](README.vdf.md), and this project inherits its AGPLv3 license (see
+> [`LICENSE`](LICENSE)).
+
 ## The problem
 
 Many videos in the library carry bumpers at the start, the end, or both. They:
