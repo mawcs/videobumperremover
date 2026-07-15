@@ -15,6 +15,9 @@ and [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
   Runtime** on the desktop GPU. Desktop app reaching media over SMB. Full rationale and the
   throughput architecture (audio-first + sparse sampling) are in
   [`docs/decisions/0002-tech-stack.md`](docs/decisions/0002-tech-stack.md).
+- **Build/run:** .NET 10 SDK + VS Code (full Visual Studio not required); build with
+  `dotnet build VideoDuplicateFinder.sln`. Setup and the Native-AOT-publish caveat are in
+  [`docs/development.md`](docs/development.md).
 - **Python is disfavored.** The maintainer will almost never choose Python. Propose
   alternatives and only use Python if explicitly approved for a specific task.
 - **Check VDF's license before forking/redistributing** and keep this project compliant.
