@@ -191,6 +191,9 @@ discovery algorithm, and regression tests.
 - 5s clip vs Avatar (**false positives**): **69–76%**.
 - **These overlap — no threshold separates them.** At ~5 fingerprint blocks the audio matcher
   can't distinguish a real bumper from unrelated content (too few bits + best-of-many-offsets).
+- 3s clip vs DW S1: TP **76–85%** but offsets now mostly **wrong** (random / near-end) — audio
+  has lost *localization* too, not just discrimination. Full collapse.
+- **Practical floor for audio-only: ~15–20s.** Reliable at 40s, unusable at ≤5s.
 
 **Design consequence — audio needs a second signal for short bumpers.** Audio fingerprinting is
 reliable only for **longer** bumpers (clean 20pt gap at 40s; fully collapsed at 5s). Short
