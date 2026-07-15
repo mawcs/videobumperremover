@@ -249,6 +249,28 @@ optional.** Testing it needs task #22: fine-sample the clip *and* each episode's
 30s), embed via ONNX, and match with the tail window. This is the concrete target for the
 fine-grained visual build.
 
+## VISUAL PATH CONFIRMED — real junk-bumper stack (2026-07-15)
+
+`VisualTailProbe` (self-embeds the clip + each episode's last 30s at a fine interval; matches via
+`TryMatchDenseFrames`, tail-windowed; ONNX model via `AiComponents.TestOverrideModelPath`, runtime
+from the test project's package). Test: **Marvel's Daredevil S1** — the ~20s end-bumper stack
+(DeKnight, Goddard, ABC Studios, Marvel, Netflix, black; mixed sound/silent) vs. all 13 episodes,
+clip interval **0.5s**, tail 30s:
+
+- **13/13 matched at 97–98%**, consistent tail offsets ~8–12s (variation = differing credit-roll
+  lengths before the stack). Run took 26s; 27 clip frames, 43–51 tail frames/episode.
+- This is the real target class — a **silent/mixed-audio studio ident stack at the edge** that
+  audio cannot touch. **The visual path works cleanly, with a huge margin.**
+
+**Combined architecture validated end-to-end:** audio fingerprint for audible/long bumpers +
+fine-grained DINOv2 visual (tail/head-windowed) for silent/short edge bumpers. Both signals now
+empirically confirmed on real bumpers.
+
+Next: **boundary precision** (0.5s interval → refine toward frame-accurate cut points) and
+**sub-clip / sub-bumper tests** — extract the last 5s (just Netflix) or last 7s and confirm they
+match too, then work out how to distinguish "the whole 20s stack" from "one piece of it" (the
+boundary-growing idea).
+
 ## Open questions / next tests
 
 - **Corrected validation for video → catalog:** the same-length-episodes test can't work even
