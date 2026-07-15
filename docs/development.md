@@ -46,6 +46,24 @@ dotnet test                               # run the test suite
   `dotnet run` are plain JIT and need none of it. Install the C++ build tools only when you
   actually want to produce an AOT release binary.
 
+## Troubleshooting
+
+**`NU1100: Unable to resolve '<package>' for 'net10.0'` for *every* package.** NuGet has no
+usable package source. Check with `dotnet nuget list source`; if it prints **"No sources
+found"** (a machine with no NuGet config at all), add the default feed once:
+
+```sh
+dotnet nuget add source https://api.nuget.org/v3/index.json -n nuget.org
+dotnet restore VideoDuplicateFinder.sln
+```
+
+If nuget.org is listed but `[Disabled]`, run `dotnet nuget enable source nuget.org`. The first
+restore downloads a lot (Avalonia, ONNX Runtime, FFmpeg.AutoGen, …) and can take ~a minute.
+
+**Pre-existing test warnings.** The build emits a few `xUnit1031` warnings from VDF's own test
+code (`VDF.Core.Tests`). They're upstream's, harmless, and intentionally left untouched to
+avoid merge friction with upstream.
+
 ## Recommended VS Code version
 
 - Use a current VS Code with the C# Dev Kit updated for **.NET 10**. Confirm the SDK is picked
