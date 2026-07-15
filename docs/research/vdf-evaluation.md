@@ -196,13 +196,16 @@ discovery algorithm, and regression tests.
 - **Practical floor for audio-only: ~15–20s.** Reliable at 40s, unusable at ≤5s.
 
 **Design consequence — audio needs a second signal for short bumpers.** Audio fingerprinting is
-reliable only for **longer** bumpers (clean 20pt gap at 40s; fully collapsed at 5s). Short
-bumpers (≤~10s; the maintainer's real cases include ~3–5s studio/logo cards) require **visual
-confirmation** at the matched offset — perceptual-hash or DINOv2 frame matching, which is strong
-exactly where audio is weak (a logo card is visually near-identical every time). Architecture:
-**audio = fast candidate generator, visual = confirmation; visual-primary for very short or
-silent bumpers.** VDF already ships both a "Require visual match" gate and a DINOv2 visual-partial
-path, so this is combining inherited parts (empirically justifies matching-approaches Approach 3).
+reliable only for **longer** bumpers (clean 20pt gap at 40s; fully collapsed at ≤5s). Short
+bumpers (≤~15s) need a **visual** signal. Note: the maintainer estimates **~98% of bumpers are
+motion sequences**, not static cards — and motion *helps* here. A moving bumper is a distinctive
+**temporal sequence**, so matching a *sequence of frames at a consistent offset* is far more
+discriminating than a single frame, and it dissolves the "which frame do I match?" problem.
+VDF's DINOv2 visual-partial already works exactly this way (requires ≥4 keyframe hits agreeing on
+one time offset) and its embeddings also absorb our mixed-resolution/letterbox normalization.
+Architecture: **audio = fast candidate generator for long bumpers; visual sequence match = the
+primary signal for short bumpers** (combining inherited parts; empirically justifies
+matching-approaches Approach 3).
 
 ## Open questions / next tests
 
