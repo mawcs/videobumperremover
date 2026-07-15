@@ -45,8 +45,11 @@ already implements most of parts 1–2:
   identified before; (c) **bumper-centric workflow** — take one identified snippet and act on
   every file containing it; (d) the **sub-bumper boundary problem** (find a bumper's full
   extent, not a fragment); (e) **interstitial** handling (mid-video, not just edges); (f)
-  **auto-discovery** of recurring segments (which feeds catalog candidates); and (g) a
-  **verification UX** tailored to previewing and confirming *cuts*.
+  **auto-discovery** of recurring segments (which feeds catalog candidates); (g) a
+  **verification UX** tailored to previewing and confirming *cuts*; and (h) **GPU
+  acceleration** (NVDEC decode + ONNX CUDA) — VDF ships CPU-default, which makes its heavy
+  passes ~20× slower than they need to be on our GPU desktop (see
+  [`research/vdf-evaluation.md`](research/vdf-evaluation.md)).
 
 The phases below are annotated accordingly.
 
@@ -74,6 +77,23 @@ The phases below are annotated accordingly.
 - What container formats/codecs are present? (Decides whether stream-copy trims are viable.)
 - Acceptable false-positive vs. false-negative tolerance for automated matching.
 - Measure **SMB throughput** (1GbE vs 10GbE) and confirm the desktop ffmpeg has NVDEC/NVENC.
+
+**First throughput measurement (2026-07-15):** default (visual) scan of a TV-only subset —
+**2,110 files / ~2.5 TB in 17m49s** (~118 files/min). Effective ~2.3 GB/s far exceeds any SMB
+link's sequential read, empirically confirming VDF **samples frames rather than reading whole
+files** — so the default scan is *not* bottlenecked on full-byte I/O over SMB (per-file cost is
+seek + sampled-frame decode + hashing). Whether it's CPU- or network-bound at the margin is
+still TBD, and the heavier audio-fingerprint / AI passes will read more per file, so they won't
+necessarily hold this rate.
+
+**Deep Clean measurement + GPU finding (2026-07-15):** the AI + audio-fingerprint scan ran at
+**~6 files/min** (~10s/file) — ~20× slower, ~6h for the subset, days for the full library.
+Root cause, confirmed in code: **the GPU is idle** — FFmpeg decode defaults to CPU (`hwaccel`
+`none`) and ONNX inference runs on the CPU runtime (`OnnxEmbedder.cs:46`, no CUDA execution
+provider). The embedding itself is cheap (~50 ms/file); decode + SMB I/O dominate. This
+validates the ADR 0002 thesis that the GPU desktop matters, and makes **GPU acceleration a
+priority net-new addition**. Full analysis, levers, and code touch-points:
+[`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 
 **Exit criteria:** test corpus assembled; codecs surveyed; throughput measured; fork builds
 and runs locally.
@@ -129,6 +149,15 @@ Work:
 - **Snippet-centric querying (net-new):** VDF pairs whole files; we need "given one snippet,
   return every file containing it, with the in-file offset." Determine how much of this falls
   out of VDF's clip-offset machinery vs. needs new code.
+- **Matcher shape — confirmed split (see [`research/vdf-evaluation.md`](research/vdf-evaluation.md)):**
+  VDF's audio partial-clip matcher only models "a whole shorter file inside a longer file"
+  (pairs with `ratio >= 0.95` are skipped; the whole clip is averaged, not a sub-window). So:
+  - **Video → catalog** (short catalog bumper vs. full episode) reuses VDF nearly as-is — just
+    lower `PartialClipMinRatio` below the bumper/episode ratio. Match on **absolute duration**
+    (≥5s), not a % of source.
+  - **Discovery** (shared bumper between two full-length episodes) is **net-new**: a windowed/
+    local matcher over VDF's chroma fingerprints that finds the best contiguous run of matching
+    blocks. Reuse the fingerprints + Hamming primitives; write the shared-segment logic on top.
 - **Letterbox/burned-in text (verify, then fill gaps):** confirm how VDF's normalization
   handles mixed resolution and cropped bars; add `cropdetect`-based handling only where its
   coverage falls short. Treat burned-in studio text as both a hazard and a possible signal.
