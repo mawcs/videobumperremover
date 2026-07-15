@@ -21,6 +21,12 @@ each entry: **observation → why it matters → fix direction.**
   partial detection), or decouple the passes so partial detection can still consider grouped
   files, and explain eligibility counts in the results (“N of M files eligible; K excluded
   because already grouped”).
+- **Recurred (2026-07-15), now starving *feature extraction*:** the audio pass grouped our test
+  clip, so the AI visual pass never even **embedded** it (only the 13 ungrouped episodes got
+  DINOv2 embeddings). **Architecture takeaway for our tool:** extract features (audio
+  fingerprints + visual embeddings) for **every** file up front, *independent of grouping*;
+  gate only at the match/report stage. Never let one pass's grouping starve another pass's
+  extraction.
 
 ### Enabling a feature doesn't invalidate stale cache → silent no-op
 

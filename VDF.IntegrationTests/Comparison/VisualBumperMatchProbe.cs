@@ -67,14 +67,7 @@ public class VisualBumperMatchProbe {
 		try {
 			DenseEmbeddingStore.TestOverrideStorePath = denseDb;
 			var store = DenseEmbeddingStore.Load();
-
-			var clipRec = Lookup(store, clipPath!);
-			Skip.If(clipRec is null,
-				"Clip has no cached dense embeddings — did the AI visual-partial scan include this exact file (same size/mtime)?");
-			Line($"CLIP: {Path.GetFileName(clipPath)}  ({clipRec!.Frames.Count(f => f.Length > 0)} usable frames @ {clipRec.IntervalSeconds}s interval)");
-			if (clipRec.Frames.Count(f => f.Length > 0) < 4)
-				Line("  WARNING: fewer than 4 usable clip frames — the matcher needs ≥4 consistent hits, so short clips will not match here (sampling too coarse).");
-			Line(new string('-', 78));
+			Line($"Loaded dense store: {store.Count} record(s) from {Path.GetFileName(denseDb)}.");
 
 			var episodes = Directory.EnumerateFiles(episodesDir!)
 				.Where(f => VideoExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
@@ -82,6 +75,22 @@ public class VisualBumperMatchProbe {
 				.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 				.ToList();
 			Skip.If(episodes.Count == 0, "No episode files found in BUMPER_EPISODES_DIR.");
+
+			var clipRec = Lookup(store, clipPath!);
+			if (clipRec is null) {
+				var ci = new FileInfo(clipPath!);
+				int present = episodes.Count(e => Lookup(store, e) is not null);
+				Skip.If(true,
+					$"Clip not in store. Store has {store.Count} record(s); {present}/{episodes.Count} episodes present. " +
+					$"Clip key: size={ci.Length}, mtimeTicks={ci.LastWriteTimeUtc.Ticks}. " +
+					"If store=0 → the AI visual-partial scan didn't populate this DB. If episodes present=0 → these files " +
+					"were pre-grouped out of the AI pass (set Similarity threshold 95%). If clip alone is missing → it was " +
+					"re-created after the scan (mtime), or claimed by the audio pass.");
+			}
+			Line($"CLIP: {Path.GetFileName(clipPath)}  ({clipRec!.Frames.Count(f => f.Length > 0)} usable frames @ {clipRec.IntervalSeconds}s interval)");
+			if (clipRec.Frames.Count(f => f.Length > 0) < 4)
+				Line("  WARNING: fewer than 4 usable clip frames — the matcher needs ≥4 consistent hits, so short clips will not match here (sampling too coarse).");
+			Line(new string('-', 78));
 
 			int matched = 0;
 			foreach (var ep in episodes) {
