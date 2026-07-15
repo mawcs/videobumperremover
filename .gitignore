@@ -265,3 +265,24 @@ __pycache__/
 # BenchmarkDotNet output (HTML/CSV/MD/JSON reports + intermediate build dirs)
 BenchmarkDotNet.Artifacts/
 BenchmarkLogs/
+
+###############################################################################
+# Video Bumper Remover — media & working artifacts (never commit video/data)
+###############################################################################
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.wmv
+*.ts
+*.m2ts
+*.webm
+*.flv
+snippets/
+staging/
+fingerprints/
+*.sqlite
+*.sqlite3
+# Local test corpus (keep sample media out of the repo)
+testcorpus/
+

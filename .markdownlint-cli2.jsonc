@@ -1,0 +1,24 @@
+{
+    // markdownlint-cli2 configuration
+    // Rule config is in .markdownlint.json; this file adds CLI2-specific settings.
+    "config": ".markdownlint.json",
+    "ignores": [
+        "notes.md",
+        "AGENTS.md",
+        "CLAUDE.md",
+        "docs/chathistory/**",
+        ".github/copilot-instructions.md",
+        "tools/ingest/tonal-gen/node_modules/**",
+        "legacy/**",
+        "windows/**",
+        "linux/**",
+        "macos/**",
+        "_scratch*",
+        "tools/mingw64/**",
+        "tools/zig/**",
+        "build/**",
+        "**/flutter/ephemeral/**",
+        "**/.plugin_symlinks/**",
+        "memory/**"
+    ]
+}
