@@ -207,6 +207,13 @@ Architecture: **audio = fast candidate generator for long bumpers; visual sequen
 primary signal for short bumpers** (combining inherited parts; empirically justifies
 matching-approaches Approach 3).
 
+**Caveat — VDF's dense sampling is coarse for our case.** `GetAiPartialIntervalSeconds` samples
+keyframes every **5–15s**, and the matcher needs **≥4 consistent hits**. So a 3–5s clip yields
+~1 frame and cannot match at all — the visual pass is under-sampled for short bumpers exactly
+where we need it. Validating the matcher works needs the ~40s clip (~8 frames); making it work
+on genuinely short bumpers requires **finer sampling** (lower the interval, or a standalone
+finer-grained extraction) — a net-new tuning task.
+
 ## Open questions / next tests
 
 - **Corrected validation for video → catalog:** the same-length-episodes test can't work even
