@@ -115,6 +115,23 @@ paths on a different machine (different drive letters, mount points, SMB shares)
 import likely needs **path remapping** (or storing paths relative to a configurable media root)
 so an imported index still resolves to the user's files.
 
+## Precision is the tool's job, not the user's (design principle)
+
+Validated on the Daredevil end-stack (2026-07-15). The user must never need a frame-accurate clip.
+
+- **Enroll from a generous rough region** (e.g. "the last ~20s" of one episode) that contains the
+  junk. The distinctive idents in it carry the match (97–98% on Daredevil); black/uniform frames
+  are low-information and must **not** be used as the matching signal (a mostly-black clip matches
+  black anywhere → false positives).
+- **Edge bumpers only need one boundary found.** An end bumper runs to EOF, a begin bumper from
+  BOF — so removal is "cut from the content→junk transition to the file edge." The trailing/leading
+  **black or silence padding is removed by definition** (it's between the transition and the edge),
+  and the *outer* edge never needs marking. The tool finds only the **inner** content→junk boundary
+  (boundary-growing / edge detection) and refines it toward frame accuracy.
+- **Match on distinctive content; remove the full extent** (including black/silence padding).
+
+Net: rough region in → tool nails the exact cut. No user precision required, ever.
+
 ## Matching at catalog scale
 
 - Direction is one-to-many: one file's fingerprints vs. all catalog entries.
