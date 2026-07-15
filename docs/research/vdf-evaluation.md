@@ -183,6 +183,24 @@ scores **59–65%**. So:
 re-arranged same theme), negatives (Avatar, others) — reused for threshold tuning, the
 discovery algorithm, and regression tests.
 
+### Short clips: audio alone collapses (5s test, 2026-07-15)
+
+- 5s intro clip vs DW S1 (**true positives**): mostly **72–86%**, with several real matches only
+  ~72–77%; localization also degraded (best offset often landed on the reused **outro** theme or
+  a spurious spot rather than the intro).
+- 5s clip vs Avatar (**false positives**): **69–76%**.
+- **These overlap — no threshold separates them.** At ~5 fingerprint blocks the audio matcher
+  can't distinguish a real bumper from unrelated content (too few bits + best-of-many-offsets).
+
+**Design consequence — audio needs a second signal for short bumpers.** Audio fingerprinting is
+reliable only for **longer** bumpers (clean 20pt gap at 40s; fully collapsed at 5s). Short
+bumpers (≤~10s; the maintainer's real cases include ~3–5s studio/logo cards) require **visual
+confirmation** at the matched offset — perceptual-hash or DINOv2 frame matching, which is strong
+exactly where audio is weak (a logo card is visually near-identical every time). Architecture:
+**audio = fast candidate generator, visual = confirmation; visual-primary for very short or
+silent bumpers.** VDF already ships both a "Require visual match" gate and a DINOv2 visual-partial
+path, so this is combining inherited parts (empirically justifies matching-approaches Approach 3).
+
 ## Open questions / next tests
 
 - **Corrected validation for video → catalog:** the same-length-episodes test can't work even
