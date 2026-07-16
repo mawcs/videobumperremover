@@ -46,8 +46,22 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
   **presence matcher** (ours) and VDF's rigid matcher both work; **FP floor ≤33%** on unrelated
   content (~65-pt gap, zero false positives).
 - Hard rule learned: **the tool must extract clips itself — never trust a hand-cut clip.**
-- Probes (temporary, in `VDF.IntegrationTests/Comparison/`): `BumperMatchProbe`,
-  `VisualBumperMatchProbe`, `VisualTailProbe` — each file's header has its `dotnet test` recipe.
+- Probes (temporary, in `VDF.IntegrationTests/Comparison/`): `VisualBumperMatchProbe`,
+  `VisualTailProbe` — each file's header has its `dotnet test` recipe. `BumperMatchProbe`
+  graduated (see below).
+
+### VBR.\* tree scaffolded (2026-07-16, ADR 0005)
+
+- `VBR.Core`, `VBR.CLI`, `VBR.Tests` created and wired into `VideoDuplicateFinder.sln`;
+  `InternalsVisibleTo("VBR.Core")` glue added to `VDF.Core.csproj`.
+- First real module: `VBR.Core/Matching/AudioBumperMatcher.cs` — productionized audio-fingerprint
+  "video → catalog" matching (full-file + optional head/tail positional windows), callable via
+  `dotnet run --project VBR.CLI -- match --clip <clip> --library <folder>`.
+- `BumperMatchProbe` deleted from `VDF.IntegrationTests`; its logic now lives in
+  `AudioBumperMatcher`, and its env-var-gated real-media test graduated to
+  `VBR.Tests/Matching/AudioBumperMatcherTests.cs` (same `BUMPER_CLIP`/`BUMPER_EPISODES_DIR`
+  workflow). `VisualBumperMatchProbe`/`VisualTailProbe` (visual/DINOv2 path) are untouched —
+  not yet productionized.
 
 ## Open / next steps
 
@@ -57,19 +71,29 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 - [ ] **Sub-bumper extent.** Given a matched region, determine its true extent (grow boundaries
   until frames stop agreeing across all containing files); distinguish "whole stack" from "a piece."
 - [ ] **GPU acceleration.**
-  - [x] Measure `hwaccel=cuda` decode speedup vs. CPU. **~38 files/min avg (stable across 4
-    checkpoints to 1,000/2,110 files) vs. ~6 files/min CPU (~6.3×, conservative — ran under an
-    unrelated background NAS scrub), RTX 3080, same 2,110-file subset** — see
-    `research/vdf-evaluation.md` Measurement 3. Considered validated; no re-test planned. Still
-    open: measure "Use native Ffmpeg binding" as a separate, possibly bigger lever.
+  - [x] ~~Measure `hwaccel=cuda` decode speedup vs. CPU.~~ **Correction (2026-07-16): Deep Clean
+    is multi-phase and this only measured phase 1.** ~38 files/min / ~6.3× holds for phase 1
+    only (RTX 3080) — phase 2 ("sampling keyframes," est. 1 day 1 hour, likely CPU-only ONNX
+    inference) then began with no warning. See `research/vdf-evaluation.md` Measurement 3's
+    correction. **Not validated as a whole-scan number; re-test needed once phases are
+    understood.** Also logged as a UX issue (`design/ux-issues.md`): the UI hides multi-phase
+    structure and only shows time-remaining for the current phase.
+  - [ ] Measure phase 2 ("sampling keyframes") throughput specifically — likely the real
+    bottleneck, which would promote GPU ONNX inference (below) over decode.
+  - [ ] Measure "Use native Ffmpeg binding" as a separate, possibly bigger decode-side lever.
   - [ ] Implement GPU decode (NVDEC) + ONNX CUDA execution provider. Code touch-points in
     `research/vdf-evaluation.md`.
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005:
+  - [x] Audio-fingerprint video→catalog matcher — `VBR.Core.Matching.AudioBumperMatcher` +
+    `vbr match` CLI command. No caching yet (re-fingerprints every run).
   - [ ] Edge-focused scan + a **cached** fingerprint/embedding index (scan once, compare cheaply).
+  - [ ] Visual/DINOv2 matcher's equivalent productionization (currently still
+    `VisualBumperMatchProbe`/`VisualTailProbe`).
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.
   - [ ] **Verification UI** (Avalonia) — preview/confirm cuts; fix the VDF UX traps in `ux-issues.md`.
+    UI project structure itself is a reopened question — see ADR 0005 Open questions.
 - [ ] **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 - [ ] **Stretch (Phase 8):** per-video enhancements (aspect fix, letterbox/text crop, deinterlace,

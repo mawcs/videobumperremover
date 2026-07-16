@@ -67,9 +67,15 @@ net-new value — VDF ships CPU-default.
    is rarely needed at all.
 2. **GPU decode (no code):** enable FFmpeg hardware acceleration = `cuda` in Settings and
    re-measure. Caveats: may fall back on some codecs/HDR; per-file seek overhead can blunt the
-   gain — measure it.
+   gain — measure it. **Measured (Measurement 3): ~6.3× on one phase of Deep Clean** — but see
+   that measurement's 2026-07-16 correction: it's now suspected this phase isn't the bottleneck
+   for a full run.
 3. **GPU ONNX (small code change):** swap to `Microsoft.ML.OnnxRuntime.Gpu` and add
-   `options.AppendExecutionProvider_CUDA()` at `OnnxEmbedder.cs:46`. Smaller win than decode.
+   `options.AppendExecutionProvider_CUDA()` at `OnnxEmbedder.cs:46`. ~~Smaller win than
+   decode.~~ **Re-ranking pending (2026-07-16):** Deep Clean's second phase ("sampling
+   keyframes," 1 day+ estimated, presumably CPU-only ONNX inference) may dominate total scan
+   time far more than decode does — this lever's priority likely needs to move up, pending an
+   actual measurement.
 
 ## Code touch-points (for when we implement GPU acceleration)
 
@@ -108,14 +114,42 @@ Lever 2 (GPU decode, Settings-only toggle) confirmed on the maintainer's **RTX 3
   GPU decode throughput is less resolution-sensitive than expected. Not a controlled test of
   that specifically, just an observation.
 - **Result:** measured at **~38 files/min** average vs. the CPU-only baseline of ~6 files/min
-  (Measurement 2) — a **~6.3× speedup** (conservative, per the scrub caveat above). Projects to
+  (Measurement 2) — a **~6.3× speedup** (conservative, per the scrub caveat above). Projected
   **~55 min** for the full 2,110-file subset vs. ~6 hours on CPU. Stopped at 1,000/2,110 files —
   four consistent checkpoints were enough to confirm the rate; a full run to completion wasn't
-  judged necessary.
+  judged necessary. **This projection turned out to be wrong — see correction below.**
 
 **GPU decode alone gets most of the way to GPU-desktop-class throughput**, without touching
 `OnnxEmbedder`'s CPU-only ONNX inference (lever 3) or the native FFmpeg binding (unranked,
-possibly bigger, not yet measured). **Considered validated — no re-test planned.**
+possibly bigger, not yet measured).
+
+### Correction (2026-07-16): Deep Clean is multi-phase — the above only measured phase 1
+
+After the checkpoints above, the scan did **not** finish anywhere near ~55 min. Instead the UI's
+time-remaining counter reset and a **new phase began: "All partial: sampling keyframes," with
+its own fresh estimate of 1 day 1 hour remaining.** Deep Clean is evidently at least two phases,
+and the UI gives no indication a second phase is coming (logged as a UX issue — see
+[`../design/ux-issues.md`](../design/ux-issues.md)).
+
+Consequences for everything above:
+
+- The ~38 files/min GPU-decode rate and the ~6.3× speedup **only characterize phase 1** (most
+  likely the audio-fingerprint / frame-sampling pass — cheap, decode-bound, exactly what GPU
+  `hwaccel` accelerates). They say nothing about total scan time.
+- **Measurement 2's ~6 files/min CPU baseline is now suspect for the same reason** — it's
+  unclear whether that figure captured just phase 1, blended across a phase transition, or
+  something else. It predates this discovery (2026-07-15) and wasn't phase-aware either.
+- Phase 2 ("sampling keyframes") is almost certainly the CPU-only ONNX embedding pass — GPU
+  `hwaccel` only accelerates decode, not inference (lever 3, `OnnxEmbedder.cs:46`, still
+  unmeasured/unimplemented). A **1-day-plus estimate for phase 2 alone** strongly suggests it,
+  not decode, is the real bottleneck for a full Deep Clean run — the opposite of how the levers
+  below were originally ranked ("smaller win than decode").
+- **Re-ranking implication:** lever 3 (GPU ONNX inference) should likely be promoted, not
+  treated as the smaller follow-up to decode. Needs a real measurement, not inference from this
+  incident, before acting on it.
+
+**Status: not validated. No re-test planned yet**, but the GPU-decode number above should be
+cited as "phase 1 only" until a phase-aware, full-run measurement exists.
 
 ## Matching test — single season (18 episodes) & the threshold finding
 

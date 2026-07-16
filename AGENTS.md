@@ -23,31 +23,42 @@ Past the risk-retirement spike; about to begin real product build. What's establ
     content. Zero false positives, ~65-pt gap.
   - **Hard-won rule:** the tool must extract clips itself — *never trust a hand-cut clip* (most
     "failures" this spike were corrupt/mis-cut input, not the matcher).
-- **Diagnostic probes** live temporarily in `VDF.IntegrationTests/Comparison/`:
-  `BumperMatchProbe` (audio + head/tail windows), `VisualBumperMatchProbe` (reads cached
-  embeddings), `VisualTailProbe` (self-embeds clip + episode tails; can auto-cut the clip from a
-  reference episode via `BUMPER_CLIP_EPISODE`). **Each probe file's top comment has its exact
-  `dotnet test` recipe + env vars.** Test media is under `test_materials/` (gitignored).
-- **Nothing is built beyond the fork + probes.** The fork builds/runs:
-  `dotnet build VideoDuplicateFinder.sln`.
+- **The `VBR.*` tree is scaffolded** (2026-07-16), per
+  [ADR 0005](docs/decisions/0005-code-organization.md): `VBR.Core` (references `VDF.Core` via
+  the `InternalsVisibleTo("VBR.Core")` glue in `VDF.Core.csproj`), `VBR.CLI` (`vbr match`
+  command), `VBR.Tests`. First real module: `VBR.Core/Matching/AudioBumperMatcher.cs` —
+  productionized audio-fingerprint "video → catalog" matching (full + head/tail windows),
+  graduated from `BumperMatchProbe` (now deleted from `VDF.IntegrationTests`; its test lives on
+  as `VBR.Tests/Matching/AudioBumperMatcherTests.cs`, same env-var-gated real-media workflow).
+  Try it: `dotnet run --project VBR.CLI -- match --clip <clip> --library <folder>`.
+- **Remaining diagnostic probes** live temporarily in `VDF.IntegrationTests/Comparison/`:
+  `VisualBumperMatchProbe` (reads cached embeddings), `VisualTailProbe` (self-embeds clip +
+  episode tails; can auto-cut the clip from a reference episode via `BUMPER_CLIP_EPISODE`) — the
+  visual/DINOv2 matching path, not yet productionized. **Each probe file's top comment has its
+  exact `dotnet test` recipe + env vars.** Test media is under `test_materials/` (gitignored).
 
 ### Open threads / next steps — canonical checklist: [`docs/PROGRESS.md`](docs/PROGRESS.md)
 
 (Summary below; the maintainable checklist + full completed-work log lives in `docs/PROGRESS.md`.)
 
-- **Code organization — decided.** `VBR.*` project layout vs. VDF resolved:
-  [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md)
-  (option analysis in [`docs/design/code-organization.md`](docs/design/code-organization.md)).
-  Next: start scaffolding `VBR.Core`/`VBR.Tests`, add the `InternalsVisibleTo("VBR.Core")` glue
-  to `VDF.Core.csproj`, and graduate the diagnostic probes out of `VDF.IntegrationTests`.
+- **Code organization — decided (Core/CLI); GUI reopened.** `VBR.*` project layout vs. VDF
+  resolved: [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md).
+  `VBR.Core`/`VBR.CLI`/`VBR.Tests` scaffolded; decision 6 (extend `VDF.GUI` in place vs. a
+  separate `VBR.Gui`) is reopened — see the ADR's Open questions before scaffolding any UI.
 - **Boundary detection.** Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   (content→junk transition → file edge; edge bumpers cut to BOF/EOF so padding is auto-removed).
-- **GPU acceleration.** VDF is CPU-only (decode `hwaccel none`, ONNX CPU) → its heavy pass is
-  ~20× slower than needed on this GPU desktop. Wire NVDEC decode + ONNX CUDA. Code touch-points
-  in `docs/research/vdf-evaluation.md`.
-- **Productionize matching.** Move from probes to real modules: edge-focused scan + a cached
-  fingerprint/embedding index; the **catalog** (enroll a bumper once, apply forever); the
-  **removal engine** (cut + manifest + verify); the **UI**.
+- **GPU acceleration — Deep Clean turned out to be multi-phase; re-measure needed.** The
+  `hwaccel=cuda` ~6.3× number only covers phase 1 — a second phase ("sampling keyframes," ~1
+  day+ estimated, likely CPU-only ONNX inference) followed with no warning, so total-scan
+  throughput is still unknown. See `docs/research/vdf-evaluation.md` Measurement 3's
+  2026-07-16 correction. Also a UX bug to fix in our own UI (`docs/design/ux-issues.md`): make
+  multi-phase scans and a whole-job time estimate visible. Code touch-points for GPU work in
+  `docs/research/vdf-evaluation.md`.
+- **Productionize matching.** Audio-fingerprint video→catalog matching now lives in
+  `VBR.Core`/`VBR.CLI` (see above). Still to build: a cached fingerprint/embedding index (avoid
+  re-fingerprinting unchanged files); the visual/DINOv2 matcher's equivalent productionization;
+  the **catalog** (enroll a bumper once, apply forever); the **removal engine** (cut + manifest +
+  verify); the **UI**.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 

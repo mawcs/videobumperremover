@@ -5,6 +5,27 @@ of inheriting them. Many stem from VDF being a *duplicate-finder* (dedup jargon,
 framing); our bumper-focused tool reframes several of these away entirely. Newest at the top;
 each entry: **observation → why it matters → fix direction.**
 
+## 2026-07-16 — multi-phase scans hide their own structure
+
+### Deep Clean's time-remaining only covers the current phase, not the whole scan
+
+- **Observation:** Deep Clean is multi-phase, but the UI gives no hint of that. A GPU-decode
+  run (see `research/vdf-evaluation.md` Measurement 3) appeared to finish its time-remaining
+  countdown after ~26 min — but the UI then silently started a *second* phase ("All partial:
+  sampling keyframes") with its own fresh estimate of **1 day 1 hour remaining**. Nothing
+  signaled a second phase was coming, what it was, or how it related to the first.
+- **Why it matters:** a user watching phase 1's countdown reach zero reasonably assumes the
+  scan is done or nearly done. It cost us a real mistake: our own throughput measurement
+  (~38 files/min, ~6.3× over CPU) implicitly assumed phase 1 *was* the whole Deep Clean scan —
+  it was actually only the fast part. The true bottleneck is almost certainly phase 2 (likely
+  the CPU-only ONNX embedding pass — GPU decode doesn't touch inference; see lever 3,
+  unmeasured, in `research/vdf-evaluation.md`), which no one had visibility into until it
+  started.
+- **Fix direction:** make multi-phase structure explicit — a step indicator ("Step 1 of 2:
+  fingerprinting" / "Step 2 of 2: keyframe sampling") so a phase transition is never silent.
+  **Bonus:** a rough total-time estimate spanning *all* phases (even coarse, refined as better
+  per-phase data comes in), not just a countdown for whichever phase is currently running.
+
 ## 2026-07-15 — seed entries (from hands-on evaluation)
 
 ### The primary visual pass silently starves the partial-clip pass
