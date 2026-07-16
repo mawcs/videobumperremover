@@ -15,15 +15,19 @@
 //
 
 // Graduated from VDF.IntegrationTests/Comparison/BumperMatchProbe.cs (ADR 0005): same
-// env-var-driven real-media check, now exercising VBR.Core's production AudioBumperMatcher
-// instead of calling VDF.Core's ChromaprintEngine/ScanEngine directly.
+// env-var-driven real-media check, now exercising VBR.Core's production AudioBumperMatcher.
+// Env var naming matches VisualTailProbe's BUMPER_CLIP_EPISODE convention (both auto-extract
+// the reference clip from a real episode — no pre-cut clip files, per AGENTS.md "Clip
+// extraction is the tool's job").
 //
 // Run (PowerShell):
-//   $env:BUMPER_CLIP="D:\michael\Desktop\introclip.mkv"
+//   $env:BUMPER_CLIP_EPISODE="D:\michael\Desktop\Season 01\S01E01.mkv"
+//   $env:BUMPER_CLIP_TAIL_SECONDS="40"      # or BUMPER_CLIP_HEAD_SECONDS — exactly one
 //   $env:BUMPER_EPISODES_DIR="D:\michael\Desktop\Season 01"
 //   dotnet test VBR.Tests --filter "FullyQualifiedName~AudioBumperMatcherTests" -l "console;verbosity=detailed"
 //
-// Optional: $env:BUMPER_HEAD_SECONDS / $env:BUMPER_TAIL_SECONDS to also search positional windows.
+// Optional: $env:BUMPER_SEARCH_HEAD_SECONDS / $env:BUMPER_SEARCH_TAIL_SECONDS to also search
+// positional windows within each candidate file.
 
 using VBR.Core.Matching;
 using Xunit.Abstractions;
@@ -37,17 +41,28 @@ public class AudioBumperMatcherTests {
 
 	[SkippableFact]
 	public void FindInLibrary_MatchesBumperAcrossEpisodes() {
-		string? clipPath = Environment.GetEnvironmentVariable("BUMPER_CLIP");
+		string? clipEpisode = Environment.GetEnvironmentVariable("BUMPER_CLIP_EPISODE");
 		string? episodesDir = Environment.GetEnvironmentVariable("BUMPER_EPISODES_DIR");
-		Skip.If(string.IsNullOrWhiteSpace(clipPath) || string.IsNullOrWhiteSpace(episodesDir),
-			"Set BUMPER_CLIP (a short clip) and BUMPER_EPISODES_DIR (folder of episodes) to run this test.");
-		Skip.If(!File.Exists(clipPath), $"Clip not found: {clipPath}");
+		int clipHeadSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_CLIP_HEAD_SECONDS"), out var chs) ? chs : 0;
+		int clipTailSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_CLIP_TAIL_SECONDS"), out var cts) ? cts : 0;
+
+		Skip.If(string.IsNullOrWhiteSpace(clipEpisode) || string.IsNullOrWhiteSpace(episodesDir),
+			"Set BUMPER_CLIP_EPISODE (source video to auto-extract the bumper clip from), " +
+			"BUMPER_EPISODES_DIR (folder of episodes), and exactly one of BUMPER_CLIP_HEAD_SECONDS / " +
+			"BUMPER_CLIP_TAIL_SECONDS to run this test.");
+		Skip.If(!File.Exists(clipEpisode), $"Clip episode not found: {clipEpisode}");
 		Skip.If(!Directory.Exists(episodesDir), $"Episodes dir not found: {episodesDir}");
+		Skip.If((clipHeadSeconds > 0) == (clipTailSeconds > 0),
+			"Set exactly one of BUMPER_CLIP_HEAD_SECONDS / BUMPER_CLIP_TAIL_SECONDS (neither or both is ambiguous).");
 
-		int headSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_HEAD_SECONDS"), out var hs) ? hs : 0;
-		int tailSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_TAIL_SECONDS"), out var ts) ? ts : 0;
+		var region = clipHeadSeconds > 0
+			? ClipRegion.Head(TimeSpan.FromSeconds(clipHeadSeconds))
+			: ClipRegion.Tail(TimeSpan.FromSeconds(clipTailSeconds));
 
-		var results = AudioBumperMatcher.FindInLibrary(clipPath!, episodesDir!, headSeconds, tailSeconds);
+		int searchHeadSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_SEARCH_HEAD_SECONDS"), out var hs) ? hs : 0;
+		int searchTailSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_SEARCH_TAIL_SECONDS"), out var ts) ? ts : 0;
+
+		var results = AudioBumperMatcher.FindInLibrary(clipEpisode!, region, episodesDir!, searchHeadSeconds, searchTailSeconds);
 		Assert.NotEmpty(results);
 
 		foreach (var m in results.OrderByDescending(m => m.Full?.Similarity ?? 0)) {

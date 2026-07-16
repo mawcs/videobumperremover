@@ -6,7 +6,10 @@
       "Bash(ls -la \"C:/Users/michael/.claude/projects/d--Data-dev-git-videobumperremover/memory\" 2>&1; echo \"---\"; cat \"C:/Users/michael/.claude/projects/d--Data-dev-git-videobumperremover/memory/MEMORY.md\" 2>&1)",
       "Read(//c/Users/michael/.claude/projects/d--Data-dev-git-videobumperremover/memory/**)",
       "Bash(dotnet sln *)",
-      "Bash(dotnet build *)"
+      "Bash(dotnet build *)",
+      "Bash(dotnet run *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(dotnet test *)"
     ]
   }
 }

@@ -30,7 +30,8 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   productionized audio-fingerprint "video → catalog" matching (full + head/tail windows),
   graduated from `BumperMatchProbe` (now deleted from `VDF.IntegrationTests`; its test lives on
   as `VBR.Tests/Matching/AudioBumperMatcherTests.cs`, same env-var-gated real-media workflow).
-  Try it: `dotnet run --project VBR.CLI -- match --clip <clip> --library <folder>`.
+  Extracts the clip itself — no pre-cut-clip input, per the rule below. Try it:
+  `dotnet run --project VBR.CLI -- match --source <episode> --clip-tail-seconds 40 --library <folder>`.
 - **Remaining diagnostic probes** live temporarily in `VDF.IntegrationTests/Comparison/`:
   `VisualBumperMatchProbe` (reads cached embeddings), `VisualTailProbe` (self-embeds clip +
   episode tails; can auto-cut the clip from a reference episode via `BUMPER_CLIP_EPISODE`) — the
@@ -111,8 +112,10 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   hand-cut clips were the single biggest source of false failures during the spike (mis-cuts,
   corruption), and no user can be that precise; precision is *our* responsibility. See
   [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) → "Precision is the tool's job."
-  **Note:** the current `VBR.CLI` `match --clip <file>` predates this rule and must be reworked to
-  take a source video + region (the visual probe already does this via `BUMPER_CLIP_EPISODE`).
+  **Fixed (2026-07-16):** `vbr match` now takes `--source <video>` + exactly one of
+  `--clip-head-seconds`/`--clip-tail-seconds` and extracts the clip internally (`VBR.Core`'s
+  `AudioBumperMatcher.FindInLibrary` takes `(sourceVideoPath, ClipRegion, ...)`); there is no
+  `--clip <file>` option.
 
 ## Decisions
 

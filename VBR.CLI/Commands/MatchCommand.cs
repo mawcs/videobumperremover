@@ -35,9 +35,28 @@ internal static class MatchCommand {
 		return fallback;
 	}
 
-	static readonly Option<FileInfo> Clip = new("--clip") {
-		Description = "Path to the bumper clip to search for.",
+	// Clip extraction is this tool's job, never the user's (see AGENTS.md "Clip extraction is
+	// the tool's job" / docs/design/bumper-catalog.md "Precision is the tool's job"): --source
+	// points at a real video, and exactly one of --clip-head-seconds / --clip-tail-seconds says
+	// which rough region to auto-extract as the reference clip. There is deliberately no
+	// "--clip <file>" option that accepts a pre-cut clip.
+
+	static readonly Option<FileInfo> Source = new("--source") {
+		Description = "Source video containing the bumper. The reference clip is extracted from " +
+			"it internally — this never takes a pre-cut clip file.",
 		Required = true,
+	};
+
+	static readonly Option<int> ClipHeadSeconds = new("--clip-head-seconds") {
+		Description = "Use the first N seconds of --source as the bumper clip. Exactly one of " +
+			"--clip-head-seconds / --clip-tail-seconds is required.",
+		DefaultValueFactory = _ => 0,
+	};
+
+	static readonly Option<int> ClipTailSeconds = new("--clip-tail-seconds") {
+		Description = "Use the last N seconds of --source as the bumper clip. Exactly one of " +
+			"--clip-head-seconds / --clip-tail-seconds is required.",
+		DefaultValueFactory = _ => 0,
 	};
 
 	static readonly Option<DirectoryInfo> Library = new("--library") {
@@ -51,36 +70,54 @@ internal static class MatchCommand {
 		CustomParser = r => ParseInvariantFloat(r, AudioBumperMatcher.DefaultMinSimilarity),
 	};
 
-	static readonly Option<int> HeadSeconds = new("--head-seconds") {
-		Description = "Also search only the first N seconds of each file (rescues short audible bumpers).",
+	// Distinct from the --clip-* options above: these narrow the search *inside each candidate
+	// library file*, rather than picking the reference clip out of --source.
+	static readonly Option<int> SearchHeadSeconds = new("--search-head-seconds") {
+		Description = "Also search only the first N seconds of each library file (rescues short audible bumpers).",
 		DefaultValueFactory = _ => 0,
 	};
 
-	static readonly Option<int> TailSeconds = new("--tail-seconds") {
-		Description = "Also search only the last N seconds of each file (rescues short audible bumpers).",
+	static readonly Option<int> SearchTailSeconds = new("--search-tail-seconds") {
+		Description = "Also search only the last N seconds of each library file (rescues short audible bumpers).",
 		DefaultValueFactory = _ => 0,
 	};
 
 	internal static Command Build() {
-		var cmd = new Command("match", "Find a bumper clip's audio fingerprint inside every video in a library folder.");
-		cmd.Options.Add(Clip);
+		var cmd = new Command("match",
+			"Find a bumper's audio fingerprint inside every video in a library folder. The bumper " +
+			"clip is extracted internally from --source — you never provide a pre-cut clip.");
+		cmd.Options.Add(Source);
+		cmd.Options.Add(ClipHeadSeconds);
+		cmd.Options.Add(ClipTailSeconds);
 		cmd.Options.Add(Library);
 		cmd.Options.Add(MinSimilarity);
-		cmd.Options.Add(HeadSeconds);
-		cmd.Options.Add(TailSeconds);
+		cmd.Options.Add(SearchHeadSeconds);
+		cmd.Options.Add(SearchTailSeconds);
 
 		cmd.SetAction((parseResult, ct) => {
-			var clip = parseResult.GetValue(Clip)!;
+			var source = parseResult.GetValue(Source)!;
+			int clipHeadSeconds = parseResult.GetValue(ClipHeadSeconds);
+			int clipTailSeconds = parseResult.GetValue(ClipTailSeconds);
 			var library = parseResult.GetValue(Library)!;
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
-			int headSeconds = parseResult.GetValue(HeadSeconds);
-			int tailSeconds = parseResult.GetValue(TailSeconds);
+			int searchHeadSeconds = parseResult.GetValue(SearchHeadSeconds);
+			int searchTailSeconds = parseResult.GetValue(SearchTailSeconds);
+
+			if ((clipHeadSeconds > 0) == (clipTailSeconds > 0)) {
+				Console.Error.WriteLine("Error: specify exactly one of --clip-head-seconds or --clip-tail-seconds.");
+				return Task.FromResult(1);
+			}
+			ClipRegion region = clipHeadSeconds > 0
+				? ClipRegion.Head(TimeSpan.FromSeconds(clipHeadSeconds))
+				: ClipRegion.Tail(TimeSpan.FromSeconds(clipTailSeconds));
 
 			IReadOnlyList<BumperMatch> results;
 			try {
-				results = AudioBumperMatcher.FindInLibrary(clip.FullName, library.FullName, headSeconds, tailSeconds, ct);
+				results = AudioBumperMatcher.FindInLibrary(
+					source.FullName, region, library.FullName, searchHeadSeconds, searchTailSeconds, ct);
 			}
-			catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException or InvalidOperationException) {
+			catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException
+					or InvalidOperationException or ArgumentOutOfRangeException) {
 				Console.Error.WriteLine($"Error: {ex.Message}");
 				return Task.FromResult(1);
 			}

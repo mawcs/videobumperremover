@@ -55,13 +55,31 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 - `VBR.Core`, `VBR.CLI`, `VBR.Tests` created and wired into `VideoDuplicateFinder.sln`;
   `InternalsVisibleTo("VBR.Core")` glue added to `VDF.Core.csproj`.
 - First real module: `VBR.Core/Matching/AudioBumperMatcher.cs` — productionized audio-fingerprint
-  "video → catalog" matching (full-file + optional head/tail positional windows), callable via
-  `dotnet run --project VBR.CLI -- match --clip <clip> --library <folder>`.
+  "video → catalog" matching (full-file + optional head/tail positional search windows).
 - `BumperMatchProbe` deleted from `VDF.IntegrationTests`; its logic now lives in
   `AudioBumperMatcher`, and its env-var-gated real-media test graduated to
-  `VBR.Tests/Matching/AudioBumperMatcherTests.cs` (same `BUMPER_CLIP`/`BUMPER_EPISODES_DIR`
-  workflow). `VisualBumperMatchProbe`/`VisualTailProbe` (visual/DINOv2 path) are untouched —
-  not yet productionized.
+  `VBR.Tests/Matching/AudioBumperMatcherTests.cs`. `VisualBumperMatchProbe`/`VisualTailProbe`
+  (visual/DINOv2 path) are untouched — not yet productionized.
+
+### Clip-input contract fixed (2026-07-16)
+
+`AudioBumperMatcher`/`vbr match` reworked per the "clip extraction is the tool's job" rule
+(`AGENTS.md` core principles, `design/bumper-catalog.md` "Precision is the tool's job") — this
+was flagged right after the initial scaffold and fixed before anything else was built on top:
+
+- `AudioBumperMatcher.FindInLibrary` now takes `(sourceVideoPath, ClipRegion region, ...)` —
+  `ClipRegion.Head(duration)` / `.Tail(duration)` / `.At(start, duration)` — and extracts the
+  clip internally via ffmpeg stream-copy (same approach as `VisualTailProbe.ExtractTail`).
+  There is no overload that accepts a pre-cut clip file.
+- `vbr match` dropped `--clip <file>`; now `--source <video>` + exactly one of
+  `--clip-head-seconds` / `--clip-tail-seconds` (validated — the command errors if zero or both
+  are given). Renamed the unrelated per-file search-window options to `--search-head-seconds` /
+  `--search-tail-seconds` to disambiguate from the new clip-extraction options.
+- `AudioBumperMatcherTests` env vars renamed to match: `BUMPER_CLIP_EPISODE` (source video, same
+  name `VisualTailProbe` already used for this), `BUMPER_CLIP_HEAD_SECONDS` /
+  `BUMPER_CLIP_TAIL_SECONDS`, `BUMPER_SEARCH_HEAD_SECONDS` / `BUMPER_SEARCH_TAIL_SECONDS`.
+- Rebuilt clean, `vbr match --help` and the validation-error path smoke-tested, `VBR.Tests`
+  still skips cleanly without env vars set.
 
 ## Open / next steps
 
@@ -86,11 +104,9 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005:
   - [x] Audio-fingerprint video→catalog matcher — `VBR.Core.Matching.AudioBumperMatcher` +
     `vbr match` CLI command. No caching yet (re-fingerprints every run).
-  - [ ] **Clip-input contract (correction — do this before building more).** Rework
-    `AudioBumperMatcher` / `vbr match` (and every future entry point) to take a **source video +
-    time range** and extract the clip internally — the user must never supply a pre-cut clip. See
-    AGENTS.md core principles + `design/bumper-catalog.md`. (`VisualTailProbe` already does this
-    via `BUMPER_CLIP_EPISODE`.)
+  - [x] **Clip-input contract.** `AudioBumperMatcher`/`vbr match` take a source video + time
+    range and extract the clip internally — see "Clip-input contract fixed" above. Still applies
+    as a standing rule to every *future* entry point (catalog enroll, UI marking, etc.).
   - [ ] Edge-focused scan + a **cached** fingerprint/embedding index (scan once, compare cheaply).
   - [ ] Visual/DINOv2 matcher's equivalent productionization (currently still
     `VisualBumperMatchProbe`/`VisualTailProbe`).
