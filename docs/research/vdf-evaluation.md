@@ -79,6 +79,44 @@ net-new value — VDF ships CPU-default.
 | GPU inference | `VDF.Core/AI/OnnxEmbedder.cs:46` | `options.AppendExecutionProvider_CUDA(deviceId)` before creating the `InferenceSession`. |
 | GPU runtime pkg | `VDF.Core/VDF.Core.csproj` | Add/swap to `Microsoft.ML.OnnxRuntime.Gpu` (CUDA native). |
 
+## Measurement 3 — Deep Clean with GPU decode (`hwaccel=cuda`), no code change (2026-07-16)
+
+Lever 2 (GPU decode, Settings-only toggle) confirmed on the maintainer's **RTX 3080**:
+
+- **Settings:** Processing → Hardware Acceleration = `cuda`; **"Use native Ffmpeg binding" left
+  off** to isolate this one variable (that toggle is a separate, undocumented-until-now lever —
+  its own description claims it's a bigger win than GPU decode; not yet measured).
+- **Same subset as Measurement 2:** the identical 2,110-file TV-only set, for a controlled
+  comparison.
+- **Confound:** a background TrueNAS vdev **scrub was running for the entire scan** (started
+  ~25 min before the scan, per maintainer check). The scan wasn't re-run scrub-free — the
+  directional finding (GPU decode is a large win) doesn't depend on it, and if anything this
+  measurement is a **conservative floor**: the scrub-free rate is likely at or above what's
+  recorded here.
+- **Checkpoints** (cumulative, then incremental since the prior checkpoint):
+
+  | Elapsed | Files | Cumulative rate | Incremental rate |
+  | ------: | ----: | --------------: | ---------------: |
+  |      2m |    82 |  41.0 files/min |                — |
+  |      8m |   304 |  38.0 files/min |   37.0 files/min |
+  |     15m |   574 |  38.3 files/min |   38.6 files/min |
+  |  26m17s | 1,000 |  38.1 files/min |   37.8 files/min |
+
+  Rate is **stable at ~37–41 files/min** throughout — notably, it did *not* fluctuate wildly
+  despite the subset mixing 1080p/4K and varying file sizes, scanned sequentially (show by show).
+  Either per-segment resolution mix was similar enough not to show up at this granularity, or
+  GPU decode throughput is less resolution-sensitive than expected. Not a controlled test of
+  that specifically, just an observation.
+- **Result:** measured at **~38 files/min** average vs. the CPU-only baseline of ~6 files/min
+  (Measurement 2) — a **~6.3× speedup** (conservative, per the scrub caveat above). Projects to
+  **~55 min** for the full 2,110-file subset vs. ~6 hours on CPU. Stopped at 1,000/2,110 files —
+  four consistent checkpoints were enough to confirm the rate; a full run to completion wasn't
+  judged necessary.
+
+**GPU decode alone gets most of the way to GPU-desktop-class throughput**, without touching
+`OnnxEmbedder`'s CPU-only ONNX inference (lever 3) or the native FFmpeg binding (unranked,
+possibly bigger, not yet measured). **Considered validated — no re-test planned.**
+
 ## Matching test — single season (18 episodes) & the threshold finding
 
 Test: ~18 episodes of one season, scanned in ~41s; result was only **2 files matched at 92%**
@@ -318,10 +356,10 @@ boundary-growing idea).
 - **Discovery matcher (net-new):** prototype a windowed/local shared-segment detector over VDF's
   chroma fingerprints (best contiguous run of matching blocks), since VDF's whole-clip averaging
   + 95% gate can't find a shared sub-segment between two full-length files.
-- Measure Deep Clean files/min with `hwaccel=cuda`.
-- Profile the Deep Clean bottleneck: decode vs. SMB I/O vs. matching phase.
-
-- Measure Deep Clean files/min with `hwaccel=cuda` enabled (controlled small folder).
-- Profile the Deep Clean bottleneck: decode vs. SMB I/O vs. the cross-file matching phase.
+- ~~Measure Deep Clean files/min with `hwaccel=cuda`.~~ **Done — see Measurement 3** (~41
+  files/min, ~6.8× over CPU). Follow-ups: confirm the rate holds for the full 2,110-file run
+  (not just the 82-file checkpoint), and measure "Use native Ffmpeg binding" as its own lever.
+- Profile the Deep Clean bottleneck now that decode is on GPU: decode vs. SMB I/O vs. the
+  cross-file matching phase vs. ONNX inference (still CPU — lever 3, unmeasured).
 - Correctness test: does partial-clip / AI-partial detection group same-series episodes on
   their shared **intro** with a sensible clip offset? (Use a small single-series folder.)

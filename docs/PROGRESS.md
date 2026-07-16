@@ -57,7 +57,11 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 - [ ] **Sub-bumper extent.** Given a matched region, determine its true extent (grow boundaries
   until frames stop agreeing across all containing files); distinguish "whole stack" from "a piece."
 - [ ] **GPU acceleration.**
-  - [ ] Measure `hwaccel=cuda` decode speedup vs. CPU.
+  - [x] Measure `hwaccel=cuda` decode speedup vs. CPU. **~38 files/min avg (stable across 4
+    checkpoints to 1,000/2,110 files) vs. ~6 files/min CPU (~6.3×, conservative — ran under an
+    unrelated background NAS scrub), RTX 3080, same 2,110-file subset** — see
+    `research/vdf-evaluation.md` Measurement 3. Considered validated; no re-test planned. Still
+    open: measure "Use native Ffmpeg binding" as a separate, possibly bigger lever.
   - [ ] Implement GPU decode (NVDEC) + ONNX CUDA execution provider. Code touch-points in
     `research/vdf-evaluation.md`.
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005:
