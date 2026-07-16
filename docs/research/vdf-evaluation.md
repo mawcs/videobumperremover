@@ -266,6 +266,21 @@ clip interval **0.5s**, tail 30s:
 fine-grained DINOv2 visual (tail/head-windowed) for silent/short edge bumpers. Both signals now
 empirically confirmed on real bumpers.
 
+**Corrected diagnosis — the limiter is STATIC content + VDF's ≥4-hit rule, not darkness (2026-07-15).**
+The Netflix logo is *bright* (red on near-white). But once it forms it's **static**, and
+`GetDenseAiFrames` **dedupes near-identical frames**, collapsing a held logo to ~1 distinct frame
+(6 total, with the black tail). VDF's `TryMatchDenseFrames` requires **≥4 distinct frames agreeing
+on one time offset** — built to find a *moving* clip inside a recording, so it structurally cannot
+match a short/static bumper. This is a **tool mismatch**, and **short detection is a hard
+requirement** (Caprica's 3s end-card; standalone short idents cannot be routed around by
+"grab-generous + cut-to-edge" — you must detect the short thing first).
+
+**Direction — presence matcher:** instead of "≥4 frames agree on an offset," ask "does the bumper's
+distinctive frame *appear* in the target's edge region at high cosine?" One strong match of a
+distinctive frame IS the detection; drop the ≥4-hit rule and control false positives with a high
+cosine threshold + the positional (edge) constraint. `VisualTailProbe` now reports per-frame best
+cosine + a presence count alongside the rigid matcher, so we can characterize TP vs FP for presence.
+
 Next: **boundary precision** (0.5s interval → refine toward frame-accurate cut points) and
 **sub-clip / sub-bumper tests** — extract the last 5s (just Netflix) or last 7s and confirm they
 match too, then work out how to distinguish "the whole 20s stack" from "one piece of it" (the

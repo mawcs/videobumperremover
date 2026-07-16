@@ -286,3 +286,4 @@ fingerprints/
 # Local test corpus (keep sample media out of the repo)
 testcorpus/
 
+/test_materials/

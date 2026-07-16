@@ -43,11 +43,15 @@ public class VisualTailProbe {
 	public void Probe_VisualTail() {
 		string? dbFolder = Environment.GetEnvironmentVariable("BUMPER_DB_FOLDER");
 		string? clipPath = Environment.GetEnvironmentVariable("BUMPER_CLIP");
+		string? clipEpisode = Environment.GetEnvironmentVariable("BUMPER_CLIP_EPISODE");
+		int clipSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_CLIP_SECONDS"), out var cs) && cs > 0 ? cs : 8;
 		string? episodesDir = Environment.GetEnvironmentVariable("BUMPER_EPISODES_DIR");
-		Skip.If(string.IsNullOrWhiteSpace(dbFolder) || string.IsNullOrWhiteSpace(clipPath) || string.IsNullOrWhiteSpace(episodesDir),
-			"Set BUMPER_DB_FOLDER (GUI dir with ai model+runtime), BUMPER_CLIP (a VIDEO clip), BUMPER_EPISODES_DIR.");
+		bool haveClip = !string.IsNullOrWhiteSpace(clipPath) || !string.IsNullOrWhiteSpace(clipEpisode);
+		Skip.If(string.IsNullOrWhiteSpace(dbFolder) || !haveClip || string.IsNullOrWhiteSpace(episodesDir),
+			"Set BUMPER_DB_FOLDER, BUMPER_EPISODES_DIR, and either BUMPER_CLIP (a clip file) or BUMPER_CLIP_EPISODE (auto-cut last BUMPER_CLIP_SECONDS from it).");
 		Skip.If(!Directory.Exists(dbFolder), $"DB folder not found: {dbFolder}");
-		Skip.If(!File.Exists(clipPath), $"Clip not found: {clipPath}");
+		Skip.If(!string.IsNullOrWhiteSpace(clipPath) && !File.Exists(clipPath), $"Clip not found: {clipPath}");
+		Skip.If(!string.IsNullOrWhiteSpace(clipEpisode) && !File.Exists(clipEpisode), $"Clip episode not found: {clipEpisode}");
 		Skip.If(!Directory.Exists(episodesDir), $"Episodes dir not found: {episodesDir}");
 		Skip.If(string.IsNullOrEmpty(FfmpegEngine.FFmpegPath) || !File.Exists(FfmpegEngine.FFmpegPath),
 			"ffmpeg executable not found (needs it on PATH).");
@@ -73,6 +77,16 @@ public class VisualTailProbe {
 		var temps = new List<string>();
 		try {
 			AiComponents.TestOverrideModelPath = modelPath;
+
+			// If no clip file was given, cut the clip from a reference episode's last N seconds
+			// (reliable — the same extraction as the tails; ends hand-editing precision problems).
+			if (string.IsNullOrWhiteSpace(clipPath)) {
+				string clipTemp = Path.Combine(Path.GetTempPath(), $"vbr_clip_{Guid.NewGuid():N}.mkv");
+				temps.Add(clipTemp);
+				Skip.If(!ExtractTail(clipEpisode!, clipSeconds, clipTemp), $"Failed to extract last {clipSeconds}s from {clipEpisode}.");
+				clipPath = clipTemp;
+				Line($"Clip = last {clipSeconds}s of {Path.GetFileName(clipEpisode)} (auto-extracted).");
+			}
 
 			OnnxEmbedder embedder;
 			try { embedder = new OnnxEmbedder(AiComponents.ModelPath); }
@@ -104,33 +118,60 @@ public class VisualTailProbe {
 
 				var clipRec = Embed(clipPath!);
 				int clipN = clipRec.Frames.Count(f => f.Length > 0);
-				Line($"CLIP: {Path.GetFileName(clipPath)}  {clipN} embedded frame(s) @ {interval}s");
-				Skip.If(clipN < 4, $"Only {clipN} clip frames (< 4 needed). Lower BUMPER_CLIP_INTERVAL or use a longer clip.");
+				Line($"CLIP: {Path.GetFileName(clipPath)}  {clipN} usable / {clipRec.Frames.Length} sampled frames @ {interval}s (≈{clipRec.Frames.Length * interval:0.0}s span)");
+				Skip.If(clipN < 1, "Clip produced no usable frames. Lower BUMPER_CLIP_INTERVAL or check the clip.");
 				Line(new string('-', 78));
 
 				var episodes = Directory.EnumerateFiles(episodesDir!)
 					.Where(f => VideoExts.Contains(Path.GetExtension(f).ToLowerInvariant()))
 					.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipPath!), StringComparison.OrdinalIgnoreCase))
+						.Where(f => string.IsNullOrWhiteSpace(clipEpisode) || !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipEpisode), StringComparison.OrdinalIgnoreCase))
 					.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 					.ToList();
 				Skip.If(episodes.Count == 0, "No episode files found.");
 
-				int matched = 0;
+				// Presence threshold: a clip frame is "present" if its best cosine to any tail frame
+				// clears this. For short/static bumpers we don't need ≥4 temporally-consistent hits
+				// (VDF's rigid rule) — one distinctive frame found at high cosine IS the detection.
+				float presence = float.TryParse(Environment.GetEnvironmentVariable("BUMPER_PRESENCE"), out var pv) && pv > 0
+					? (pv > 1 ? pv / 100f : pv) : 0.90f;
+				Line($"Columns: bestCos@tailTime  present=<clip frames matched>/<clip frames>  [rigid ≥4-hit matcher]  (presence thr {presence:P0})");
+				Line(new string('-', 78));
+
+				int present = 0;
 				foreach (var ep in episodes) {
 					string temp = Path.Combine(Path.GetTempPath(), $"vbr_tail_{Guid.NewGuid():N}.mkv");
 					temps.Add(temp);
 					if (!ExtractTail(ep, tailSec, temp)) {
-						Line($"{Path.GetFileName(ep),-52}  (tail extract failed)");
+						Line($"{Path.GetFileName(ep),-46}  (tail extract failed)");
 						continue;
 					}
 					var epRec = Embed(temp);
-					int epN = epRec.Frames.Count(f => f.Length > 0);
+
+					// Presence matcher (ours): best per-frame cosine + how many clip frames appear.
+					float best = 0f; int bestTf = -1, hits = 0;
+					for (int c = 0; c < clipRec.Frames.Length; c++) {
+						if (clipRec.Frames[c].Length == 0) continue;
+						float cBest = 0f;
+						for (int s = 0; s < epRec.Frames.Length; s++) {
+							if (epRec.Frames[s].Length == 0) continue;
+							float cos = EmbeddingMath.CosineSimilarity(clipRec.Frames[c], epRec.Frames[s]);
+							if (cos > cBest) cBest = cos;
+							if (cos > best) { best = cos; bestTf = s; }
+						}
+						if (cBest >= presence) hits++;
+					}
+					int epUsable = epRec.Frames.Count(f => f.Length > 0);
+					double bestTime = bestTf < 0 ? -1 : bestTf * interval;
+					if (hits >= 1) present++;
+
+					// Rigid matcher (VDF) for comparison.
 					bool ok = ScanEngine.TryMatchDenseFrames(epRec, clipRec, hit, out float sim, out int off);
-					if (ok) { matched++; Line($"{Path.GetFileName(ep),-52}  MATCH  sim={sim,6:P0}  tailOffset≈{off,4}s  ({epN} tail frames)"); }
-					else Line($"{Path.GetFileName(ep),-52}  no match  ({epN} tail frames)");
+					string rigid = ok ? $"rigid {sim:P0}@{off}s" : "rigid:no";
+					Line($"{Path.GetFileName(ep),-46}  bestCos={best,6:P1}@{bestTime,5:0.0}s  present={hits}/{clipN}  tail={epUsable}/{epRec.Frames.Length}  [{rigid}]");
 				}
 				Line(new string('-', 78));
-				Line($"{matched}/{episodes.Count} episodes matched the clip visually in the last {tailSec}s.");
+				Line($"{present}/{episodes.Count} episodes have ≥1 clip frame present (≥{presence:P0} cosine) in the last {tailSec}s.");
 
 				string outPath = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(clipPath!))!, $"visual-tail-results-{stamp}.txt");
 				try { File.WriteAllText(outPath, log.ToString()); _out.WriteLine($"\nWrote results to: {outPath}"); }
