@@ -281,6 +281,19 @@ distinctive frame IS the detection; drop the ≥4-hit rule and control false pos
 cosine threshold + the positional (edge) constraint. `VisualTailProbe` now reports per-frame best
 cosine + a presence count alongside the rigid matcher, so we can characterize TP vs FP for presence.
 
+**RESOLVED — it was corrupted/mis-extracted clips all along (2026-07-16).** The "static logo" and
+"darkness" diagnoses above were both wrong: they were theorizing about broken input. The isolated
+Netflix clips were hand-cut and defective (`daredevil-netflix8.mkv` is literally corrupt — MPC-BE
+crashes, VLC hangs; an earlier one was ~1.2s of the wrong content → 6 frames, `bestCos` ~45%). Once
+the probe **auto-cuts the clip from a reference episode** (`BUMPER_CLIP_EPISODE`; same reliable
+extraction as the tails), the last ~4.8s of Daredevil E01 gave **24 clean frames** and matched
+**12/12 at 98–99%** on **both** the presence matcher (present=24/24) **and** VDF's rigid ≥4-hit
+matcher (~98%). So short visual bumpers work fine — the whole ordeal was clip integrity, not a
+matcher limit. **Lesson: never trust a hand-cut clip; the tool extracts clips itself.** Presence is
+still useful as a fallback for genuinely static/tiny cases, but for real motion bumpers the rigid
+matcher also succeeds once the input is valid. Next: presence/rigid **false-positive floor** vs an
+unrelated show, to set thresholds.
+
 Next: **boundary precision** (0.5s interval → refine toward frame-accurate cut points) and
 **sub-clip / sub-bumper tests** — extract the last 5s (just Netflix) or last 7s and confirm they
 match too, then work out how to distinguish "the whole 20s stack" from "one piece of it" (the
