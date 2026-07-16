@@ -59,6 +59,27 @@ and [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
 - Documentation lives in `docs/`. Research/exploration notes go in `docs/research/`.
 - Keep `CLAUDE.md` as a one-line pointer to this file; put actual instructions here.
 - Prefer small, focused commits with clear messages (made by the maintainer — see above).
+- **License header (required on every source file *we* create).** Put the AGPLv3 header block at
+  the very top of each new source file (`.cs`, etc.). Do **not** add it to upstream VDF files
+  (they keep their `0x90d` header) or to docs/config. The block:
+
+  ```
+  // /*
+  //     Copyright (C) 2026 mawcs
+  //     This file is part of VideoBumperRemover
+  //     VideoBumperRemover is free software: you can redistribute it and/or modify
+  //     it under the terms of the GNU Affero General Public License as published by
+  //     the Free Software Foundation, either version 3 of the License, or
+  //     (at your option) any later version.
+  //     VideoBumperRemover is distributed in the hope that it will be useful,
+  //     but WITHOUT ANY WARRANTY without even the implied warranty of
+  //     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+  //     GNU Affero General Public License for more details.
+  //     You should have received a copy of the GNU Affero General Public License
+  //     along with VideoBumperRemover.  If not, see <http://www.gnu.org/licenses/>.
+  // */
+  //
+  ```
 
 ## Safety around media & FFmpeg
 
