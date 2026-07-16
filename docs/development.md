@@ -9,9 +9,15 @@ need full Visual Studio — VS Code + the .NET SDK is enough.
   <https://dotnet.microsoft.com/download>. Every project targets `net10.0`; the SDK includes
   MSBuild, the compilers, and the ASP.NET Core bits needed by `VDF.Web` (there is no "workload"
   concept outside the Visual Studio installer).
-- **VS Code** with the **C# Dev Kit** extension recommended (adds `.sln` / multi-project
-  support and a test runner; the solution has ~a dozen projects). The plain **C#** extension
-  also works.
+- **VS Code** with the base **C#** extension (`ms-dotnettools.csharp`) — IntelliSense +
+  debugging, **no account required**. This is all you need in the editor; builds/tests run from
+  the `dotnet` CLI regardless.
+  - **C# Dev Kit is optional and NOT recommended for this project.** It's Microsoft's
+    proprietary extension and forces a **Microsoft account sign-in** (which can fail on the
+    passkey/WebAuthn step in VS Code's embedded browser). It only adds Solution/Test Explorer
+    *UI panels* — not needed here. If you installed it and hit the login wall, disable/uninstall
+    `ms-dotnettools.csdevkit` and keep the plain C# extension.
+  - Full Visual Studio is also unnecessary and would similarly want a Microsoft account.
 - **Git** — already in use; see [`AGENTS.md`](../AGENTS.md) for the git workflow (maintainer
   runs all git commands).
 - **FFmpeg / FFprobe** — a **runtime** dependency, not a build one. VDF auto-downloads them on
