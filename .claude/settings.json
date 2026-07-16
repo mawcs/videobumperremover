@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh issue *)",
+      "PowerShell(gh issue view 25 --json title,body,comments 2>&1)"
+    ]
+  }
+}

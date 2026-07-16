@@ -33,9 +33,11 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 
 ### Open threads / next steps (the Cowork task list does NOT follow into VS Code — tracked here)
 
-- **Code organization (in progress).** Decide the `VBR.*` project layout vs. VDF. Working doc
-  with options + leanings: [`docs/design/code-organization.md`](docs/design/code-organization.md).
-  Maintainer's concerns captured there; resolve, then write an ADR.
+- **Code organization — decided.** `VBR.*` project layout vs. VDF resolved:
+  [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md)
+  (option analysis in [`docs/design/code-organization.md`](docs/design/code-organization.md)).
+  Next: start scaffolding `VBR.Core`/`VBR.Tests`, add the `InternalsVisibleTo("VBR.Core")` glue
+  to `VDF.Core.csproj`, and graduate the diagnostic probes out of `VDF.IntegrationTests`.
 - **Boundary detection.** Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   (content→junk transition → file edge; edge bumpers cut to BOF/EOF so padding is auto-removed).
 - **GPU acceleration.** VDF is CPU-only (decode `hwaccel none`, ONNX CPU) → its heavy pass is
@@ -58,11 +60,13 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
 - [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
   vs. re-encode) + per-video enhancements + output options.
-- [`docs/design/code-organization.md`](docs/design/code-organization.md) — VBR-vs-VDF structure (working).
+- [`docs/design/code-organization.md`](docs/design/code-organization.md) — VBR-vs-VDF structure
+  (option analysis; decided in
+  [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md)).
 - [`docs/design/ux-issues.md`](docs/design/ux-issues.md) — VDF UX traps to fix in our redesign.
 - [`docs/glossary.md`](docs/glossary.md) — fingerprinting / embeddings / cosine, plain-language.
 - [`docs/decisions/`](docs/decisions/) — ADRs: 0001 stack (superseded by 0002), 0002 stack
-  (accepted), 0003 repo structure (fork VDF), 0004 bumper catalog.
+  (accepted), 0003 repo structure (fork VDF), 0004 bumper catalog, 0005 code organization.
 - [`docs/development.md`](docs/development.md) — build/run + VS Code setup (use base C# extension,
   skip C# Dev Kit).
 

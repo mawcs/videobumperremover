@@ -1,6 +1,7 @@
 # Working doc: code organization (VBR vs. VDF)
 
-**Status:** working doc / for discussion — *not* decided. When we converge, promote to an ADR.
+**Status:** decided — see [`../decisions/0005-code-organization.md`](../decisions/0005-code-organization.md)
+for the accepted decision. This doc is kept as the option analysis/history behind it.
 
 We forked Video Duplicate Finder (VDF) and have been adding diagnostic probes inside VDF's own
 test project for expediency. Before real development, we need to decide how *our* code
