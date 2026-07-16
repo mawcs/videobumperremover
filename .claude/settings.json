@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(gh issue *)",
-      "PowerShell(gh issue view 25 --json title,body,comments 2>&1)"
+      "PowerShell(gh issue view 25 --json title,body,comments 2>&1)",
+      "Bash(ls -la \"C:/Users/michael/.claude/projects/d--Data-dev-git-videobumperremover/memory\" 2>&1; echo \"---\"; cat \"C:/Users/michael/.claude/projects/d--Data-dev-git-videobumperremover/memory/MEMORY.md\" 2>&1)",
+      "Read(//c/Users/michael/.claude/projects/d--Data-dev-git-videobumperremover/memory/**)"
     ]
   }
 }

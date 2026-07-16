@@ -31,7 +31,9 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - **Nothing is built beyond the fork + probes.** The fork builds/runs:
   `dotnet build VideoDuplicateFinder.sln`.
 
-### Open threads / next steps (the Cowork task list does NOT follow into VS Code — tracked here)
+### Open threads / next steps — canonical checklist: [`docs/PROGRESS.md`](docs/PROGRESS.md)
+
+(Summary below; the maintainable checklist + full completed-work log lives in `docs/PROGRESS.md`.)
 
 - **Code organization — decided.** `VBR.*` project layout vs. VDF resolved:
   [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md)
@@ -51,6 +53,8 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 
 ## Documentation map
 
+- [`docs/PROGRESS.md`](docs/PROGRESS.md) — **the task log & running checklist** (completed work +
+  open next steps). Start here to see what's done and what's next.
 - [`README.md`](README.md) — problem, goal, fork attribution.
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — phased plan; inherited-vs-net-new; cross-cutting concerns.
 - [`docs/research/vdf-evaluation.md`](docs/research/vdf-evaluation.md) — **the hands-on findings
