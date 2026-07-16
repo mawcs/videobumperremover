@@ -132,6 +132,11 @@ Validated on the Daredevil end-stack (2026-07-15). The user must never need a fr
 
 Net: rough region in → tool nails the exact cut. No user precision required, ever.
 
+**Interface contract (enforce this in code):** every enrollment/matching entry point — API, CLI,
+UI — accepts a **source video path + a time range (or "last/first N seconds")**, never a pre-cut
+clip file. The extractor lives inside our code; callers point at a video, we cut and fingerprint.
+(Rationale: hand-cut clips were the #1 source of false failures during the matching spike.)
+
 ## Matching at catalog scale
 
 - Direction is one-to-many: one file's fingerprints vs. all catalog entries.

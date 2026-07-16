@@ -104,6 +104,15 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   until confirmed. Guard explicitly against the **sub-bumper** problem (a short match that
   is really part of a longer bumper) and against mid-video **interstitials** being treated
   as edge bumpers.
+- **Clip extraction is the tool's job — the user NEVER supplies a pre-cut clip.** Enrollment and
+  matching take a **source video + a rough region** (a reference video plus e.g. "last N seconds",
+  or an in-UI marked range); our code extracts *and* fingerprints the clip itself. Every API/CLI/UI
+  entry point must accept `(video path, time range)` — **not** a pre-cut clip file. Rationale:
+  hand-cut clips were the single biggest source of false failures during the spike (mis-cuts,
+  corruption), and no user can be that precise; precision is *our* responsibility. See
+  [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) → "Precision is the tool's job."
+  **Note:** the current `VBR.CLI` `match --clip <file>` predates this rule and must be reworked to
+  take a source video + region (the visual probe already does this via `BUMPER_CLIP_EPISODE`).
 
 ## Decisions
 

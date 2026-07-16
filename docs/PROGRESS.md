@@ -86,6 +86,11 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005:
   - [x] Audio-fingerprint video→catalog matcher — `VBR.Core.Matching.AudioBumperMatcher` +
     `vbr match` CLI command. No caching yet (re-fingerprints every run).
+  - [ ] **Clip-input contract (correction — do this before building more).** Rework
+    `AudioBumperMatcher` / `vbr match` (and every future entry point) to take a **source video +
+    time range** and extract the clip internally — the user must never supply a pre-cut clip. See
+    AGENTS.md core principles + `design/bumper-catalog.md`. (`VisualTailProbe` already does this
+    via `BUMPER_CLIP_EPISODE`.)
   - [ ] Edge-focused scan + a **cached** fingerprint/embedding index (scan once, compare cheaply).
   - [ ] Visual/DINOv2 matcher's equivalent productionization (currently still
     `VisualBumperMatchProbe`/`VisualTailProbe`).
