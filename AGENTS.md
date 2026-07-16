@@ -8,6 +8,64 @@ Video Bumper Remover — detect, verify, and remove repeated bumpers/interstitia
 large personal video library. Read [`README.md`](README.md) for the full problem statement
 and [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
 
+## Current status — read this first (2026-07-16)
+
+Past the risk-retirement spike; about to begin real product build. What's established:
+
+- **The matching approach is validated on real bumpers.** Full story:
+  [`docs/research/vdf-evaluation.md`](docs/research/vdf-evaluation.md). In short:
+  - **Audio fingerprint** (VDF Chromaprint) matches audible bumpers with a clean gap; **dead**
+    for silent/varying-audio bumpers.
+  - **Positional (edge) windows** rescue short *audible* bumpers — searching only the first/last
+    N seconds shrinks the offset space and drops the false-positive floor.
+  - **Visual DINOv2 matching** — VDF's rigid ≥4-hit matcher *and* our new **presence matcher** —
+    detect silent/short bumpers (Daredevil ident stack) at **98–99%** vs. **≤33%** for unrelated
+    content. Zero false positives, ~65-pt gap.
+  - **Hard-won rule:** the tool must extract clips itself — *never trust a hand-cut clip* (most
+    "failures" this spike were corrupt/mis-cut input, not the matcher).
+- **Diagnostic probes** live temporarily in `VDF.IntegrationTests/Comparison/`:
+  `BumperMatchProbe` (audio + head/tail windows), `VisualBumperMatchProbe` (reads cached
+  embeddings), `VisualTailProbe` (self-embeds clip + episode tails; can auto-cut the clip from a
+  reference episode via `BUMPER_CLIP_EPISODE`). **Each probe file's top comment has its exact
+  `dotnet test` recipe + env vars.** Test media is under `test_materials/` (gitignored).
+- **Nothing is built beyond the fork + probes.** The fork builds/runs:
+  `dotnet build VideoDuplicateFinder.sln`.
+
+### Open threads / next steps (the Cowork task list does NOT follow into VS Code — tracked here)
+
+- **Code organization (in progress).** Decide the `VBR.*` project layout vs. VDF. Working doc
+  with options + leanings: [`docs/design/code-organization.md`](docs/design/code-organization.md).
+  Maintainer's concerns captured there; resolve, then write an ADR.
+- **Boundary detection.** Turn a match offset (~0.2–0.5s resolution) into a precise cut point
+  (content→junk transition → file edge; edge bumpers cut to BOF/EOF so padding is auto-removed).
+- **GPU acceleration.** VDF is CPU-only (decode `hwaccel none`, ONNX CPU) → its heavy pass is
+  ~20× slower than needed on this GPU desktop. Wire NVDEC decode + ONNX CUDA. Code touch-points
+  in `docs/research/vdf-evaluation.md`.
+- **Productionize matching.** Move from probes to real modules: edge-focused scan + a cached
+  fingerprint/embedding index; the **catalog** (enroll a bumper once, apply forever); the
+  **removal engine** (cut + manifest + verify); the **UI**.
+- **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
+  interstitial** path (on demand).
+
+## Documentation map
+
+- [`README.md`](README.md) — problem, goal, fork attribution.
+- [`docs/ROADMAP.md`](docs/ROADMAP.md) — phased plan; inherited-vs-net-new; cross-cutting concerns.
+- [`docs/research/vdf-evaluation.md`](docs/research/vdf-evaluation.md) — **the hands-on findings
+  log** (throughput + all matcher validation results). The most important doc for context.
+- [`docs/research/prior-art.md`](docs/research/prior-art.md),
+  [`docs/research/matching-approaches.md`](docs/research/matching-approaches.md) — background.
+- [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
+- [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
+  vs. re-encode) + per-video enhancements + output options.
+- [`docs/design/code-organization.md`](docs/design/code-organization.md) — VBR-vs-VDF structure (working).
+- [`docs/design/ux-issues.md`](docs/design/ux-issues.md) — VDF UX traps to fix in our redesign.
+- [`docs/glossary.md`](docs/glossary.md) — fingerprinting / embeddings / cosine, plain-language.
+- [`docs/decisions/`](docs/decisions/) — ADRs: 0001 stack (superseded by 0002), 0002 stack
+  (accepted), 0003 repo structure (fork VDF), 0004 bumper catalog.
+- [`docs/development.md`](docs/development.md) — build/run + VS Code setup (use base C# extension,
+  skip C# Dev Kit).
+
 ## Core principles
 
 - **Stack (decided):** C#/.NET, built as a **fork of Video Duplicate Finder** (reuse
@@ -48,11 +106,13 @@ and [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
   behalf.
 - Read-only inspection (`git status`, `git log`, `git diff`) is fine if useful, but prefer
   to just describe what changed.
-- **Why:** this repo lives on a Windows drive exposed to the agent sandbox through a FUSE
-  file bridge. Ordinary file writes survive it, but git's temp-file + fsync + atomic-rename
-  pattern (used for `config`, `index`, refs, and lockfiles) gets corrupted crossing that
-  boundary, producing null/zero-byte files. The maintainer's native Windows git writes
-  straight to NTFS and is unaffected. So: **agents edit files, the maintainer runs git.**
+- **Why / environment note:** this rule originated in **Cowork**, where the repo was exposed to
+  the agent sandbox through a FUSE bridge that corrupted git's lockfile/atomic-rename operations
+  (native Windows git was unaffected). In a **local IDE (VS Code / Claude Code), git works
+  normally**, so the hard technical reason no longer applies — but the maintainer drove git
+  throughout the spike and this remains the **default**. Confirm the maintainer's current
+  preference; until told otherwise, edit files and hand over commit commands rather than running
+  git.
 
 ## Repo conventions
 
