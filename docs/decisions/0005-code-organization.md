@@ -91,14 +91,19 @@ and stay in `VDF.Core`. **Substantial changes** fork the file into `VBR.*`, also
 copyright, leaving the `VDF.Core` original pristine and mergeable. Brand-new files are pure VBR
 with our header only (per the standard block in [`AGENTS.md`](../../AGENTS.md)).
 
-### 6. UI: extend `VDF.GUI` in place
+### 6. UI: extend `VDF.GUI` in place — **reopened, see Open questions**
 
-No `VBR.Gui` for now. Continue building on `VDF.GUI`, fixing known UX issues incrementally per
-[`../design/ux-issues.md`](../design/ux-issues.md). This preserves the "running end-to-end app
-from day one" benefit that motivated forking VDF whole (ADR 0002) rather than discarding its UI.
-If specific GUI files need substantial bumper-specific rework, they fork into `VBR.*` under the
-same rule as decision 4 (e.g. a bumper-review screen with no VDF equivalent would be a new
-`VBR.*` file, not a `VDF.GUI` edit) — but there's no wholesale `VBR.Gui` rewrite planned.
+Originally decided: no `VBR.Gui` for now. Continue building on `VDF.GUI`, fixing known UX issues
+incrementally per [`../design/ux-issues.md`](../design/ux-issues.md). This preserves the "running
+end-to-end app from day one" benefit that motivated forking VDF whole (ADR 0002) rather than
+discarding its UI. If specific GUI files need substantial bumper-specific rework, they fork into
+`VBR.*` under the same rule as decision 4 (e.g. a bumper-review screen with no VDF equivalent
+would be a new `VBR.*` file, not a `VDF.GUI` edit) — but there's no wholesale `VBR.Gui` rewrite
+planned.
+
+**Under reconsideration (2026-07-16):** working through what "fork into `VBR.*`" actually means
+mechanically for GUI files surfaced a real tension — see Open questions below. Not re-decided;
+kept here as the status quo until it is.
 
 ## Consequences
 
@@ -115,6 +120,27 @@ concerns will coexist in the same project until/unless individual screens fork o
 
 ## Open questions
 
+- **Separate `VBR.Gui` project — reopened, not decided.** Decision 6 said new bumper screens
+  "fork into `VBR.*`" while staying inside `VDF.GUI` (same project). Working through what that
+  means mechanically surfaced a real tension:
+  - `VDF.GUI`'s own extensibility idiom is C# `partial class` — `MainWindowVM` is one type
+    completed across a dozen `MainWindowVM_*.cs` files, one per concern, with a single flat
+    `ShellView` enum (see `Data/ShellNav.cs`) switching which panel is visible in the one
+    `MainWindow`. There's no ViewModel base class, no router/page-stack, no DI container to hook
+    into.
+  - Following that idiom for bumper screens (another `MainWindowVM_Bumpers.cs` partial file)
+    means our code completes a type declared in VDF's own files — clean by the letter of
+    decision 4 (glue-sized touch, dual copyright) but blurry in spirit (are we editing
+    `MainWindowVM`, or is `MainWindowVM` now partly ours?).
+  - The alternative — give each bumper screen its own standalone `ReactiveObject` ViewModel and
+    `UserControl` View (composition, not partial-class participation), wired in via a thin
+    `ShellView` case + one pass-through property — keeps ownership unambiguous but still lives
+    inside `VDF.GUI.csproj` per the original decision 6.
+  - **Not yet decided** whether that in-project separation is clean enough, or whether the
+    ownership/build/licensing boundary is worth a real separate `VBR.Gui` project (its own
+    `.csproj`, referencing `VDF.GUI` or hosting a child window/control from it) despite the
+    extra wiring cost and losing a bit of the "one running app" simplicity. Revisit before
+    scaffolding the first bumper-specific screen.
 - The exact primitive list bridged via `InternalsVisibleTo` will grow as `VBR.Core` is built —
   keep `VDF.Core.csproj`'s comment/list current rather than letting it silently expand.
 - Revisit the `VDF.Web` / `VDF.CLI` / `VDF.Benchmarks` drop decision once `VBR.Core` has enough
