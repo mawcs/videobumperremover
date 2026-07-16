@@ -291,8 +291,16 @@ extraction as the tails), the last ~4.8s of Daredevil E01 gave **24 clean frames
 matcher (~98%). So short visual bumpers work fine — the whole ordeal was clip integrity, not a
 matcher limit. **Lesson: never trust a hand-cut clip; the tool extracts clips itself.** Presence is
 still useful as a fallback for genuinely static/tiny cases, but for real motion bumpers the rigid
-matcher also succeeds once the input is valid. Next: presence/rigid **false-positive floor** vs an
-unrelated show, to set thresholds.
+matcher also succeeds once the input is valid.
+
+**False-positive floor — CLEAN (Avatar, 2026-07-16):** the same Daredevil clip vs. 21 Avatar
+episodes scored **bestCos 23–33%, present 0/24, rigid:no** across the board (even a stray intro clip
+rejected at 21%). So **TP 98–99% vs FP ≤33% — a ~65-point gap with zero false positives.** Any
+threshold from ~40–95% separates them cleanly.
+
+**Matching risk RETIRED.** All signals validated on real bumpers: audio fingerprint (long/audible),
+audio + positional window (short/audible), and visual presence/rigid DINOv2 (silent/short). The one
+hard rule learned along the way: **the tool must extract clips itself — never trust a hand-cut clip.**
 
 Next: **boundary precision** (0.5s interval → refine toward frame-accurate cut points) and
 **sub-clip / sub-bumper tests** — extract the last 5s (just Netflix) or last 7s and confirm they
