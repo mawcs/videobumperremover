@@ -83,9 +83,11 @@ Each entry represents one bumper. Fields are grouped by purpose; exact storage T
 **Apply (catalog scan)** — the reusable payoff.
 
 - Input: a video or folder (e.g. a fresh DVD rip).
-- Compare the input's fingerprints against all active catalog entries (audio-first, then
-  visual for audio-less cases), locate offsets, and produce a candidate removal list tagged
-  with which catalog entry matched and at what confidence.
+- Compare the input's fingerprints against all active catalog entries — **visual presence
+  matcher primary** (it covers the silent idents that dominate), with the **audio accelerator**
+  confirming *audible* entries cheaply (see [`matcher-spec.md`](matcher-spec.md)) — locate
+  offsets, and produce a candidate removal list tagged with which catalog entry matched and at
+  what confidence.
 - Feed candidates into the verification UI, then the removal engine.
 
 **On-ingest automation (later)** — watch a folder or trigger on new media so rips are checked
@@ -147,7 +149,8 @@ clip file. The extractor lives inside our code; callers point at a video, we cut
 - Direction is one-to-many: one file's fingerprints vs. all catalog entries.
 - Linear comparison is fine for hundreds of entries; consider approximate-nearest-neighbor
   search only if the catalog grows large.
-- Audio-first keeps per-ingest cost low; visual embedding pass covers audio-less bumpers.
+- The **visual presence matcher is primary** (it covers silent idents); the **audio accelerator**
+  keeps per-ingest cost low for *audible* entries. See [`matcher-spec.md`](matcher-spec.md).
 
 ## Open questions
 

@@ -12,15 +12,25 @@ and [`docs/ROADMAP.md`](docs/ROADMAP.md) for the plan.
 
 Past the risk-retirement spike; about to begin real product build. What's established:
 
+- **Before building any matcher, read [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md)
+  — the authoritative "definition of done."** It exists because the first productionization built
+  the wrong thing (audio-only, no AI, no edge sampling) by following the research narrative as if
+  it were a build order. The spec states the target plainly: **visual DINOv2 presence matching is
+  the PRIMARY matcher; audio is a secondary accelerator; port the validated `VisualTailProbe`;
+  edge-focused sampling ([ADR 0006](docs/decisions/0006-edge-focused-fingerprinting.md)) is part of
+  the matcher; build it as a standalone, expandable `vbr` CLI.**
 - **The matching approach is validated on real bumpers.** Full story:
   [`docs/research/vdf-evaluation.md`](docs/research/vdf-evaluation.md). In short:
-  - **Audio fingerprint** (VDF Chromaprint) matches audible bumpers with a clean gap; **dead**
-    for silent/varying-audio bumpers.
+  - **Visual DINOv2 matching is the primary path** — our **presence matcher** (plus VDF's rigid
+    ≥4-hit matcher as corroboration) detects silent/short bumpers (Daredevil ident stack) at
+    **98–99%** vs. **≤33%** for unrelated content (zero false positives, ~65-pt gap). This is the
+    only path validated on the *silent* idents this project targets (Bad Robot, "Coming to
+    Blu-ray," the Netflix stack).
+  - **Audio fingerprint** (VDF Chromaprint) is a secondary **accelerator**: it matches *audible*
+    bumpers with a clean gap but is **dead** for silent/varying-audio bumpers — i.e. dead for the
+    common case, so never scope the matcher as "audio, visual later."
   - **Positional (edge) windows** rescue short *audible* bumpers — searching only the first/last
-    N seconds shrinks the offset space and drops the false-positive floor.
-  - **Visual DINOv2 matching** — VDF's rigid ≥4-hit matcher *and* our new **presence matcher** —
-    detect silent/short bumpers (Daredevil ident stack) at **98–99%** vs. **≤33%** for unrelated
-    content. Zero false positives, ~65-pt gap.
+    N seconds shrinks the offset space and drops the audio false-positive floor.
   - **Hard-won rule:** the tool must extract clips itself — *never trust a hand-cut clip* (most
     "failures" this spike were corrupt/mis-cut input, not the matcher).
 - **The `VBR.*` tree is scaffolded** (2026-07-16), per
@@ -55,11 +65,14 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   2026-07-16 correction. Also a UX bug to fix in our own UI (`docs/design/ux-issues.md`): make
   multi-phase scans and a whole-job time estimate visible. Code touch-points for GPU work in
   `docs/research/vdf-evaluation.md`.
-- **Productionize matching.** Audio-fingerprint video→catalog matching now lives in
-  `VBR.Core`/`VBR.CLI` (see above). Still to build: a cached fingerprint/embedding index (avoid
-  re-fingerprinting unchanged files); the visual/DINOv2 matcher's equivalent productionization;
-  the **catalog** (enroll a bumper once, apply forever); the **removal engine** (cut + manifest +
-  verify); the **UI**.
+- **Productionize matching — per [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md).**
+  The audio accelerator is built (`VBR.Core`/`VBR.CLI`, see above). **The next build is the
+  PRIMARY visual matcher**, recreating the validated pipeline as a standalone, expandable `vbr`
+  CLI: port `VisualTailProbe`'s DINOv2 presence matcher into `VBR.Core`, fuse it with the audio
+  accelerator behind one interface, drive both through edge-focused sampling
+  ([ADR 0006](docs/decisions/0006-edge-focused-fingerprinting.md)), and re-validate against the
+  probe. Then: a cached fingerprint/embedding index; the **catalog** (enroll once, apply forever);
+  the **removal engine** (cut + manifest + verify); the **UI**.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 
@@ -73,6 +86,9 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   log** (throughput + all matcher validation results). The most important doc for context.
 - [`docs/research/prior-art.md`](docs/research/prior-art.md),
   [`docs/research/matching-approaches.md`](docs/research/matching-approaches.md) — background.
+- [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md) — **the matcher "definition of
+  done"** (visual-primary, audio-accelerator, edge-focused, port the probe, standalone CLI). Read
+  before writing any matcher code; it overrides other docs on *how matching works*.
 - [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
 - [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
   vs. re-encode) + per-video enhancements + output options.
@@ -92,9 +108,11 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 
 - **Stack (decided):** C#/.NET, built as a **fork of Video Duplicate Finder** (reuse
   `VDF.Core` engine), **Avalonia** UI, SQLite index, ML (if added) via in-process **ONNX
-  Runtime** on the desktop GPU. Desktop app reaching media over SMB. Full rationale and the
-  throughput architecture (audio-first + sparse sampling) are in
-  [`docs/decisions/0002-tech-stack.md`](docs/decisions/0002-tech-stack.md).
+  Runtime** on the desktop GPU. Desktop app reaching media over SMB. Full rationale is in
+  [`docs/decisions/0002-tech-stack.md`](docs/decisions/0002-tech-stack.md). (Note: that ADR's
+  early "audio-first prefilter" throughput idea predates validation — audio is now the *secondary
+  accelerator*, since it can't see silent bumpers; the runtime matcher priority is set by
+  [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md).)
 - **Build/run:** .NET 10 SDK + VS Code (full Visual Studio not required); build with
   `dotnet build VideoBumperRemover.sln`. Setup and the Native-AOT-publish caveat are in
   [`docs/development.md`](docs/development.md).

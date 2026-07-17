@@ -1,8 +1,21 @@
 # ADR 0002: Tech stack — C#/.NET, fork of VDF, Avalonia UI
 
-- **Status:** accepted
+- **Status:** accepted (stack decision stands); **throughput thesis partially superseded — see
+  Amendment below**
 - **Date:** 2026-07-14
 - **Supersedes:** the open stack question in [0001](0001-tech-stack.md)
+
+> **Amendment (2026-07-17) — "audio-first" is superseded as a *matching* priority.** This ADR was
+> written before the matching spike. Its **stack decisions remain fully in force** (C#/.NET, fork
+> of VDF, Avalonia, ONNX, SQLite, desktop-over-SMB). But its **"audio-first pass"** idea below
+> reflected an early throughput assumption that audio would catch *most* bumpers cheaply. Validation
+> disproved that for our targets: the bumpers this project removes are largely **silent** idents,
+> which audio fingerprinting **cannot see**. The runtime matcher priority is now **visual DINOv2
+> presence matching primary, audio a secondary accelerator for *audible* bumpers only** — see
+> [`../design/matcher-spec.md`](../design/matcher-spec.md) (authoritative) and
+> [`0006-edge-focused-fingerprinting.md`](0006-edge-focused-fingerprinting.md) (edge-focused
+> sampling). Treat "audio-first" below as *historical throughput reasoning*, not a build directive:
+> an audio prefilter would prune away exactly the silent bumpers we care about.
 
 ## Context
 
@@ -49,7 +62,9 @@ Decision drivers established during exploration:
 - **Network I/O over SMB is the likely real bottleneck**, not CPU/GPU. Design to move as
   few bytes as possible.
 - **Audio-first pass:** fingerprint the (tiny, resolution/letterbox-immune) audio stream to
-  catch most shared bumpers cheaply before touching video.
+  catch most shared bumpers cheaply before touching video. *(Superseded as a matching priority —
+  see the Amendment at the top. Audio is now a secondary accelerator; visual is primary because
+  our target bumpers are often silent. Retained here as the original throughput reasoning.)*
 - **Sparse frame sampling:** sample frames at a handful of positions with keyframe/input
   seeking (`-ss`) rather than fully decoding every file.
 - **Parallel ffmpeg orchestration:** run many ffmpeg jobs concurrently; use `-progress`
@@ -87,4 +102,6 @@ Negative / watch-outs:
 - Confirm the desktop's ffmpeg build has **NVDEC/NVENC** enabled.
 - Measure **SMB throughput** (1GbE vs 10GbE) — it sizes every full-scan estimate.
 - Prototype the **audio-first + sparse-sampling** pass on the Phase 0 test corpus to confirm
-  the throughput model.
+  the throughput model. *(Done — and the audio-first half was superseded; see the Amendment.
+  Sparse sampling evolved into edge-focused variable-density sampling,
+  [`0006-edge-focused-fingerprinting.md`](0006-edge-focused-fingerprinting.md).)*

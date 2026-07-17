@@ -66,9 +66,14 @@ The phases below are annotated accordingly.
   and [`decisions/0003-repository-structure.md`](decisions/0003-repository-structure.md).
 - **Library size — known:** >~5TB, many thousands of files → an index is mandatory (VDF's
   scan DB provides it) and I/O over SMB is the expected bottleneck.
-- **Matching strategy — chosen:** start from VDF's audio-fingerprint partial-clip detection
-  (cheapest, letterbox/resolution-immune), then its DINOv2 visual partial matching for
-  audio-less cases. See [`research/matching-approaches.md`](research/matching-approaches.md).
+- **Matching strategy — chosen (validated; see [`design/matcher-spec.md`](design/matcher-spec.md)):**
+  the **primary** matcher is VDF's DINOv2 visual partial matching driven by our **presence matcher**
+  — it's the only path that detects the *silent* short idents this project targets. Audio-fingerprint
+  matching is a **secondary accelerator** for *audible* bumpers (cheap, letterbox/resolution-immune,
+  but dead when the bumper is silent). Originally sequenced audio-first because it was cheapest to
+  validate first — that is a *research* order, not the runtime priority. See
+  [`research/matching-approaches.md`](research/matching-approaches.md) and
+  [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md).
 
 **Still open:**
 
@@ -200,8 +205,10 @@ Work:
   fingerprints, boundaries, exemplar, and curation metadata.
 - Implement **enroll**: promote an identified snippet (manual or auto-discovered) into the
   catalog, running the sub-bumper extent check so stored boundaries are the full bumper.
-- Run **video → catalog**: match a video/folder against all active catalog entries
-  (audio-first, then visual), producing candidates tagged with the matched entry + confidence.
+- Run **video → catalog**: match a video/folder against all active catalog entries — **visual
+  presence matcher primary, audio accelerator where the bumper is audible** (see
+  [`design/matcher-spec.md`](design/matcher-spec.md)) — producing candidates tagged with the
+  matched entry + confidence.
 - Rank/group results by match confidence; flag ambiguous or partial (sub-bumper) matches
   for extra scrutiny.
 - **Auto-discovery (stretch):** mine the fingerprint index for segments that recur across

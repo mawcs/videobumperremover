@@ -32,6 +32,9 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
   begin/end/middle; two-tier matching (fast edge path vs. heavier interstitial path);
   `(timestamp, value)` fingerprint data model.
 - **Roadmap** ([`ROADMAP.md`](ROADMAP.md)) — phases; inherited-vs-net-new; two-tier note.
+- **Matcher spec** ([`design/matcher-spec.md`](design/matcher-spec.md)) — the authoritative
+  "definition of done" for matching (visual-primary, audio-accelerator, edge-focused, port the
+  probe, standalone CLI). Overrides other docs on *how matching works*.
 - **Design/research notes:** [`removal-pipeline.md`](design/removal-pipeline.md) (stream-copy vs
   re-encode, per-video enhancements, output options), [`prior-art.md`](research/prior-art.md),
   [`matching-approaches.md`](research/matching-approaches.md), [`ux-issues.md`](design/ux-issues.md)
@@ -106,15 +109,25 @@ was flagged right after the initial scaffold and fixed before anything else was 
   - [ ] Measure "Use native Ffmpeg binding" as a separate, possibly bigger decode-side lever.
   - [ ] Implement GPU decode (NVDEC) + ONNX CUDA execution provider. Code touch-points in
     `research/vdf-evaluation.md`.
-- [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005:
-  - [x] Audio-fingerprint video→catalog matcher — `VBR.Core.Matching.AudioBumperMatcher` +
-    `vbr match` CLI command. No caching yet (re-fingerprints every run).
+- [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005 and
+  **[`design/matcher-spec.md`](design/matcher-spec.md)** — the authoritative "definition of done."
+  Read the spec first: the PRIMARY matcher is the visual DINOv2 presence path, audio is a secondary
+  accelerator, and the whole thing is recreated as a standalone, expandable `vbr` CLI. (The first
+  productionization pass went audio-only/no-AI/no-edge-sampling by reading the research order as a
+  build order — the spec exists to prevent that.)
+  - [ ] **Recreate the validated pipeline as a standalone `vbr` CLI (PRIMARY next build).** Port
+    `VisualTailProbe`'s DINOv2 presence matcher into `VBR.Core.Matching.VisualBumperMatcher`; put
+    both matchers behind one `IBumperMatcher` interface; drive sampling through the edge-focused
+    module (ADR 0006); make `vbr match` run visual by default (`--signal visual|audio|both`).
+    **Re-validate against `VisualTailProbe`'s numbers before calling it done** (see the spec's
+    "Definition of done").
+  - [x] Audio-fingerprint video→catalog **accelerator** — `VBR.Core.Matching.AudioBumperMatcher` +
+    `vbr match` CLI command. No caching yet (re-fingerprints every run). *(This is the accelerator,
+    not the primary matcher — see the spec.)*
   - [x] **Clip-input contract.** `AudioBumperMatcher`/`vbr match` take a source video + time
     range and extract the clip internally — see "Clip-input contract fixed" above. Still applies
     as a standing rule to every *future* entry point (catalog enroll, UI marking, etc.).
   - [ ] Edge-focused scan + a **cached** fingerprint/embedding index (scan once, compare cheaply).
-  - [ ] Visual/DINOv2 matcher's equivalent productionization (currently still
-    `VisualBumperMatchProbe`/`VisualTailProbe`).
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.
