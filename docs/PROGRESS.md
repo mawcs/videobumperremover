@@ -115,17 +115,31 @@ was flagged right after the initial scaffold and fixed before anything else was 
   accelerator, and the whole thing is recreated as a standalone, expandable `vbr` CLI. (The first
   productionization pass went audio-only/no-AI/no-edge-sampling by reading the research order as a
   build order — the spec exists to prevent that.)
-  - [x] **Recreate the validated pipeline as a standalone `vbr` CLI — built (2026-07-17), not
-    yet re-validated against the probe.** Ported `VisualTailProbe`'s DINOv2 presence pipeline into
+  - [x] **Recreate the validated pipeline as a standalone `vbr` CLI — built AND validated
+    against the probe (2026-07-17).** Ported `VisualTailProbe`'s DINOv2 presence pipeline into
     `VBR.Core.Matching.VisualBumperMatcher`; both matchers implement `IBumperMatcher`
     (`VBR.Core.Matching.IBumperMatcher`); shared extraction in `VBR.Core.Extraction.ClipExtractor`
     (folds in what used to be `AudioBumperMatcher`'s private copy + `VisualTailProbe.ExtractTail`);
-    `vbr match` runs visual by default, `--detection-mode visual|audio|both`. Full solution builds
-    clean; `--help`/error-path smoke-tested; `VBR.Tests` still skips cleanly with no env vars.
-    **`VisualTailProbe` stays in place untouched — not deleting/graduating it until the CLI's
-    output is confirmed against it on real media** (Daredevil end-stack + Avatar unrelated-content
-    set — see the spec's "Definition of done" acceptance numbers). That validation run is the
-    next step, blocked on the maintainer supplying the clip/episode paths and AI model folder.
+    `vbr match` runs visual by default, `--detection-mode visual|audio|both`.
+    - **Parity confirmed, exact match to VisualTailProbe:** `vbr match --detection-mode visual`
+      on the Daredevil end-stack (`--clip-from` S01E01, `--region end --clip-length 10s
+      --sample-interval 0.2s`) — **12/12 @ 98–99%**, identical per-episode bestCos/present/rigid
+      to the probe's own output. Avatar (unrelated, 21 files incl. a stray `introclip.mkv`) —
+      **0/21 @ ≤33%**, matching the documented FP floor exactly (down to the stray clip's
+      recorded 21%). `--detection-mode visual` never invokes the audio matcher at all (separate
+      `IBumperMatcher` implementations), confirming visual doesn't depend on audio; `both` mode
+      showed audio also corroborating at 82–98% (this particular bumper is "mixed," not purely
+      silent, per the original probe notes — correct behavior, not a bug). Edge-only sampling is
+      structural: `VisualBumperMatcher.Match` always extracts via `ClipExtractor` before
+      embedding, so the full-length episode is never opened for dense decode.
+    - **Correction found during validation:** the documented "~4.8s" realized clip length comes
+      from requesting `--clip-length 10s` (not 5s as first assumed) — stream-copy keyframe
+      rounding is what shortens it. A 5s request landed entirely in trailing black padding after
+      the last ident faded and produced zero usable frames. Diagnosed by first reproducing
+      against a known-good static clip (`daredevil-end20.mkv`) to isolate extraction-window
+      choice from a pipeline bug.
+    - `VisualTailProbe` is still in place (not graduated/deleted yet — that's a separate step
+      to decide now that parity is confirmed).
     - **CLI surface finalized (2026-07-17) after a design review — see `matcher-spec.md` § 3.2
       for the authoritative flag list.** Key outcomes of that discussion, in case anyone wonders
       why the shape differs from the first draft:

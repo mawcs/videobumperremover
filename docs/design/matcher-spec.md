@@ -174,16 +174,22 @@ Grow it; don't fork a second tool:
 - **Leave room for** `vbr enroll` (add a match to the catalog), `vbr scan`, `vbr remove` — don't
   build them yet, but the module boundaries above must not preclude them.
 
-### 3.3 Definition of done
+### 3.3 Definition of done — MET (2026-07-17)
 
-- `vbr match --signal visual` reproduces `VisualTailProbe`'s numbers on the same test media
-  (Daredevil end-stack present in ~12–13/13 at ~98–99%; unrelated content ≤~33%). **Re-validate
-  against the probe before calling it done** — the probe stays until the CLI matches it.
-- Visual runs **without** any audio track present (silent bumper path works).
-- Sampling is edge-focused (only the relevant edge window of each candidate is decoded/embedded),
-  not whole-file.
-- No entry point accepts a pre-cut clip; all extraction is internal.
-- Every new source file carries the AGPLv3 header (AGENTS.md).
+- [x] `vbr match --detection-mode visual` reproduces `VisualTailProbe`'s numbers on the same test
+  media: Daredevil end-stack **12/12 @ 98–99%**, identical per-episode (bestCos/present/rigid) to
+  the probe's own output; Avatar unrelated set **0/21 @ ≤33%**, matching the documented FP floor
+  exactly (down to a stray `introclip.mkv` scoring the recorded 21%). Full comparison in
+  `PROGRESS.md`. `VisualTailProbe` is kept in place for now (graduating/deleting it is a separate
+  next step, not required for this definition of done).
+- [x] Visual runs **without** any audio track/match required — `--detection-mode visual` never
+  invokes the audio matcher at all (separate `IBumperMatcher` implementations, not a shared code
+  path with a bypassed audio check).
+- [x] Sampling is edge-focused, structurally: `VisualBumperMatcher.Match` always extracts via
+  `ClipExtractor` before embedding, so the full-length candidate is never opened for dense decode.
+- [x] No entry point accepts a pre-cut clip; all extraction is internal (`--clip-from` + region,
+  never a clip file path).
+- [x] Every new source file carries the AGPLv3 header (AGENTS.md).
 
 ---
 

@@ -66,14 +66,16 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   multi-phase scans and a whole-job time estimate visible. Code touch-points for GPU work in
   `docs/research/vdf-evaluation.md`.
 - **Productionize matching — per [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md).**
-  **Built (2026-07-17), not yet re-validated:** `VBR.Core.Matching.VisualBumperMatcher` (ported
-  from `VisualTailProbe`'s DINOv2 presence pipeline) and `AudioBumperMatcher` both implement
+  **Built AND validated (2026-07-17):** `VBR.Core.Matching.VisualBumperMatcher` (ported from
+  `VisualTailProbe`'s DINOv2 presence pipeline) and `AudioBumperMatcher` both implement
   `IBumperMatcher`; shared extraction in `VBR.Core.Extraction.ClipExtractor`; `vbr match` runs
-  visual by default with `--detection-mode visual|audio|both`. Full solution builds clean.
-  **Next: prove parity against `VisualTailProbe` on real media** (Daredevil end-stack + Avatar
-  unrelated set — see the spec's acceptance numbers) — blocked on the maintainer supplying those
-  paths + the AI model/DB folder. `VisualTailProbe` stays in place untouched until that's
-  confirmed. Then: a cached fingerprint/embedding index; the **catalog** (enroll once, apply
+  visual by default with `--detection-mode visual|audio|both`. **Parity confirmed exact** against
+  `VisualTailProbe` on real media: Daredevil end-stack 12/12 @ 98–99% (identical per-episode
+  numbers to the probe), Avatar unrelated set 0/21 @ ≤33%. See `docs/PROGRESS.md` for the full
+  comparison and a correction found along the way (the documented "~4.8s" clip comes from
+  requesting 10s, not 5s — keyframe rounding). `VisualTailProbe` is still in place; whether/when
+  to graduate it into `VBR.Tests` (like `BumperMatchProbe` before it) is the next small decision.
+  Then: a cached fingerprint/embedding index; the **catalog** (enroll once, apply
   forever); the **removal engine** (cut + manifest + verify); the **UI**.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
