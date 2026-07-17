@@ -59,6 +59,11 @@ Each entry represents one bumper. Fields are grouped by purpose; exact storage T
 
 ## Storage
 
+- **Fingerprint sampling & data model:** the per-file fingerprint index uses **edge-focused,
+  variable-density sampling** (dense at the edges, sparse in the middle) with non-uniform
+  `(timestamp, value)` fingerprints and region tags — see
+  [`../decisions/0006-edge-focused-fingerprinting.md`](../decisions/0006-edge-focused-fingerprinting.md).
+  Catalog bumper entries carry the same fingerprint form plus their begin/end/middle region tag.
 - The catalog is a **separate persistent store** from VDF's per-file scan DB — keyed by
   bumper, not by file. Likely a dedicated SQLite DB (`catalog.db`) or a clearly separated set
   of tables. (Open question: combined vs. separate DB.)

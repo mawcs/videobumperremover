@@ -27,6 +27,10 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
   bumpers are first-class, reusable; enroll/apply; personal export/import; share fingerprints only.
 - **ADR 0005 — code organization:** the `VBR.*` tree vs. VDF (see
   [`design/code-organization.md`](design/code-organization.md) for the option analysis).
+- **ADR 0006 — edge-focused, variable-density fingerprinting + region tagging:** dense sampling
+  (~0.5–1s) in the first/last N seconds, sparse (~5–15s) in the middle; bumpers tagged
+  begin/end/middle; two-tier matching (fast edge path vs. heavier interstitial path);
+  `(timestamp, value)` fingerprint data model.
 - **Roadmap** ([`ROADMAP.md`](ROADMAP.md)) — phases; inherited-vs-net-new; two-tier note.
 - **Design/research notes:** [`removal-pipeline.md`](design/removal-pipeline.md) (stream-copy vs
   re-encode, per-video enhancements, output options), [`prior-art.md`](research/prior-art.md),

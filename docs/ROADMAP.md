@@ -191,7 +191,9 @@ querying, confidence scoring, and auto-discovery are net-new.)*
 
 Work:
 
-- Reuse/extend VDF's fingerprint index so scans don't reprocess unchanged files.
+- Reuse/extend VDF's fingerprint index so scans don't reprocess unchanged files. Our index uses
+  **edge-focused, variable-density sampling** (dense edges, sparse middle) + region tags — see
+  [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md).
 - Run **snippet → library**: "find all videos containing snippet X" efficiently.
 - Stand up the **bumper catalog** store (per
   [`design/bumper-catalog.md`](design/bumper-catalog.md)): persist bumper entries with
