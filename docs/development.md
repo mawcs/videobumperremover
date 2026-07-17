@@ -26,7 +26,7 @@ need full Visual Studio — VS Code + the .NET SDK is enough.
 ## Build & run (from the repo root)
 
 ```sh
-dotnet build VideoDuplicateFinder.sln     # build everything
+dotnet build VideoBumperRemover.sln       # build everything
 dotnet run --project VDF.GUI              # run the Avalonia desktop app
 dotnet run --project VDF.CLI -- --help    # run the CLI
 dotnet run --project VDF.Web              # run the web UI
@@ -60,7 +60,7 @@ found"** (a machine with no NuGet config at all), add the default feed once:
 
 ```sh
 dotnet nuget add source https://api.nuget.org/v3/index.json -n nuget.org
-dotnet restore VideoDuplicateFinder.sln
+dotnet restore VideoBumperRemover.sln
 ```
 
 If nuget.org is listed but `[Disabled]`, run `dotnet nuget enable source nuget.org`. The first

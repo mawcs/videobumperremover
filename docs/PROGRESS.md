@@ -14,7 +14,7 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 - `.gitignore` extended for media/artifacts; `LICENSE` = AGPLv3.
 - Forked **Video Duplicate Finder**; migrated our planning docs into the fork; preserved VDF's
   original README as `README.vdf.md`.
-- Verified the fork builds/runs (`dotnet build VideoDuplicateFinder.sln`).
+- Verified the fork builds/runs (`dotnet build VideoBumperRemover.sln`).
 - Dev setup captured ([`development.md`](development.md)) — .NET 10 SDK + VS Code base **C#**
   extension (skip C# Dev Kit / no MS account); NuGet-source + AOT caveats.
 
@@ -52,7 +52,8 @@ findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 
 ### VBR.\* tree scaffolded (2026-07-16, ADR 0005)
 
-- `VBR.Core`, `VBR.CLI`, `VBR.Tests` created and wired into `VideoDuplicateFinder.sln`;
+- `VBR.Core`, `VBR.CLI`, `VBR.Tests` created and wired into the solution (since renamed
+  `VideoDuplicateFinder.sln` → `VideoBumperRemover.sln`, see below);
   `InternalsVisibleTo("VBR.Core")` glue added to `VDF.Core.csproj`.
 - First real module: `VBR.Core/Matching/AudioBumperMatcher.cs` — productionized audio-fingerprint
   "video → catalog" matching (full-file + optional head/tail positional search windows).

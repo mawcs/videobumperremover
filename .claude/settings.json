@@ -9,7 +9,11 @@
       "Bash(dotnet build *)",
       "Bash(dotnet run *)",
       "Bash(echo \"exit=$?\")",
-      "Bash(dotnet test *)"
+      "Bash(dotnet test *)",
+      "Bash(npx --yes markdownlint-cli2 \"docs/running_and_building.md\")",
+      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\")",
+      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/**/*.md\" \"README.md\")",
+      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\" \"AGENTS.md\" \"docs/development.md\" \"docs/PROGRESS.md\")"
     ]
   }
 }

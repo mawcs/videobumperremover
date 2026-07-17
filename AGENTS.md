@@ -83,8 +83,10 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - [`docs/glossary.md`](docs/glossary.md) — fingerprinting / embeddings / cosine, plain-language.
 - [`docs/decisions/`](docs/decisions/) — ADRs: 0001 stack (superseded by 0002), 0002 stack
   (accepted), 0003 repo structure (fork VDF), 0004 bumper catalog, 0005 code organization.
-- [`docs/development.md`](docs/development.md) — build/run + VS Code setup (use base C# extension,
-  skip C# Dev Kit).
+- [`docs/development.md`](docs/development.md) — environment setup (SDK, VS Code; use base C#
+  extension, skip C# Dev Kit) + troubleshooting.
+- [`docs/running_and_building.md`](docs/running_and_building.md) — command reference: build,
+  run each project (VDF GUI/CLI/Web, `vbr match`), test.
 
 ## Core principles
 
@@ -94,7 +96,7 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   throughput architecture (audio-first + sparse sampling) are in
   [`docs/decisions/0002-tech-stack.md`](docs/decisions/0002-tech-stack.md).
 - **Build/run:** .NET 10 SDK + VS Code (full Visual Studio not required); build with
-  `dotnet build VideoDuplicateFinder.sln`. Setup and the Native-AOT-publish caveat are in
+  `dotnet build VideoBumperRemover.sln`. Setup and the Native-AOT-publish caveat are in
   [`docs/development.md`](docs/development.md).
 - **Python is disfavored.** The maintainer will almost never choose Python. Propose
   alternatives and only use Python if explicitly approved for a specific task.
