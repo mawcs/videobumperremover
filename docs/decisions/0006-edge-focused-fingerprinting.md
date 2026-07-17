@@ -22,12 +22,12 @@
 
 ## Decision
 
-1. **Variable-density per-file fingerprinting.** Sample **densely** (e.g. ~0.5–1s) within the
+1. **Variable-density per-file fingerprinting.** Sample **densely** (e.g. ~0.2–0.5s) within the
    first/last **N seconds** (the *edge windows*) and **sparsely** (VDF's ~5–15s) across the
    **middle**. One file → one *non-uniform* fingerprint timeline. Applies to **both** signals:
    audio fingerprint blocks and visual keyframe embeddings.
-2. **Region tagging.** Each catalog bumper is tagged with the region(s) it occurs in —
-   **begin / end / middle** (multi-region allowed; e.g. a theme reused at intro *and* credits).
+2. **Region tagging.** Each cataloged bumper is tagged with the region(s) it occurs in —
+   **begin / end / middle** (multi-region allowed; e.g. Netflix Logo at beginning and end).
    Matching a video against a bumper compares only against that **region's** fingerprints —
    cheaper *and* lower false-positive floor (fewer candidate offsets).
 3. **Two-tier matching.** A fast **edge path** (dense edges — the common case, runs on every
@@ -59,7 +59,7 @@ gap, zero false positives).
 - **Edge-window size N** — small enough to stay cheap, large enough to cover the junk. Note
   title-sequences after a cold-open sit deeper in, but those are *not* targets; the junk idents
   we target sit at the true edge, so a modest N (e.g. tens of seconds) likely suffices. Tune.
-- **Dense interval** (~0.5–1s) and **sparse/middle interval** (VDF ~5–15s), possibly different
+- **Dense interval** (~0.2–0.5s) and **sparse/middle interval** (VDF ~5–15s), possibly different
   for audio vs. visual.
 - Whether the middle is sampled at all in the fast path, or only in the interstitial pass.
 - How region tags interact with removal (edge bumpers cut to BOF/EOF; middle = split/concat).
