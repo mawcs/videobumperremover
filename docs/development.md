@@ -27,11 +27,10 @@ need full Visual Studio — VS Code + the .NET SDK is enough.
 
 ```sh
 dotnet build VideoBumperRemover.sln       # build everything
-dotnet run --project VDF.GUI              # run the Avalonia desktop app
-dotnet run --project VDF.CLI -- --help    # run the CLI
-dotnet run --project VDF.Web              # run the web UI
-dotnet test                               # run the test suite
 ```
+
+For running each project (VBR CLI, VDF GUI/CLI/Web) and running tests, see
+[`running_and_building.md`](running_and_building.md).
 
 ## Editor / IDE notes
 

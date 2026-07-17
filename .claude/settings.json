@@ -13,7 +13,8 @@
       "Bash(npx --yes markdownlint-cli2 \"docs/running_and_building.md\")",
       "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\")",
       "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/**/*.md\" \"README.md\")",
-      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\" \"AGENTS.md\" \"docs/development.md\" \"docs/PROGRESS.md\")"
+      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\" \"AGENTS.md\" \"docs/development.md\" \"docs/PROGRESS.md\")",
+      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/development.md\")"
     ]
   }
 }
