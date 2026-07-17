@@ -59,7 +59,16 @@ gap, zero false positives).
 - **Edge-window size N** — small enough to stay cheap, large enough to cover the junk. Note
   title-sequences after a cold-open sit deeper in, but those are *not* targets; the junk idents
   we target sit at the true edge, so a modest N (e.g. tens of seconds) likely suffices. Tune.
-- **Dense interval** (~0.2–0.5s) and **sparse/middle interval** (VDF ~5–15s), possibly different
-  for audio vs. visual.
+- **Dense interval — partially resolved (2026-07-17):** validated that a 4s clip **failed to
+  match at a 0.5s sample interval and succeeded at 0.2s**. Short clips (the common case this
+  project targets) need sampling as dense as ~0.2s (5 samples/sec); this is a hard requirement
+  on the matcher's capability (no artificial floor on how small the interval can go), not just a
+  tuning nice-to-have. Still open: the exact interval-vs-clip-length relationship (is 0.2s always
+  necessary, or only below some clip-length threshold?) and whether audio needs the same density
+  (audio fingerprint blocks are ~1s and haven't shown the same failure mode). See
+  [`matcher-spec.md`](../design/matcher-spec.md) `--sample-interval` (default 1.0s, override down
+  as needed) and [`vdf-evaluation.md`](../research/vdf-evaluation.md) for the source finding.
+- **Sparse/middle interval** (VDF ~5–15s) — unchanged, still TBD; not exercised by the current
+  edge-only build (see matcher-spec.md — the middle/interstitial path is future work).
 - Whether the middle is sampled at all in the fast path, or only in the interstitial pass.
 - How region tags interact with removal (edge bumpers cut to BOF/EOF; middle = split/concat).

@@ -115,12 +115,32 @@ was flagged right after the initial scaffold and fixed before anything else was 
   accelerator, and the whole thing is recreated as a standalone, expandable `vbr` CLI. (The first
   productionization pass went audio-only/no-AI/no-edge-sampling by reading the research order as a
   build order — the spec exists to prevent that.)
-  - [ ] **Recreate the validated pipeline as a standalone `vbr` CLI (PRIMARY next build).** Port
-    `VisualTailProbe`'s DINOv2 presence matcher into `VBR.Core.Matching.VisualBumperMatcher`; put
-    both matchers behind one `IBumperMatcher` interface; drive sampling through the edge-focused
-    module (ADR 0006); make `vbr match` run visual by default (`--signal visual|audio|both`).
-    **Re-validate against `VisualTailProbe`'s numbers before calling it done** (see the spec's
-    "Definition of done").
+  - [x] **Recreate the validated pipeline as a standalone `vbr` CLI — built (2026-07-17), not
+    yet re-validated against the probe.** Ported `VisualTailProbe`'s DINOv2 presence pipeline into
+    `VBR.Core.Matching.VisualBumperMatcher`; both matchers implement `IBumperMatcher`
+    (`VBR.Core.Matching.IBumperMatcher`); shared extraction in `VBR.Core.Extraction.ClipExtractor`
+    (folds in what used to be `AudioBumperMatcher`'s private copy + `VisualTailProbe.ExtractTail`);
+    `vbr match` runs visual by default, `--detection-mode visual|audio|both`. Full solution builds
+    clean; `--help`/error-path smoke-tested; `VBR.Tests` still skips cleanly with no env vars.
+    **`VisualTailProbe` stays in place untouched — not deleting/graduating it until the CLI's
+    output is confirmed against it on real media** (Daredevil end-stack + Avatar unrelated-content
+    set — see the spec's "Definition of done" acceptance numbers). That validation run is the
+    next step, blocked on the maintainer supplying the clip/episode paths and AI model folder.
+    - **CLI surface finalized (2026-07-17) after a design review — see `matcher-spec.md` § 3.2
+      for the authoritative flag list.** Key outcomes of that discussion, in case anyone wonders
+      why the shape differs from the first draft:
+      - One `--region begin|end` flag drives *both* clip extraction and candidate search (a
+        bumper lives at one edge; separate per-edge flag pairs invited nonsensical combinations
+        like `--clip-tail-seconds` + `--search-head-seconds`). Multi-region bumpers are two
+        invocations, not one command doing both.
+      - `--clip-length` (required) and `--search-length` (optional, **defaults to
+        `--clip-length` + 20s**, not a flat constant) are separate — the search window needs
+        slack beyond the clip's own length, and tying the default to clip length avoids an
+        under-sized-window foot-gun.
+      - `--sample-interval` (renamed from an earlier "density" idea — interval is the accurate
+        term) **must support ~0.2s with no artificial floor** — validated hard requirement, not
+        tuning (see the GPU/matching findings in `vdf-evaluation.md`, 2026-07-17 entry).
+      - `--source`/`--signal` renamed to `--clip-from`/`--detection-mode` (clearer, less jargon).
   - [x] Audio-fingerprint video→catalog **accelerator** — `VBR.Core.Matching.AudioBumperMatcher` +
     `vbr match` CLI command. No caching yet (re-fingerprints every run). *(This is the accelerator,
     not the primary matcher — see the spec.)*

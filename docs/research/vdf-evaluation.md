@@ -365,6 +365,17 @@ matcher limit. **Lesson: never trust a hand-cut clip; the tool extracts clips it
 still useful as a fallback for genuinely static/tiny cases, but for real motion bumpers the rigid
 matcher also succeeds once the input is valid.
 
+**Sample interval is a hard requirement for short clips, not tuning (validated, noted here
+2026-07-17 during CLI design — the underlying test predates this doc entry).** The 12/12 @
+98–99% result above used a **0.2s** clip interval (24 frames over ~4.8s = 4.8/0.2). Explicitly
+re-confirmed: the same short clip **failed to match at a 0.5s interval** and **succeeded at
+0.2s** — too few sampled frames at 0.5s to catch the distinctive content in a clip this short.
+Consequence for the matcher build: `--sample-interval` must support values down to ~0.2s (5
+samples/sec) with **no artificial floor** — this is a correctness requirement for short bumpers
+(the common case this project targets), not a nice-to-have knob. See
+[`../decisions/0006-edge-focused-fingerprinting.md`](../decisions/0006-edge-focused-fingerprinting.md)
+and [`../design/matcher-spec.md`](../design/matcher-spec.md).
+
 **False-positive floor — CLEAN (Avatar, 2026-07-16):** the same Daredevil clip vs. 21 Avatar
 episodes scored **bestCos 23–33%, present 0/24, rigid:no** across the board (even a stray intro clip
 rejected at 21%). So **TP 98–99% vs FP ≤33% — a ~65-point gap with zero false positives.** Any

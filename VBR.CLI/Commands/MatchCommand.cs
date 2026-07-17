@@ -17,9 +17,15 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
+using VBR.Core.Extraction;
 using VBR.Core.Matching;
+using VDF.Core.AI;
 
 namespace VBR.CLI.Commands;
+
+/// <summary>Which signal(s) <c>vbr match</c> runs. Lowercase members — see
+/// VBR.Core.Extraction.ClipEdge for why.</summary>
+internal enum DetectionMode { visual, audio, both }
 
 internal static class MatchCommand {
 
@@ -35,28 +41,93 @@ internal static class MatchCommand {
 		return fallback;
 	}
 
-	// Clip extraction is this tool's job, never the user's (see AGENTS.md "Clip extraction is
-	// the tool's job" / docs/design/bumper-catalog.md "Precision is the tool's job"): --source
-	// points at a real video, and exactly one of --clip-head-seconds / --clip-tail-seconds says
-	// which rough region to auto-extract as the reference clip. There is deliberately no
-	// "--clip <file>" option that accepts a pre-cut clip.
+	// Accepts a bare number (seconds) or a suffixed value ("5.1s", "200ms").
+	static TimeSpan ParseDuration(string text) {
+		text = text.Trim();
+		double unitSeconds = 1.0;
+		string numberPart = text;
+		if (text.EndsWith("ms", StringComparison.OrdinalIgnoreCase)) {
+			numberPart = text[..^2];
+			unitSeconds = 0.001;
+		}
+		else if (text.EndsWith("s", StringComparison.OrdinalIgnoreCase)) {
+			numberPart = text[..^1];
+		}
+		if (!double.TryParse(numberPart, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+			throw new FormatException(
+				$"'{text}' is not a valid duration (use a plain number of seconds, or a suffixed value like '5.1s' or '200ms').");
+		return TimeSpan.FromSeconds(value * unitSeconds);
+	}
 
-	static readonly Option<FileInfo> Source = new("--source") {
+	static TimeSpan ParseDurationArg(ArgumentResult result, TimeSpan fallback) {
+		if (result.Tokens.Count == 0) return fallback;
+		try { return ParseDuration(result.Tokens[0].Value); }
+		catch (FormatException ex) {
+			result.AddError(ex.Message);
+			return fallback;
+		}
+	}
+
+	static readonly Option<FileInfo> ClipFrom = new("--clip-from") {
 		Description = "Source video containing the bumper. The reference clip is extracted from " +
 			"it internally — this never takes a pre-cut clip file.",
 		Required = true,
 	};
 
-	static readonly Option<int> ClipHeadSeconds = new("--clip-head-seconds") {
-		Description = "Use the first N seconds of --source as the bumper clip. Exactly one of " +
-			"--clip-head-seconds / --clip-tail-seconds is required.",
-		DefaultValueFactory = _ => 0,
+	static readonly Option<ClipEdge> Region = new("--region") {
+		Description = "Which edge the bumper lives at (begin|end). Drives both reference-clip " +
+			"extraction from --clip-from and the search window in each --library file — a bumper " +
+			"lives at one edge, so one choice governs both.",
+		Required = true,
 	};
 
-	static readonly Option<int> ClipTailSeconds = new("--clip-tail-seconds") {
-		Description = "Use the last N seconds of --source as the bumper clip. Exactly one of " +
-			"--clip-head-seconds / --clip-tail-seconds is required.",
-		DefaultValueFactory = _ => 0,
+	static readonly Option<TimeSpan> ClipLength = new("--clip-length") {
+		Description = "How much of --clip-from to extract as the reference clip. A plain number " +
+			"of seconds, or suffixed like '8s' / '5.1s'.",
+		Required = true,
+		CustomParser = r => ParseDurationArg(r, TimeSpan.Zero),
+	};
+
+	// No DefaultValueFactory: the real default (--clip-length + 20s) depends on another option's
+	// value, so it can't be precomputed for the help-text annotation. TimeSpan.Zero here means
+	// "not provided" — resolved against --clip-length in the action. A user-requested zero-length
+	// search window would be meaningless anyway, so treating <= 0 as "unset" is unambiguous.
+	static readonly Option<TimeSpan> SearchLength = new("--search-length") {
+		Description = "How much of each candidate's edge to search. Default: --clip-length + 20s " +
+			"(the search window needs slack beyond the clip's own length).",
+		CustomParser = r => r.Tokens.Count == 0 ? TimeSpan.Zero : ParseDurationArg(r, TimeSpan.Zero),
+	};
+
+	static readonly Option<TimeSpan> SampleInterval = new("--sample-interval") {
+		Description = "Visual: seconds between sampled frames — smaller is denser. Default 1s; " +
+			"short clips (under ~8s) need it as low as ~0.2s to have enough frames to match on " +
+			"— no floor is enforced, go as dense as needed.",
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(VisualBumperMatcher.DefaultSampleIntervalSeconds),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VisualBumperMatcher.DefaultSampleIntervalSeconds)),
+	};
+
+	static readonly Option<float> PresenceThreshold = new("--presence-threshold") {
+		Description = "Visual: cosine similarity (0-1) at or above which a clip frame counts as present in a candidate.",
+		DefaultValueFactory = _ => VisualBumperMatcher.DefaultPresenceThreshold,
+		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultPresenceThreshold),
+	};
+
+	static readonly Option<float> RigidHitThreshold = new("--rigid-hit-threshold") {
+		Description = "Visual: cosine threshold for VDF's rigid corroborating matcher (report-only, never gates the decision).",
+		DefaultValueFactory = _ => VisualBumperMatcher.DefaultRigidHitThreshold,
+		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultRigidHitThreshold),
+	};
+
+	static readonly Option<float> MinSimilarity = new("--min-similarity") {
+		Description = "Audio: similarity (0-1) at or above which a file is flagged as a match.",
+		DefaultValueFactory = _ => AudioBumperMatcher.DefaultMinSimilarity,
+		CustomParser = r => ParseInvariantFloat(r, AudioBumperMatcher.DefaultMinSimilarity),
+	};
+
+	static readonly Option<DetectionMode> Mode = new("--detection-mode") {
+		Description = "Which signal(s) to run (visual|audio|both). 'both' runs visual as the " +
+			"decision-maker and reports audio alongside as corroboration.",
+		DefaultValueFactory = _ => DetectionMode.visual,
 	};
 
 	static readonly Option<DirectoryInfo> Library = new("--library") {
@@ -64,84 +135,105 @@ internal static class MatchCommand {
 		Required = true,
 	};
 
-	static readonly Option<float> MinSimilarity = new("--min-similarity") {
-		Description = "Similarity (0-1) at or above which a file is flagged as a match.",
-		DefaultValueFactory = _ => AudioBumperMatcher.DefaultMinSimilarity,
-		CustomParser = r => ParseInvariantFloat(r, AudioBumperMatcher.DefaultMinSimilarity),
-	};
-
-	// Distinct from the --clip-* options above: these narrow the search *inside each candidate
-	// library file*, rather than picking the reference clip out of --source.
-	static readonly Option<int> SearchHeadSeconds = new("--search-head-seconds") {
-		Description = "Also search only the first N seconds of each library file (rescues short audible bumpers).",
-		DefaultValueFactory = _ => 0,
-	};
-
-	static readonly Option<int> SearchTailSeconds = new("--search-tail-seconds") {
-		Description = "Also search only the last N seconds of each library file (rescues short audible bumpers).",
-		DefaultValueFactory = _ => 0,
-	};
-
 	internal static Command Build() {
 		var cmd = new Command("match",
-			"Find a bumper's audio fingerprint inside every video in a library folder. The bumper " +
-			"clip is extracted internally from --source — you never provide a pre-cut clip.");
-		cmd.Options.Add(Source);
-		cmd.Options.Add(ClipHeadSeconds);
-		cmd.Options.Add(ClipTailSeconds);
-		cmd.Options.Add(Library);
+			"Find a bumper's presence across a folder of videos. Visual DINOv2 presence matching " +
+			"runs by default; the reference clip is extracted internally from --clip-from — you " +
+			"never provide a pre-cut clip.");
+		cmd.Options.Add(ClipFrom);
+		cmd.Options.Add(Region);
+		cmd.Options.Add(ClipLength);
+		cmd.Options.Add(SearchLength);
+		cmd.Options.Add(SampleInterval);
+		cmd.Options.Add(PresenceThreshold);
+		cmd.Options.Add(RigidHitThreshold);
 		cmd.Options.Add(MinSimilarity);
-		cmd.Options.Add(SearchHeadSeconds);
-		cmd.Options.Add(SearchTailSeconds);
+		cmd.Options.Add(Mode);
+		cmd.Options.Add(Library);
 
-		cmd.SetAction((parseResult, ct) => {
-			var source = parseResult.GetValue(Source)!;
-			int clipHeadSeconds = parseResult.GetValue(ClipHeadSeconds);
-			int clipTailSeconds = parseResult.GetValue(ClipTailSeconds);
-			var library = parseResult.GetValue(Library)!;
+		cmd.SetAction(async (parseResult, ct) => {
+			var clipFrom = parseResult.GetValue(ClipFrom)!;
+			ClipEdge region = parseResult.GetValue(Region);
+			TimeSpan clipLength = parseResult.GetValue(ClipLength);
+			TimeSpan searchLength = parseResult.GetValue(SearchLength);
+			if (searchLength <= TimeSpan.Zero)
+				searchLength = clipLength + TimeSpan.FromSeconds(20);
+			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
+			float presenceThreshold = parseResult.GetValue(PresenceThreshold);
+			float rigidHitThreshold = parseResult.GetValue(RigidHitThreshold);
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
-			int searchHeadSeconds = parseResult.GetValue(SearchHeadSeconds);
-			int searchTailSeconds = parseResult.GetValue(SearchTailSeconds);
+			DetectionMode mode = parseResult.GetValue(Mode);
+			var library = parseResult.GetValue(Library)!;
 
-			if ((clipHeadSeconds > 0) == (clipTailSeconds > 0)) {
-				Console.Error.WriteLine("Error: specify exactly one of --clip-head-seconds or --clip-tail-seconds.");
-				return Task.FromResult(1);
-			}
-			ClipRegion region = clipHeadSeconds > 0
-				? ClipRegion.Head(TimeSpan.FromSeconds(clipHeadSeconds))
-				: ClipRegion.Tail(TimeSpan.FromSeconds(clipTailSeconds));
-
-			IReadOnlyList<BumperMatch> results;
+			VisualBumperMatcher? visual = null;
 			try {
-				results = AudioBumperMatcher.FindInLibrary(
-					source.FullName, region, library.FullName, searchHeadSeconds, searchTailSeconds, ct);
+				if (mode is DetectionMode.visual or DetectionMode.both) {
+					if (!AiComponents.IsReady) {
+						Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
+						await AiComponents.DownloadAsync(progress: null, ct);
+						Console.Error.WriteLine("AI components ready.");
+					}
+					visual = new VisualBumperMatcher(sampleInterval.TotalSeconds, presenceThreshold, rigidHitThreshold);
+				}
+				AudioBumperMatcher? audio = mode is DetectionMode.audio or DetectionMode.both
+					? new AudioBumperMatcher(minSimilarity)
+					: null;
+
+				ExtractedClip referenceClip;
+				try {
+					referenceClip = ClipExtractor.ExtractToTemp(clipFrom.FullName, ClipRegion.For(region, clipLength));
+				}
+				catch (Exception ex) when (ex is FileNotFoundException or ArgumentOutOfRangeException or InvalidOperationException) {
+					Console.Error.WriteLine($"Error: {ex.Message}");
+					return 1;
+				}
+
+				using (referenceClip) {
+					if (!library.Exists) {
+						Console.Error.WriteLine($"Error: Library folder not found: {library.FullName}");
+						return 1;
+					}
+
+					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
+					var candidates = Directory.EnumerateFiles(library.FullName)
+						.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+						.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipFrom.FullName), StringComparison.OrdinalIgnoreCase))
+						.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+						.ToList();
+
+					int matchCount = 0;
+					int comparedCount = 0;
+					foreach (string file in candidates) {
+						ct.ThrowIfCancellationRequested();
+						MatchResult? visualResult = null;
+						MatchResult? audioResult = null;
+						try {
+							if (visual != null) visualResult = visual.Match(referenceClip.Path, file, searchRegion, ct);
+							if (audio != null) audioResult = audio.Match(referenceClip.Path, file, searchRegion, ct);
+						}
+						catch (Exception ex) {
+							Console.WriteLine($"     {Path.GetFileName(file),-48}  (error: {ex.Message})");
+							continue;
+						}
+						comparedCount++;
+						bool present = visualResult?.Present ?? audioResult?.Present ?? false;
+						if (present) matchCount++;
+						var parts = new List<string>();
+						if (visualResult is { } v) parts.Add(v.Detail);
+						if (audioResult is { } a) parts.Add($"[{a.Detail}]");
+						string flag = present ? "MATCH" : "     ";
+						Console.WriteLine($"{flag}  {Path.GetFileName(file),-48}  {string.Join("  ", parts)}");
+					}
+
+					Console.WriteLine();
+					Console.WriteLine($"{matchCount}/{comparedCount} file(s) matched" +
+						(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors)." : "."));
+				}
+				return 0;
 			}
-			catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException
-					or InvalidOperationException or ArgumentOutOfRangeException) {
-				Console.Error.WriteLine($"Error: {ex.Message}");
-				return Task.FromResult(1);
+			finally {
+				visual?.Dispose();
 			}
-
-			static string Cell(string label, WindowResult? r) =>
-				r is { } w ? $"  {label}={w.Similarity,6:P0}@{w.OffsetSeconds,5}s" : "";
-
-			bool IsMatch(BumperMatch m) =>
-				(m.Full?.Similarity ?? 0) >= minSimilarity ||
-				(m.Head?.Similarity ?? 0) >= minSimilarity ||
-				(m.Tail?.Similarity ?? 0) >= minSimilarity;
-
-			int matchCount = 0;
-			foreach (var m in results.OrderByDescending(m => m.Full?.Similarity ?? 0)) {
-				bool isMatch = IsMatch(m);
-				if (isMatch) matchCount++;
-				string flag = isMatch ? "MATCH" : "     ";
-				Console.WriteLine($"{flag}  {Path.GetFileName(m.FilePath),-48}{Cell("full", m.Full)}{Cell("head", m.Head)}{Cell("tail", m.Tail)}");
-			}
-
-			Console.WriteLine();
-			Console.WriteLine($"{matchCount}/{results.Count} file(s) matched at >= {minSimilarity:P0} " +
-				$"({results.Count} of the folder's video files had a usable audio track).");
-			return Task.FromResult(0);
 		});
 
 		return cmd;

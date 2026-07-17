@@ -132,16 +132,44 @@ a catalog slot in without rework:
 Grow it; don't fork a second tool:
 
 - `vbr match` — the end-to-end matcher. **Runs the visual matcher by default**, with audio as an
-  opt-in/auto accelerator. Suggested options (extend the existing command, keep the clip-extraction
-  contract):
-  - `--source <video>` + exactly one of `--clip-head-seconds` / `--clip-tail-seconds` (the rough
-    region to extract as the reference clip — already implemented, keep it).
+  opt-in/auto accelerator. Finalized options (superseding the "suggested options" of the first
+  draft of this spec, after a design review — see `PROGRESS.md` for the discussion this came
+  from; extend the existing command, keep the clip-extraction contract):
+  - `--clip-from <video>` (was `--source` — clearer on a command line) + exactly one of
+    `--clip-head-seconds` / `--clip-tail-seconds` (the rough region to extract as the reference
+    clip — already implemented, keep it).
   - `--library <folder>` — files to search.
-  - `--signal visual|audio|both` (default `visual`; `both` runs visual and uses audio to corroborate).
-  - `--region begin|end` — which edge to sample in each candidate (drives the edge window).
-  - `--edge-seconds N`, `--sample-interval S`, `--presence-threshold P` — the ADR 0006 tuning knobs,
-    surfaced so validation runs stay reproducible (record chosen values, per cross-cutting reqs).
-  - existing `--search-head-seconds` / `--search-tail-seconds` remain the audio positional windows.
+  - `--detection-mode visual|audio|both` (was `--signal` — "signal" is audio-engineering jargon;
+    default `visual`; `both` runs visual as the decision-maker and reports audio alongside as
+    corroboration).
+  - **One `--region begin|end` flag, not separate per-edge flags.** A bumper lives at one edge;
+    the same edge is used both to extract the reference clip *and* to search each candidate — so
+    one flag drives both, instead of letting `--clip-head-seconds`/`--search-tail-seconds` be
+    mixed into a nonsensical combination. Multi-region bumpers (e.g. a logo at both begin and
+    end) are handled as two separate invocations/catalog entries, not one command trying to do
+    both at once. `--region middle` is a future addition (interstitials), not built now.
+  - `--clip-length <duration>` (required) — how much of `--clip-from` to extract as the
+    reference clip. No sensible default exists across all bumpers; the user always states it.
+  - `--search-length <duration>` (optional) — how much of *each candidate's* edge to search.
+    **Defaults to `--clip-length` + 20s when omitted**, not a flat constant: the search window
+    must have slack beyond the clip's own length (junk position drifts a little across episodes;
+    audio's sliding-window match cannot even run if the window is shorter than the clip), and
+    tying the default to clip length avoids the foot-gun of an under-sized window (e.g.
+    `--clip-length 30s` with a stale flat `--search-length 5s` default). Override only if you
+    need a wider or narrower search than that.
+  - `--sample-interval <duration>` (was the ADR 0006 "density" idea, renamed — "interval" is
+    the accurate term: it's seconds between sampled frames, smaller = denser). Default 1.0s.
+    **Hard requirement, not a nice-to-have: must support intervals down to ~0.2s (5
+    samples/sec) with no artificial floor.** Validated: a 4s clip failed to match at a 0.5s
+    interval and succeeded at 0.2s. Short clips (the common case here) need this; document the
+    guidance to lower it for clips under ~8s prominently in `--help`.
+  - `--presence-threshold <float>` (default 0.90) and `--rigid-hit-threshold <float>` (default
+    0.89, corroboration only) — the remaining ADR 0006/probe tuning knobs, matching
+    `VisualTailProbe`'s own defaults so an unmodified invocation reproduces the probe.
+  - `--min-similarity <float>` — audio's own match threshold (unchanged); visual's match
+    determination *is* presence, no separate threshold needed.
+  - Duration values (`--clip-length`, `--search-length`, `--sample-interval`) accept a bare
+    number as seconds or a suffixed value (`5.1s`, `200ms`).
 - Print, per file: `MATCH/—  name  present=h/n  bestCos@t  [rigid …]  [audio …]`, then a summary.
 - **Leave room for** `vbr enroll` (add a match to the catalog), `vbr scan`, `vbr remove` — don't
   build them yet, but the module boundaries above must not preclude them.
