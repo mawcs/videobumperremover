@@ -2,8 +2,10 @@
 
 # Iterative plan — fixing the visual matcher's black-frame false positives
 
-**Status:** analysis + plan (2026-07-18). No code changed yet. This doc captures the diagnosis of
-the bad-match results reported during begin-region (Netflix ident) testing and the plan to fix them.
+**Status (updated 2026-07-18):** diagnosis done; **§B (CLI features) and §D (doc updates) are
+implemented**; **§A (correctness fixes) and §C (re-validation) are pending a maintainer decision
+and remain unimplemented.** This doc captures the diagnosis of the bad-match results reported
+during begin-region (Netflix ident) testing and the plan to fix them.
 
 **Related:** [`design/matcher-spec.md`](design/matcher-spec.md) (the "definition of done" this
 restores), [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md)
@@ -115,7 +117,7 @@ re-recorded after the fix.
    between `bestCos` and the window's median cosine. Do **not** touch the 0.90 presence threshold
    yet — reproduce clean numbers first, then tune (per the spec's own anti-pattern).
 
-### B. CLI features requested
+### B. CLI features requested — IMPLEMENTED (2026-07-18)
 
 4. **Recursive library traversal by default.**
    [`MatchCommand.cs:198`](../VBR.CLI/Commands/MatchCommand.cs#L198) currently enumerates a single
@@ -143,7 +145,7 @@ re-recorded after the fix.
 | Same clip vs Avatar S01 (begin) | **0** false positives |
 | Original end-stack regression (Daredevil 12/12 @ 98–99%, Avatar 0/21 ≤33%) | still clean — numbers may legitimately shift with full decode; **re-record them** |
 
-### D. Documentation debt this uncovered
+### D. Documentation debt this uncovered — DONE (2026-07-18)
 
 - **`matcher-spec.md`:** "skip empty/black frames" must be specified as a real luma filter, and the
   keyframe-only-decode discovery recorded (it also colors ADR 0006's "dense sampling" framing —
@@ -160,3 +162,9 @@ then docs (**D**).
 
 **Flagged risk:** full-frame decode changes the validated pipeline, so the end-stack regression run
 in C is **not optional** — it is the guard against trading one wrong thing for another.
+
+**Progress note (2026-07-18):** §B and §D landed first (B4 recursive traversal + `--no-recurse` +
+relative paths, B5 `--output` with structured `MatchRow` rows, B6 `--dump-frames` via
+`VBR.Core.Diagnostics.FrameDump`; docs updated per §D plus `running_and_building.md`, `AGENTS.md`,
+and `PROGRESS.md`). **§A and §C remain open pending a maintainer decision.** Until they land,
+begin-region results still exhibit the black-frame false positives this doc diagnoses.

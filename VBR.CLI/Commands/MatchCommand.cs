@@ -17,6 +17,7 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
+using System.Text;
 using VBR.Core.Extraction;
 using VBR.Core.Matching;
 using VDF.Core.AI;
@@ -26,6 +27,21 @@ namespace VBR.CLI.Commands;
 /// <summary>Which signal(s) <c>vbr match</c> runs. Lowercase members — see
 /// VBR.Core.Extraction.ClipEdge for why.</summary>
 internal enum DetectionMode { visual, audio, both }
+
+/// <summary>One row of the match report — kept structured (rather than formatting straight to
+/// the console) so the same rows can be written to --output, and a machine-readable format
+/// (e.g. JSON) can serialize them later without reshaping the command. <c>File</c> is the
+/// library-relative path; exactly one of <c>Error</c> or the detail fields is populated.</summary>
+internal sealed record MatchRow(string File, bool Present, string? VisualDetail, string? AudioDetail, string? Error) {
+	internal string ToLine() {
+		if (Error is not null)
+			return $"     {File,-48}  (error: {Error})";
+		var parts = new List<string>(2);
+		if (VisualDetail is not null) parts.Add(VisualDetail);
+		if (AudioDetail is not null) parts.Add($"[{AudioDetail}]");
+		return $"{(Present ? "MATCH" : "     ")}  {File,-48}  {string.Join("  ", parts)}";
+	}
+}
 
 internal static class MatchCommand {
 
@@ -131,8 +147,24 @@ internal static class MatchCommand {
 	};
 
 	static readonly Option<DirectoryInfo> Library = new("--library") {
-		Description = "Folder of video files to search (non-recursive).",
+		Description = "Folder of video files to search. Subfolders are traversed by default — see --no-recurse.",
 		Required = true,
+	};
+
+	static readonly Option<bool> NoRecurse = new("--no-recurse") {
+		Description = "Search only the top level of --library instead of traversing its subfolders.",
+	};
+
+	static readonly Option<FileInfo> Output = new("--output") {
+		Description = "Also write the match report to this file: the same per-file rows and " +
+			"summary as the console, plus a header recording the run's parameters.",
+	};
+
+	static readonly Option<DirectoryInfo> DumpFrames = new("--dump-frames") {
+		Description = "Diagnostic (visual only): write every sampled frame as a PNG under this " +
+			"folder — the reference clip's frames under clip/, each candidate's search window " +
+			"under a numbered subfolder — to inspect exactly what the matcher compared. Frame " +
+			"fNNN sits at NNN × --sample-interval into its extracted clip/window.",
 	};
 
 	internal static Command Build() {
@@ -150,6 +182,9 @@ internal static class MatchCommand {
 		cmd.Options.Add(MinSimilarity);
 		cmd.Options.Add(Mode);
 		cmd.Options.Add(Library);
+		cmd.Options.Add(NoRecurse);
+		cmd.Options.Add(Output);
+		cmd.Options.Add(DumpFrames);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			var clipFrom = parseResult.GetValue(ClipFrom)!;
@@ -164,16 +199,22 @@ internal static class MatchCommand {
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
 			DetectionMode mode = parseResult.GetValue(Mode);
 			var library = parseResult.GetValue(Library)!;
+			bool recurse = !parseResult.GetValue(NoRecurse);
+			FileInfo? output = parseResult.GetValue(Output);
+			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 
 			VisualBumperMatcher? visual = null;
 			try {
+				if (dumpFrames is not null && mode is DetectionMode.audio)
+					Console.Error.WriteLine("Note: --dump-frames applies to visual matching only; --detection-mode audio dumps nothing.");
 				if (mode is DetectionMode.visual or DetectionMode.both) {
 					if (!AiComponents.IsReady) {
 						Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
 						await AiComponents.DownloadAsync(progress: null, ct);
 						Console.Error.WriteLine("AI components ready.");
 					}
-					visual = new VisualBumperMatcher(sampleInterval.TotalSeconds, presenceThreshold, rigidHitThreshold);
+					visual = new VisualBumperMatcher(sampleInterval.TotalSeconds, presenceThreshold, rigidHitThreshold,
+						dumpFramesDir: dumpFrames?.FullName);
 				}
 				AudioBumperMatcher? audio = mode is DetectionMode.audio or DetectionMode.both
 					? new AudioBumperMatcher(minSimilarity)
@@ -195,7 +236,8 @@ internal static class MatchCommand {
 					}
 
 					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
-					var candidates = Directory.EnumerateFiles(library.FullName)
+					var candidates = Directory.EnumerateFiles(library.FullName, "*",
+							new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
 						.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
 						.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipFrom.FullName), StringComparison.OrdinalIgnoreCase))
 						.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
@@ -203,31 +245,39 @@ internal static class MatchCommand {
 
 					int matchCount = 0;
 					int comparedCount = 0;
+					var rows = new List<MatchRow>(candidates.Count);
 					foreach (string file in candidates) {
 						ct.ThrowIfCancellationRequested();
+						// Library-relative: with recursive traversal, same-named files in
+						// different subfolders must stay distinguishable.
+						string display = Path.GetRelativePath(library.FullName, file);
 						MatchResult? visualResult = null;
 						MatchResult? audioResult = null;
+						MatchRow row;
 						try {
 							if (visual != null) visualResult = visual.Match(referenceClip.Path, file, searchRegion, ct);
 							if (audio != null) audioResult = audio.Match(referenceClip.Path, file, searchRegion, ct);
+							comparedCount++;
+							bool present = visualResult?.Present ?? audioResult?.Present ?? false;
+							if (present) matchCount++;
+							row = new MatchRow(display, present, visualResult?.Detail, audioResult?.Detail, null);
 						}
 						catch (Exception ex) {
-							Console.WriteLine($"     {Path.GetFileName(file),-48}  (error: {ex.Message})");
-							continue;
+							row = new MatchRow(display, false, null, null, ex.Message);
 						}
-						comparedCount++;
-						bool present = visualResult?.Present ?? audioResult?.Present ?? false;
-						if (present) matchCount++;
-						var parts = new List<string>();
-						if (visualResult is { } v) parts.Add(v.Detail);
-						if (audioResult is { } a) parts.Add($"[{a.Detail}]");
-						string flag = present ? "MATCH" : "     ";
-						Console.WriteLine($"{flag}  {Path.GetFileName(file),-48}  {string.Join("  ", parts)}");
+						rows.Add(row);
+						Console.WriteLine(row.ToLine());
 					}
 
+					string summary = $"{matchCount}/{comparedCount} file(s) matched" +
+						(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors)." : ".");
 					Console.WriteLine();
-					Console.WriteLine($"{matchCount}/{comparedCount} file(s) matched" +
-						(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors)." : "."));
+					Console.WriteLine(summary);
+
+					if (output is not null && !WriteReport(output, rows, summary,
+							clipFrom, region, clipLength, searchLength, sampleInterval, mode,
+							presenceThreshold, rigidHitThreshold, minSimilarity, library, recurse))
+						return 1;
 				}
 				return 0;
 			}
@@ -237,5 +287,43 @@ internal static class MatchCommand {
 		});
 
 		return cmd;
+	}
+
+	static string FormatSeconds(TimeSpan t) =>
+		t.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + "s";
+
+	/// <summary>Writes the report (parameter header + the same rows/summary the console showed)
+	/// to <paramref name="output"/>. Returns false after printing an error if the file could not
+	/// be written — the caller turns that into a nonzero exit code, since the user explicitly
+	/// asked for the file.</summary>
+	static bool WriteReport(FileInfo output, IReadOnlyList<MatchRow> rows, string summary,
+			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
+			TimeSpan sampleInterval, DetectionMode mode, float presenceThreshold,
+			float rigidHitThreshold, float minSimilarity, DirectoryInfo library, bool recurse) {
+		var report = new StringBuilder();
+		report.AppendLine($"vbr match report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+		report.AppendLine($"clip-from:      {clipFrom.FullName}");
+		report.AppendLine($"region: {region}   clip-length: {FormatSeconds(clipLength)}   " +
+			$"search-length: {FormatSeconds(searchLength)}   sample-interval: {FormatSeconds(sampleInterval)}");
+		report.AppendLine(string.Create(CultureInfo.InvariantCulture,
+			$"detection-mode: {mode}   presence-threshold: {presenceThreshold:0.###}   " +
+			$"rigid-hit-threshold: {rigidHitThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
+		report.AppendLine($"library:        {library.FullName}   ({(recurse ? "recursive" : "top level only")})");
+		report.AppendLine(new string('-', 78));
+		foreach (MatchRow row in rows)
+			report.AppendLine(row.ToLine());
+		report.AppendLine();
+		report.AppendLine(summary);
+		try {
+			if (output.DirectoryName is { Length: > 0 } dir)
+				Directory.CreateDirectory(dir);
+			File.WriteAllText(output.FullName, report.ToString());
+			Console.Error.WriteLine($"Report written to: {output.FullName}");
+			return true;
+		}
+		catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException) {
+			Console.Error.WriteLine($"Error: could not write report to '{output.FullName}': {ex.Message}");
+			return false;
+		}
 	}
 }

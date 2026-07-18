@@ -54,6 +54,12 @@ reopened the gap for short *audio* clips (FP floor 72–86% → 50–68%); dense
 presence matcher detected a real silent bumper stack at **98–99% vs. ≤33%** unrelated (~65-pt
 gap, zero false positives).
 
+**Annotation (2026-07-18):** that ~65-pt gap is **end-region-specific**. The first begin-region
+test (dark Netflix ident) produced black-frame false positives — the shared decode path has no
+low-information filtering and decodes keyframes only. See the 2026-07-18 entry in
+[`../research/vdf-evaluation.md`](../research/vdf-evaluation.md) and the fix plan in
+[`../iterativeplan.md`](../iterativeplan.md).
+
 ## Open questions / tuning
 
 - **Edge-window size N** — small enough to stay cheap, large enough to cover the junk. Note
@@ -68,6 +74,13 @@ gap, zero false positives).
   (audio fingerprint blocks are ~1s and haven't shown the same failure mode). See
   [`matcher-spec.md`](../design/matcher-spec.md) `--sample-interval` (default 1.0s, override down
   as needed) and [`vdf-evaluation.md`](../research/vdf-evaluation.md) for the source finding.
+  - **Reinterpreted (2026-07-18):** the shared decode path (`GetDenseAiFrames`) decodes
+    **keyframes only** and *duplicates* them onto the fps grid, so a smaller interval never added
+    distinct frames past the keyframe cadence — 0.2s "succeeding" where 0.5s failed was about
+    rescuing sparse keyframes from fps rounding, not true density. Real dense sampling requires
+    full decode of the (short) extracted edge windows — proposed in
+    [`../iterativeplan.md`](../iterativeplan.md) §A, pending decision. The interval-vs-clip-length
+    question above should be re-asked only after that lands.
 - **Sparse/middle interval** (VDF ~5–15s) — unchanged, still TBD; not exercised by the current
   edge-only build (see matcher-spec.md — the middle/interstitial path is future work).
 - Whether the middle is sampled at all in the fast path, or only in the interstitial pass.

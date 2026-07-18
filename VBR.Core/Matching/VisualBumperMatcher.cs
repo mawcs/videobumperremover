@@ -16,8 +16,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Threading;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VDF.Core;
 using VDF.Core.AI;
@@ -61,17 +63,26 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	readonly double sampleInterval;
 	readonly float presenceThreshold;
 	readonly float rigidHitThreshold;
+	readonly string? dumpFramesDir;
 	OnnxEmbedder? embedder;
+	bool clipFramesDumped;
+	int dumpSequence;
 
+	/// <param name="dumpFramesDir">Diagnostic: when set, every sampled frame is written as a PNG
+	/// under this folder via <see cref="FrameDump"/> — the reference clip's frames once under
+	/// <c>clip/</c>, then each candidate's search-window frames under a numbered subfolder in
+	/// match order. Null (the default) dumps nothing.</param>
 	public VisualBumperMatcher(
 			double sampleInterval = DefaultSampleIntervalSeconds,
 			float presenceThreshold = DefaultPresenceThreshold,
-			float rigidHitThreshold = DefaultRigidHitThreshold) {
+			float rigidHitThreshold = DefaultRigidHitThreshold,
+			string? dumpFramesDir = null) {
 		if (sampleInterval <= 0)
 			throw new ArgumentOutOfRangeException(nameof(sampleInterval), "Sample interval must be positive.");
 		this.sampleInterval = sampleInterval;
 		this.presenceThreshold = presenceThreshold;
 		this.rigidHitThreshold = rigidHitThreshold;
+		this.dumpFramesDir = dumpFramesDir;
 	}
 
 	public string Name => "visual";
@@ -80,13 +91,19 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		AiComponents.EnsureReady();
 		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
 
-		var clipRec = Embed(referenceClipPath, ct);
+		// The clip is dumped once per run, candidates every time (numbered in match order so the
+		// dump folder reads in the same order as the printed report).
+		string? clipDumpLabel = dumpFramesDir is null || clipFramesDumped ? null : "clip";
+		var clipRec = Embed(referenceClipPath, clipDumpLabel, ct);
+		if (clipDumpLabel is not null) clipFramesDumped = true;
 		int clipUsable = clipRec.Frames.Count(f => f.Length > 0);
 		if (clipUsable < 1)
 			return new MatchResult(false, 0f, null, "reference clip produced no usable frames");
 
 		using var window = ClipExtractor.ExtractToTemp(candidatePath, searchRegion);
-		var candidateRec = Embed(window.Path, ct);
+		string? candidateDumpLabel = dumpFramesDir is null ? null
+			: $"{++dumpSequence:000}-{Path.GetFileNameWithoutExtension(candidatePath)}";
+		var candidateRec = Embed(window.Path, candidateDumpLabel, ct);
 		int candidateUsable = candidateRec.Frames.Count(f => f.Length > 0);
 		if (candidateUsable < 1)
 			return new MatchResult(false, 0f, null, "no usable frames in the search window");
@@ -117,10 +134,12 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		return new MatchResult(hits >= 1, best, bestTime, detail);
 	}
 
-	DenseEmbeddingStore.DenseRecord Embed(string path, CancellationToken ct) {
+	DenseEmbeddingStore.DenseRecord Embed(string path, string? dumpLabel, CancellationToken ct) {
 		byte[][]? frames = FfmpegEngine.GetDenseAiFrames(path, sampleInterval, MaxFramesPerFile, false, ct);
 		if (frames is null || frames.Length == 0)
 			return new DenseEmbeddingStore.DenseRecord(0, 0, (float)sampleInterval, Array.Empty<byte[]>());
+		if (dumpFramesDir is not null && dumpLabel is not null)
+			FrameDump.WritePngs(frames, Path.Combine(dumpFramesDir, dumpLabel));
 
 		var emb = new byte[frames.Length][];
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);

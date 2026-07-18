@@ -35,17 +35,31 @@ dotnet run --project VBR.CLI -- --help
 dotnet run --project VBR.CLI -- match --help
 ```
 
-Finds a bumper's audio fingerprint across a folder of episodes. The reference clip is always
-extracted internally from a source video + a time range — there is no way to pass a pre-cut
-clip file (see [`AGENTS.md`](../AGENTS.md) → "Clip extraction is the tool's job"):
+Finds a bumper's presence across a library of videos — visual DINOv2 presence matching by
+default, audio as an opt-in accelerator (`--detection-mode visual|audio|both`). The reference
+clip is always extracted internally from a source video + a region — there is no way to pass a
+pre-cut clip file (see [`AGENTS.md`](../AGENTS.md) → "Clip extraction is the tool's job"):
 
 ```sh
-dotnet run --project VBR.CLI -- match --source "D:\Media\Show\S01E01.mkv" --clip-tail-seconds 40 --library "D:\Media\Show"
+dotnet run --project VBR.CLI -- match --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 10s --sample-interval 0.2s --library "D:\Media\Show"
 ```
 
-Use `--clip-head-seconds` instead of `--clip-tail-seconds` if the bumper sits at the start of
-the source episode. `--min-similarity`, `--search-head-seconds`, and `--search-tail-seconds` are
-optional refinements — run `--help` for the full list.
+Key options (run `--help` for the full list):
+
+- `--region begin|end` — which edge the bumper lives at; drives both clip extraction and where
+  each candidate is searched.
+- `--clip-length` (required) / `--search-length` (defaults to clip length + 20s) /
+  `--sample-interval` (default 1s; go as low as ~0.2s for short clips) — durations take a bare
+  number of seconds or a suffix (`5.1s`, `200ms`).
+- `--library` is traversed **recursively by default**; `--no-recurse` searches only its top
+  level. Results print library-relative paths.
+- `--output <file>` — also write the match report (parameter header + the same rows/summary as
+  the console) to a file.
+- `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip/` + one numbered
+  folder per candidate) to inspect exactly what the visual matcher compared.
+
+> **Known defect (2026-07-18):** begin-region / dark-bumper matching currently false-positives on
+> black frames — see [`iterativeplan.md`](iterativeplan.md) before trusting begin-region results.
 
 ### Test
 

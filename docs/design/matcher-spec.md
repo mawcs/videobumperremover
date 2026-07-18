@@ -81,7 +81,8 @@ must reproduce its behavior. The essential pipeline:
    last `tailSec` seconds for an end bumper), also at the fine interval — *not* the whole file.
    This is the ADR 0006 edge-focus in action, and it's what makes this cheap enough to run per file.
 3. **Embed each sampled frame** with DINOv2 via `OnnxEmbedder.EmbedBatchQuantized` (int8). Batch
-   up to `OnnxEmbedder.MaxBatch`. Skip empty/black frames.
+   up to `OnnxEmbedder.MaxBatch`. Skip empty/black frames. *(See the 2026-07-18 correction below —
+   the "skip black" guard as ported is dead code; a real filter is a pending requirement.)*
 4. **Presence match:** for every usable clip frame, compute the best cosine
    (`EmbeddingMath.CosineSimilarity`) against any frame in the file's edge window. Count how many
    clip frames clear the **presence threshold** (default ≈0.90). `presentCount ≥ 1` ⇒ present.
@@ -101,6 +102,34 @@ head/tail windows) can confirm cheaply. It must never be the *only* path consult
 `ScanEngine.SlidingWindowCompare`, `ChromaprintEngine.ExtractFingerprint`, `AiComponents`
 (model path / `ModelFileName`). Most are `internal`; access is via the
 `InternalsVisibleTo("VBR.Core")` glue already added to `VDF.Core.csproj` (ADR 0005).
+
+### 2026-07-18 correction — two decode-path defects the spec's assumptions missed
+
+The first **begin-region** test (a 5s Netflix ident cut from the head of a Daredevil episode)
+produced false-positive MATCHes on unrelated libraries. Diagnosis with evidence:
+[`../iterativeplan.md`](../iterativeplan.md); findings-log entry:
+[`../research/vdf-evaluation.md`](../research/vdf-evaluation.md) (2026-07-18). The defects are in
+the *probe-validated pipeline itself* (both probe and port share them — parity is intact):
+
+1. **Step 3's "skip empty/black frames" has never filtered anything.** Probe and port skip only
+   zero-length buffers, and `GetDenseAiFrames` never emits one (it slices fixed-size chunks or
+   fails the whole call). No black/low-information filtering exists anywhere — and near-black
+   frames embed at cosine 0.87–0.97 against *any* other near-black frame, which is exactly the
+   false-positive mode §1's "do not match on black/silence" rule exists to prevent.
+2. **Step 2's "sample densely" is keyframe-bound.** `GetDenseAiFrames` decodes only keyframes
+   (`-skip_frame nokey`, a whole-file-scan optimization inherited from VDF's dedup) and its `fps`
+   filter fills the requested grid by **duplicating** each keyframe. Consequences: distinct
+   sampled content is capped at keyframe cadence no matter how small `--sample-interval` is;
+   `present=h/n` counts duplicates as if they were independent evidence; the rigid ≥4-hit
+   corroborator is trivially satisfied by duplicates; and sampling stops at the *last keyframe's
+   timestamp*, so content after it is never seen at all.
+
+**Requirements this adds (fix not yet decided/implemented — plan and re-validation matrix in
+[`../iterativeplan.md`](../iterativeplan.md) §A/§C):** step 3's skip must become a real
+luma-based low-information filter (near-black / near-uniform rejection from the raw RGB bytes) on
+**both** clip and candidate sides, failing loudly when the clip retains no distinctive frames;
+and step 2 must **decode all frames** within the short extracted edge windows — full decode of a
+≤30s extract is cheap; keyframe-only decode is for whole-file scans, not this matcher.
 
 ---
 
@@ -190,6 +219,12 @@ Grow it; don't fork a second tool:
 - [x] No entry point accepts a pre-cut clip; all extraction is internal (`--clip-from` + region,
   never a clip file path).
 - [x] Every new source file carries the AGPLv3 header (AGENTS.md).
+
+> **2026-07-18 note:** the checklist above (parity with `VisualTailProbe`) still stands — but the
+> *validated pipeline itself* was subsequently found defective for begin-region / dark bumpers
+> (black-frame false positives; see the §2 correction). "Done" here means "faithfully ports the
+> probe," not "matcher finished." New requirements are pending in
+> [`../iterativeplan.md`](../iterativeplan.md).
 
 ---
 

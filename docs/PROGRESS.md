@@ -89,6 +89,30 @@ was flagged right after the initial scaffold and fixed before anything else was 
 - Rebuilt clean, `vbr match --help` and the validation-error path smoke-tested, `VBR.Tests`
   still skips cleanly without env vars set.
 
+### Begin-region false-positive diagnosis + match CLI usability (2026-07-18)
+
+- **Diagnosed the first begin-region test's false positives** (a 5s Netflix ident clip matching
+  Doctor Who/Avatar episodes that don't contain it): the shared decode path decodes **keyframes
+  only** and duplicates them onto the sampling grid, and the "skip black frames" guard is dead
+  code — so 13/14 clip frames were pure black and matched black lead-ins anywhere (near-black
+  frames embed at cosine 0.87–0.97 against each other). Full analysis + fix plan:
+  [`iterativeplan.md`](iterativeplan.md); findings-log entry: `research/vdf-evaluation.md`
+  (2026-07-18); spec correction: `design/matcher-spec.md` §2. **Correctness fixes (§A) and
+  re-validation (§C) are pending a maintainer decision — not yet implemented.**
+- **`vbr match` usability (iterativeplan §B, implemented):**
+  - `--library` is now traversed **recursively by default**; `--no-recurse` restores
+    top-level-only; results print **library-relative paths** so same-named files in different
+    subfolders stay distinguishable.
+  - `--output <file>` writes the match report (parameter header + the same rows/summary as the
+    console); rows are built as a structured `MatchRow` record so a machine-readable format can
+    follow cheaply.
+  - `--dump-frames <dir>` (diagnostic) writes every sampled frame as a PNG (`clip/` + one
+    numbered folder per candidate) via the new `VBR.Core.Diagnostics.FrameDump` — turns the next
+    "why did this match?" into a glance instead of a pipeline reconstruction.
+  - Verified: build clean; `VBR.Tests` still skips cleanly; live run on real media confirmed
+    recursion, relative paths, report file, dump structure (14 clip frames = the black-frame
+    diagnosis numbers), and `--no-recurse`.
+
 ## Open / next steps
 
 - [ ] **Boundary detection.** Turn a match offset (~0.2–0.5s resolution) into a precise cut point
@@ -109,6 +133,12 @@ was flagged right after the initial scaffold and fixed before anything else was 
   - [ ] Measure "Use native Ffmpeg binding" as a separate, possibly bigger decode-side lever.
   - [ ] Implement GPU decode (NVDEC) + ONNX CUDA execution provider. Code touch-points in
     `research/vdf-evaluation.md`.
+- [ ] **Fix the visual matcher's black-frame / keyframe-only-decode defect** (begin-region false
+  positives, found 2026-07-18) — plan in [`iterativeplan.md`](iterativeplan.md): §A1
+  low-information luma filter (both clip and candidate sides, loud failure on an all-black clip)
+  + §A2 full decode of the short edge windows (drop `-skip_frame nokey` for extracts), then the
+  §C re-validation matrix (begin-region TP/FP runs **and** the end-stack regression re-record).
+  **Pending maintainer decision before implementation.**
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005 and
   **[`design/matcher-spec.md`](design/matcher-spec.md)** — the authoritative "definition of done."
   Read the spec first: the PRIMARY matcher is the visual DINOv2 presence path, audio is a secondary
@@ -132,6 +162,10 @@ was flagged right after the initial scaffold and fixed before anything else was 
       silent, per the original probe notes — correct behavior, not a bug). Edge-only sampling is
       structural: `VisualBumperMatcher.Match` always extracts via `ClipExtractor` before
       embedding, so the full-length episode is never opened for dense decode.
+    - **2026-07-18 caveat:** parity to the probe stands, but the *validated pipeline itself* was
+      later found defective for begin-region / dark bumpers (black-frame false positives —
+      keyframe-only decode + a dead black-frame guard). See "Begin-region false-positive
+      diagnosis" above and [`iterativeplan.md`](iterativeplan.md).
     - **Correction found during validation:** the documented "~4.8s" realized clip length comes
       from requesting `--clip-length 10s` (not 5s as first assumed) — stream-copy keyframe
       rounding is what shortens it. A 5s request landed entirely in trailing black padding after

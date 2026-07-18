@@ -77,6 +77,16 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   to graduate it into `VBR.Tests` (like `BumperMatchProbe` before it) is the next small decision.
   Then: a cached fingerprint/embedding index; the **catalog** (enroll once, apply
   forever); the **removal engine** (cut + manifest + verify); the **UI**.
+- **KNOWN DEFECT (2026-07-18) — begin-region / dark bumpers false-positive.** The probe-validated
+  pipeline itself (probe *and* port — parity is intact) matches black on black: the shared decode
+  path samples **keyframes only** and duplicates them onto the fps grid, and the "skip black
+  frames" guard is dead code. A 5s Netflix ident (13/14 sampled frames pure black) MATCHed
+  unrelated Doctor Who/Avatar episodes at bestCos 87–97%. **Analysis + fix plan:
+  [`docs/iterativeplan.md`](docs/iterativeplan.md)** — correctness fixes (§A) and re-validation
+  (§C) are **pending a maintainer decision**; do not trust begin-region results (or the exact TP
+  percentages) until they land. The §B CLI usability items are done: `--library` recurses by
+  default (`--no-recurse` to disable), `--output <file>` writes the report, `--dump-frames <dir>`
+  dumps every sampled frame as PNGs for diagnosis.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 
@@ -93,6 +103,9 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md) — **the matcher "definition of
   done"** (visual-primary, audio-accelerator, edge-focused, port the probe, standalone CLI). Read
   before writing any matcher code; it overrides other docs on *how matching works*.
+- [`docs/iterativeplan.md`](docs/iterativeplan.md) — the 2026-07-18 black-frame false-positive
+  diagnosis + staged fix plan (§A correctness fixes pending decision, §B CLI features done,
+  §C re-validation matrix, §D doc updates done).
 - [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
 - [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
   vs. re-encode) + per-video enhancements + output options.

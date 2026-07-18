@@ -379,7 +379,9 @@ and [`../design/matcher-spec.md`](../design/matcher-spec.md).
 **False-positive floor — CLEAN (Avatar, 2026-07-16):** the same Daredevil clip vs. 21 Avatar
 episodes scored **bestCos 23–33%, present 0/24, rigid:no** across the board (even a stray intro clip
 rejected at 21%). So **TP 98–99% vs FP ≤33% — a ~65-point gap with zero false positives.** Any
-threshold from ~40–95% separates them cleanly.
+threshold from ~40–95% separates them cleanly. **Annotation (2026-07-18): end-region-specific —
+that clip's frames are distinctive bright cards. The first begin-region test collapsed the gap;
+see the black-frame entry below.**
 
 **Matching risk RETIRED.** All signals validated on real bumpers: audio fingerprint (long/audible),
 audio + positional window (short/audible), and visual presence/rigid DINOv2 (silent/short). The one
@@ -389,6 +391,47 @@ Next: **boundary precision** (0.5s interval → refine toward frame-accurate cut
 **sub-clip / sub-bumper tests** — extract the last 5s (just Netflix) or last 7s and confirm they
 match too, then work out how to distinguish "the whole 20s stack" from "one piece of it" (the
 boundary-growing idea).
+
+## Begin-region FALSE POSITIVES — black-frame defect in the shared decode path (2026-07-18)
+
+First **begin-region** test: `vbr match --region begin --clip-length 5s --sample-interval 0.2s
+--detection-mode both`, clip = the Netflix ident at the head of Daredevil S01E01, run against
+**unrelated** libraries. Result: **9/16 Doctor Who files** (8 episodes + a stray intro clip) and
+**4/21 Avatar files** reported MATCH — `present=6/14`, bestCos 87–97%, rigid also firing — for a
+bumper none of them contain. Root cause chain, verified by probing keyframes with ffprobe and
+dumping the exact sampled frames as PNGs (that dump is now automated: `vbr match --dump-frames`):
+
+1. **The clip the matcher saw was 13/14 pure-black frames.** `GetDenseAiFrames` decodes
+   **keyframes only** (`-skip_frame nokey`, inherited from VDF's whole-file dedup scan) and its
+   `fps=1/0.2` filter fills the sampling grid by **duplicating** each keyframe. The clip region
+   has three keyframes — ~0.0s (black), ~1.0s (black), ~2.6s (the NETFLIX card) — which became
+   5 + 8 duplicated black frames plus **one** card frame. (An earlier entry above guessed
+   `GetDenseAiFrames` "dedupes near-identical frames" — the opposite: it *multiplies* them.)
+   Sampling also stops at the last keyframe's timestamp, so the ~2.4s where the card is actually
+   on screen was never sampled at all.
+2. **The search windows are mostly black too.** The Doctor Who rips keyframe every ~6s and the
+   keyframes at 0s/6s are pure black. Near-black frames embed at **cosine 0.87–0.97 against any
+   other near-black frame** (compression noise keeps them off 1.0) — whichever episodes' noise
+   landed ≥0.90 became "MATCH"; the rest formed the suspicious bestCos 87–89% floor.
+3. **The "skip empty/black frames" step is dead code** in both the probe and the port: it skips
+   zero-length buffers, which this decode path never produces (fixed-size slices or total
+   failure). Nothing has ever filtered black. (VDF's *dedup* pipeline has the `TooDark` guard for
+   exactly this — see above — but the dense-AI path the matcher uses has no equivalent.)
+4. **The rigid ≥4-hit corroborator is fooled by the same duplicates** — both sides repeating
+   identical frames trivially "agree on one offset" (e.g. rigid@10s in Doctor Who = the black
+   6.0s keyframe smeared across fps ticks 6–11.8s). **Audio behaved correctly** throughout
+   (45–73%, below the 0.80 threshold) — no defect on that path.
+
+Consequences for earlier entries in this log: the **~65-pt TP/FP gap is end-region-specific**
+(that clip's frames are distinctive bright cards on scene-cut keyframes); the **0.2s-interval
+hard requirement** was really about rescuing sparse keyframes from fps rounding — density past
+the keyframe cadence never existed; and the begin-region Daredevil "99%" TP result was
+**inflated** by the same black-on-black matching.
+
+Fix plan (low-information luma filter on both sides + full decode of the short edge windows) and
+the re-validation matrix: [`../iterativeplan.md`](../iterativeplan.md) — **pending decision, not
+yet implemented.** The CLI usability additions from the same session (recursive `--library`
+traversal + `--no-recurse`, `--output` report file, `--dump-frames` diagnostic) are implemented.
 
 ## Open questions / next tests
 
