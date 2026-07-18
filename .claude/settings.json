@@ -14,7 +14,10 @@
       "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\")",
       "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/**/*.md\" \"README.md\")",
       "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/running_and_building.md\" \"AGENTS.md\" \"docs/development.md\" \"docs/PROGRESS.md\")",
-      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/development.md\")"
+      "Bash(npx --yes markdownlint-cli2@0.13.0 \"docs/development.md\")",
+      "PowerShell(\\(Get-Command ffmpeg -ErrorAction SilentlyContinue\\)?.Source; \\(Get-Command ffprobe -ErrorAction SilentlyContinue\\)?.Source; Test-Path \"D:\\\\Data\\\\dev\\\\git\\\\videobumperremover\\\\test_materials\\\\Daredevil\\\\Season 01\\\\Marvel's Daredevil - S01E01 - Into the Ring.mkv\")",
+      "PowerShell(ffprobe -v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time -of csv=p=0 -read_intervals \"%+12\" \"D:\\\\Data\\\\dev\\\\git\\\\videobumperremover\\\\test_materials\\\\Daredevil\\\\Season 01\\\\Marvel's Daredevil - S01E01 - Into the Ring.mkv\")",
+      "PowerShell(ffprobe -v error -select_streams v:0 -skip_frame nokey -show_entries frame=pts_time -of csv=p=0 -read_intervals \"%+30\" \"D:\\\\Data\\\\dev\\\\git\\\\videobumperremover\\\\test_materials\\\\Doctor Who\\\\Season 01\\\\Doctor Who \\(2005\\) - S01E01 - Rose.mp4\")"
     ]
   }
 }
