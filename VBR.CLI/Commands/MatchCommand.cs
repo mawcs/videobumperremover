@@ -235,6 +235,20 @@ internal static class MatchCommand {
 						return 1;
 					}
 
+					// Embed + validate the clip once up front: an all-black/blank clip is an input
+					// error (matching on it only fabricates false positives), so fail the run with
+					// one clear message instead of erroring on every candidate row. Also warms the
+					// per-instance clip-embedding cache the per-file loop reuses.
+					if (visual is not null) {
+						try {
+							visual.PrepareClip(referenceClip.Path, ct);
+						}
+						catch (InvalidOperationException ex) {
+							Console.Error.WriteLine($"Error: {ex.Message}");
+							return 1;
+						}
+					}
+
 					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
 					var candidates = Directory.EnumerateFiles(library.FullName, "*",
 							new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })

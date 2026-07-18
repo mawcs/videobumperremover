@@ -77,16 +77,24 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   to graduate it into `VBR.Tests` (like `BumperMatchProbe` before it) is the next small decision.
   Then: a cached fingerprint/embedding index; the **catalog** (enroll once, apply
   forever); the **removal engine** (cut + manifest + verify); the **UI**.
-- **KNOWN DEFECT (2026-07-18) — begin-region / dark bumpers false-positive.** The probe-validated
-  pipeline itself (probe *and* port — parity is intact) matches black on black: the shared decode
-  path samples **keyframes only** and duplicates them onto the fps grid, and the "skip black
-  frames" guard is dead code. A 5s Netflix ident (13/14 sampled frames pure black) MATCHed
-  unrelated Doctor Who/Avatar episodes at bestCos 87–97%. **Analysis + fix plan:
-  [`docs/iterativeplan.md`](docs/iterativeplan.md)** — correctness fixes (§A) and re-validation
-  (§C) are **pending a maintainer decision**; do not trust begin-region results (or the exact TP
-  percentages) until they land. The §B CLI usability items are done: `--library` recurses by
-  default (`--no-recurse` to disable), `--output <file>` writes the report, `--dump-frames <dir>`
-  dumps every sampled frame as PNGs for diagnosis.
+- **FIXED DEFECT (2026-07-18) — low-information-frame false positives (exposed begin-region).**
+  The probe-validated pipeline (probe *and* port — parity was intact) matched black on black:
+  the shared decode path sampled **keyframes only** and duplicated them onto the fps grid, and
+  the "skip black frames" guard was dead code — a 5s Netflix ident collapsed to 3 distinct
+  sampled images and MATCHed unrelated Doctor Who/Avatar episodes at bestCos 87–97%.
+  **Fixed the same day** (diagnosis, ground-truth verification, fix plan, and recorded
+  re-validation: [`docs/iterativeplan.md`](docs/iterativeplan.md)): the matcher now uses
+  `VBR.Core.Fingerprinting.DenseFrameSampler` (**full decode** of the short extracts — the
+  keyframe-only `GetDenseAiFrames` stays for VDF's whole-file scans only) and
+  `VBR.Core.Fingerprinting.FrameQuality` (dark/duplicate guards reused from VDF's own AI-partial
+  pass + a calibrated near-uniform rejection) on both clip and candidate sides, with clip
+  embeddings cached per run (`PrepareClip`, which fails loudly on an all-black/blank clip).
+  Re-validated clean: begin TP 12/12 @ 99–100% (present=18/18) vs FP 0/33 files (≤56%); end
+  regression 12/12 @ 99–100% vs 0/20 (≤71%). The matcher deliberately diverges from
+  `VisualTailProbe` in exactly these two ways; the probe's recorded numbers are superseded. From
+  the same session, the CLI also gained: recursive `--library` traversal by default
+  (`--no-recurse` to disable), `--output <file>` report writing, and `--dump-frames <dir>` for
+  dumping every sampled frame as PNGs for diagnosis.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 
@@ -104,8 +112,8 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   done"** (visual-primary, audio-accelerator, edge-focused, port the probe, standalone CLI). Read
   before writing any matcher code; it overrides other docs on *how matching works*.
 - [`docs/iterativeplan.md`](docs/iterativeplan.md) — the 2026-07-18 black-frame false-positive
-  diagnosis + staged fix plan (§A correctness fixes pending decision, §B CLI features done,
-  §C re-validation matrix, §D doc updates done).
+  diagnosis + staged fix plan, **all sections implemented and validated** (§A correctness fixes,
+  §B CLI features, §C re-validation matrix with recorded numbers, §D doc updates).
 - [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
 - [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
   vs. re-encode) + per-video enhancements + output options.

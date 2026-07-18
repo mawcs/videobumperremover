@@ -94,11 +94,19 @@ was flagged right after the initial scaffold and fixed before anything else was 
 - **Diagnosed the first begin-region test's false positives** (a 5s Netflix ident clip matching
   Doctor Who/Avatar episodes that don't contain it): the shared decode path decodes **keyframes
   only** and duplicates them onto the sampling grid, and the "skip black frames" guard is dead
-  code — so 13/14 clip frames were pure black and matched black lead-ins anywhere (near-black
-  frames embed at cosine 0.87–0.97 against each other). Full analysis + fix plan:
-  [`iterativeplan.md`](iterativeplan.md); findings-log entry: `research/vdf-evaluation.md`
-  (2026-07-18); spec correction: `design/matcher-spec.md` §2. **Correctness fixes (§A) and
-  re-validation (§C) are pending a maintainer decision — not yet implemented.**
+  code — the clip collapsed to 3 distinct images (6×black + 7×blank-white + 1 distinctive card
+  duplicates) and the six black duplicates matched dark lead-ins anywhere (low-information
+  frames embed at cosine 0.87–0.97 against each other). **Ground-truth verified** after the
+  maintainer challenged the first write-up with per-frame DaVinci exports
+  (`test_materials/dd_netflix_bumper_davinci_export/`): full decode of the same 5s at the same
+  0.2s grid matches the DaVinci reference frame-for-frame, keyframes decode pixel-correct (the
+  defect is frame *selection* + duplication + missing filtering, not decode), and the failure is
+  keyframe-cadence + content dependent on both sides — **not begin-specific** (the end-stack
+  region keyframes every ~1.4–3s on bright cards, which is why end validation passed). Full
+  analysis + fix plan: [`iterativeplan.md`](iterativeplan.md); findings-log entry:
+  `research/vdf-evaluation.md` (2026-07-18); spec correction: `design/matcher-spec.md` §2.
+  *(Correctness fixes §A + re-validation §C landed later the same day — see the checked-off item
+  under Open / next steps below.)*
 - **`vbr match` usability (iterativeplan §B, implemented):**
   - `--library` is now traversed **recursively by default**; `--no-recurse` restores
     top-level-only; results print **library-relative paths** so same-named files in different
@@ -133,12 +141,16 @@ was flagged right after the initial scaffold and fixed before anything else was 
   - [ ] Measure "Use native Ffmpeg binding" as a separate, possibly bigger decode-side lever.
   - [ ] Implement GPU decode (NVDEC) + ONNX CUDA execution provider. Code touch-points in
     `research/vdf-evaluation.md`.
-- [ ] **Fix the visual matcher's black-frame / keyframe-only-decode defect** (begin-region false
-  positives, found 2026-07-18) — plan in [`iterativeplan.md`](iterativeplan.md): §A1
-  low-information luma filter (both clip and candidate sides, loud failure on an all-black clip)
-  + §A2 full decode of the short edge windows (drop `-skip_frame nokey` for extracts), then the
-  §C re-validation matrix (begin-region TP/FP runs **and** the end-stack regression re-record).
-  **Pending maintainer decision before implementation.**
+- [x] **Fix the visual matcher's black-frame / keyframe-only-decode defect** (begin-region false
+  positives, found 2026-07-18) — **done same day** per [`iterativeplan.md`](iterativeplan.md):
+  §A1 `FrameQuality` low-information filter (VDF's dark/duplicate guards + calibrated
+  near-uniform rejection, both sides, loud `PrepareClip` failure on an all-black clip) + §A2
+  `DenseFrameSampler` full decode of the short edge windows + clip-embed caching per run. §C
+  re-validation matrix **passed clean**: begin TP 12/12 @ 99–100% (present=18/18) vs FP 0/13 DW
+  + 0/20 Avatar (bestCos ≤56%); end-stack regression 12/12 @ 99–100% vs 0/20 Avatar (≤71% —
+  floor legitimately higher than the old ≤33% keyframe-only baseline; see the 2026-07-18 "FIX
+  VALIDATED" entry in `research/vdf-evaluation.md`). Presence rule and all default thresholds
+  unchanged; 5 new `FrameQuality` unit tests.
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005 and
   **[`design/matcher-spec.md`](design/matcher-spec.md)** — the authoritative "definition of done."
   Read the spec first: the PRIMARY matcher is the visual DINOv2 presence path, audio is a secondary

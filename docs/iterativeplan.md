@@ -2,10 +2,12 @@
 
 # Iterative plan — fixing the visual matcher's black-frame false positives
 
-**Status (updated 2026-07-18):** diagnosis done; **§B (CLI features) and §D (doc updates) are
-implemented**; **§A (correctness fixes) and §C (re-validation) are pending a maintainer decision
-and remain unimplemented.** This doc captures the diagnosis of the bad-match results reported
-during begin-region (Netflix ident) testing and the plan to fix them.
+**Status (final, 2026-07-18):** **all sections implemented and validated.** §B (CLI features)
+and §D (doc updates) landed first; §A (correctness fixes) followed on maintainer approval, and
+the full §C re-validation matrix passed — perfect separation (begin: TP 12/12 @ 99–100% with
+present=18/18 vs FP 0/33 files with bestCos ≤56%; end regression: TP 12/12 @ 99–100% vs FP 0/20
+@ ≤71%; see §C below for the recorded numbers). This doc captures the diagnosis of the bad-match
+results reported during begin-region (Netflix ident) testing, the fix plan, and the outcome.
 
 **Related:** [`design/matcher-spec.md`](design/matcher-spec.md) (the "definition of done" this
 restores), [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md)
@@ -37,20 +39,50 @@ The extraction + decode chain was replicated on the real test files
 `GetDenseAiFrames` → [`FfmpegEngine.cs:1009`](../VDF.Core/FFTools/FfmpegEngine.cs#L1009)) and the
 frames the matcher actually sees were dumped to PNG and inspected.
 
-### Finding 1 — "14 frames" is really 3 distinct images, 13 of which are pure black
+### Finding 1 — "14 frames" is really 3 distinct images, only one of them distinctive
+
+*(Corrected 2026-07-18, second pass — the first write-up of this finding said "13 of 14 frames
+are pure black," an interpolation from viewing only 3 dump frames. Ground-truth verification
+below fixed the composition; the mechanism is unchanged.)*
 
 `GetDenseAiFrames` decodes **keyframes only** (`-skip_frame nokey`, inherited from VDF's whole-file
 dedup scan), then the `fps=1/0.2` filter fills the 0.2s grid by **duplicating** each keyframe.
-Daredevil S01E01's first 5s has exactly three keyframes:
+Daredevil S01E01's first 5s has exactly three keyframes (full ffprobe frame map verified —
+everything between them is P/B):
 
-- ~0.02s — black
-- ~1.02s — black
-- ~2.61s — the NETFLIX card
+- I-frame at 0.021s — black (the file genuinely opens on black)
+- I-frame at 1.022s — **blank white** (the ident background flashing on — the scene cut that
+  earned the I-frame)
+- I-frame at 2.607s — the red NETFLIX card
 
-The fps grid turns that into ~5 copies of black, ~8 copies of black, and **one** copy of the
-NETFLIX card — 14 frames total, which is exactly the `present=…/14` denominator in the reported
-output. Worse: fps ticks stop at the last keyframe timestamp, so the remaining ~2.4s of the clip
-(where the card is actually on screen) is **never represented at all**.
+The fps grid turns that into **6 copies of black + 7 copies of blank white + 1 red card** —
+14 frames total, exactly the `present=…/14` denominator in the reported output. The letters
+animation (~1.4–2.5s, the most distinctive content in the ident) sits **entirely mid-GOP and is
+never sampled at all**; the card's ~2.2s on-screen hold is represented **once**.
+
+**Ground-truth verification (maintainer challenge, same day):** the maintainer exported a
+per-frame 0.2s reference grid from DaVinci Resolve
+(`test_materials/dd_netflix_bumper_davinci_export/24Frames/`) that looked nothing like the
+pipeline dump — and follow-up checks confirmed why, while validating the mechanism:
+
+- A **full-decode** `fps=1/0.2` dump of the same 5s yields **25 frames matching the DaVinci
+  reference frame-for-frame** (black → blank white → letters flying in → 3D shadow → red card).
+  ffmpeg has no problem producing the right frames — the defect is the pipeline's *frame
+  selection*, not decode.
+- The `-skip_frame nokey` decode itself is **pixel-correct** (the 3 keyframes decode identical
+  to full decode — no corruption). Every sampled frame is a *genuine* frame from its timestamp;
+  the pathology is which timestamps get represented and how many times.
+- The maintainer's separate keyframe dump (`.../Keyframes/`, more visual variety) is from
+  `Bumper.mkv` — a DaVinci **re-encode** with a fresh GOP (I-frames at exactly
+  0/1.001/2.002/3.003/4.004/5.005) — not the original's keyframe structure, which resolves that
+  apparent contradiction.
+- The `present=6/14` hits are **precisely the six black duplicates** (the blank-white frames sat
+  in the high-80s against these libraries, just under the 0.90 threshold — part of the
+  suspicious bestCos floor).
+- **Not begin-specific:** the same episode's *end* region keyframes every ~1.4–3s (scene-cut
+  driven, bright distinctive cards) — which is exactly why the end-region validation passed.
+  Severity is **keyframe-cadence + content dependent, on both the clip and candidate sides**;
+  the begin edge just happened to expose it first.
 
 ### Finding 2 — the search windows are black too
 
@@ -91,31 +123,31 @@ re-recorded after the fix.
 
 ## Plan
 
-### A. Correctness fixes (both needed — either alone still fails)
+### A. Correctness fixes (both needed — either alone still fails) — IMPLEMENTED (2026-07-18)
 
-1. **Low-information frame filter (implements the spec's existing rule).**
-   In `VisualBumperMatcher.Embed`, the raw 224×224 RGB24 bytes are already in memory before
-   embedding — compute mean/variance luma per frame and drop near-black / near-uniform frames on
-   **both** the clip and candidate sides. Calibrate thresholds against the dumped real frames. If
-   the clip ends up with zero distinctive frames, **fail loudly** ("reference clip is all
-   black/low-information — adjust region/length") instead of matching on noise. Do this in
-   `VBR.Core`, **not** in VDF's `GetDenseAiFrames`, so the upstream dedup scan path is untouched.
+1. **Low-information frame filter (implements the spec's existing rule).** ✅ Implemented as
+   `VBR.Core.Fingerprinting.FrameQuality`: reuses VDF's own AI-partial-scan guards
+   (`ScanEngine.SelectUsableDenseFrames` — the ≥80%-dark-pixels rejection and the
+   byte-identical-duplicate drop, which the probe/port had bypassed all along) and adds the
+   near-uniform rejection those guards lack: mean absolute horizontal luma delta ≥ **1.0**
+   (`FrameQuality.MinDetail`). Calibrated on real frames (0.2s full-decode grids of the DD
+   ident, DW/Avatar begin windows, DD end credits): blank-white ident background 0.55–0.68 and
+   fades ≤0.95, versus letter animation 1.33–1.97, dark-but-real scene content 1.46+, bright
+   cards ≥3 — 1.0 sits mid-gap. Applied to **both** sides in `VisualBumperMatcher.Embed`; an
+   all-filtered clip **fails loudly** via the new `PrepareClip` (which also caches the clip's
+   embeddings per run — the port had been re-embedding the clip for every candidate). Upstream
+   `GetDenseAiFrames` untouched.
 
-2. **Decode all frames in edge windows, not just keyframes.**
-   Keyframe-only decode is a whole-file-scan optimization that is wrong for ≤30s extracts —
-   fully decoding 25s of video is cheap. Give VBR its own dense sampler (same ffmpeg recipe **minus**
-   `-skip_frame nokey`) so `--sample-interval 0.2s` yields ~25 *distinct* frames, including the ~12
-   real NETFLIX-card frames the current pipeline never sees. This makes `--sample-interval` honest
-   (today, a denser interval only manufactures duplicates — distinct content is capped at keyframe
-   count) and fixes the "ticks stop at the last keyframe" truncation. **Note:** this quietly
-   invalidates the assumption behind the documented "4s clip needed 0.2s interval" result — that was
-   about rescuing keyframes from fps rounding, not about density.
+2. **Decode all frames in edge windows, not just keyframes.** ✅ Implemented as
+   `VBR.Core.Fingerprinting.DenseFrameSampler`: the identical ffmpeg recipe minus
+   `-skip_frame nokey` (the exact full-decode chain verified frame-for-frame against the
+   maintainer's DaVinci reference export). The 5s test clip now yields 26 sampled / 18 usable
+   distinct frames where the old path produced 14 fps-duplicates of 3 keyframes with a single
+   distinctive image among them.
 
-3. **Defer threshold tuning until after re-validation.**
-   With filtering + real frames, the spec's presence-≥1 decision may well be fine as-is. If false
-   positives persist, the next knobs, in order: require ≥2 *distinct* hits; report the margin
-   between `bestCos` and the window's median cosine. Do **not** touch the 0.90 presence threshold
-   yet — reproduce clean numbers first, then tune (per the spec's own anti-pattern).
+3. **Defer threshold tuning until after re-validation.** ✅ Resolved — no tuning proved
+   necessary: the §C matrix passed with the spec's original presence rule (≥1 distinctive frame
+   at ≥0.90 cosine) and every default untouched.
 
 ### B. CLI features requested — IMPLEMENTED (2026-07-18)
 
@@ -136,14 +168,30 @@ re-recorded after the fix.
    Write the sampled clip/window frames as images. This diagnosis required rebuilding the pipeline
    by hand; this switch makes the next "why did this match?" a ten-second glance.
 
-### C. Re-validation matrix (definition of done for the fix)
+### C. Re-validation matrix — PASSED (2026-07-18, all five runs; `--detection-mode visual`, 0.2s interval)
 
-| Test | Expectation |
-|---|---|
-| Daredevil begin clip vs Daredevil S01 (begin) | all episodes match, on the *card* frames (not black) |
-| Same clip vs Doctor Who S01 (begin) | **0** false positives |
-| Same clip vs Avatar S01 (begin) | **0** false positives |
-| Original end-stack regression (Daredevil 12/12 @ 98–99%, Avatar 0/21 ≤33%) | still clean — numbers may legitimately shift with full decode; **re-record them** |
+| Test | Expectation | Result |
+|---|---|---|
+| Daredevil begin clip (5s) vs Daredevil S01 (begin) | all episodes match, on the *card* frames (not black) | ✅ **12/12 MATCH, present=18/18, bestCos 99–100%, rigid 97–98%@0s** |
+| Same clip vs Doctor Who S01 (begin) | **0** false positives | ✅ **0/13, bestCos 19–53%** (was 9 false MATCHes @ 87–97%) |
+| Same clip vs Avatar S01 (begin) | **0** false positives | ✅ **0/20, bestCos 52–56%** (was 4 false MATCHes) |
+| End-stack regression: last-10s clip vs Daredevil S01 (end) | still 12/12 | ✅ **12/12 MATCH, present=32–33/33, bestCos 99–100%, rigid 97%@16–20s** |
+| End-stack regression: same clip vs Avatar S01 (end) | still 0 FP | ✅ **0/20, bestCos 62–71%** |
+
+Re-recorded baselines and notes:
+
+- **Begin-region separation: TP 99–100% (presence 18/18) vs FP ≤56% (presence 0/18)** — a
+  ~44-point gap with full evidence counts, replacing the broken state's inverted picture
+  (false MATCHes at 87–97% off six duplicated black frames).
+- **End-region FP floor moved ≤33% → ≤71%** and is expected to: the old ≤33% was distinctive
+  bright keyframe-cards compared against Avatar's few sampled keyframes; the honest comparison
+  is 33 usable clip frames against ~150 usable real content frames per candidate. The gap to
+  the 0.90 presence threshold (and to TP presence counts: 32–33/33 vs 0/33) remains wide.
+- Presence denominators are now real evidence: every usable clip frame is a distinct image
+  (duplicates dropped), so `present=18/18` means eighteen different pictures found, not one
+  black frame counted six times.
+- Doctor Who/Avatar library file counts differ from the first (broken) runs because the stray
+  `intro*.mkv` clips are no longer in those folders.
 
 ### D. Documentation debt this uncovered — DONE (2026-07-18)
 
@@ -166,5 +214,12 @@ in C is **not optional** — it is the guard against trading one wrong thing for
 **Progress note (2026-07-18):** §B and §D landed first (B4 recursive traversal + `--no-recurse` +
 relative paths, B5 `--output` with structured `MatchRow` rows, B6 `--dump-frames` via
 `VBR.Core.Diagnostics.FrameDump`; docs updated per §D plus `running_and_building.md`, `AGENTS.md`,
-and `PROGRESS.md`). **§A and §C remain open pending a maintainer decision.** Until they land,
-begin-region results still exhibit the black-frame false positives this doc diagnoses.
+and `PROGRESS.md`).
+
+**Final note (2026-07-18, same day):** on maintainer approval, §A landed
+(`DenseFrameSampler` + `FrameQuality` + clip-embed caching/`PrepareClip`, with 5 unit tests) and
+the full §C matrix ran clean — see the recorded results above. The flagged risk was handled as
+planned: the end-stack regression re-ran and re-recorded (12/12 @ 99–100%; FP floor ≤71%,
+explained above). The defect this doc diagnoses is **fixed and validated**; remaining follow-ups
+live in `docs/PROGRESS.md` (cached index, catalog, removal engine — and note the index must be
+built on this corrected sampling layer).

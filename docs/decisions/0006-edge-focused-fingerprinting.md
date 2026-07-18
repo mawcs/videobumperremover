@@ -77,10 +77,12 @@ low-information filtering and decodes keyframes only. See the 2026-07-18 entry i
   - **Reinterpreted (2026-07-18):** the shared decode path (`GetDenseAiFrames`) decodes
     **keyframes only** and *duplicates* them onto the fps grid, so a smaller interval never added
     distinct frames past the keyframe cadence — 0.2s "succeeding" where 0.5s failed was about
-    rescuing sparse keyframes from fps rounding, not true density. Real dense sampling requires
-    full decode of the (short) extracted edge windows — proposed in
-    [`../iterativeplan.md`](../iterativeplan.md) §A, pending decision. The interval-vs-clip-length
-    question above should be re-asked only after that lands.
+    rescuing sparse keyframes from fps rounding, not true density. **Resolved same day:** VBR now
+    full-decodes the (short) extracted edge windows with low-information filtering
+    (`VBR.Core.Fingerprinting.DenseFrameSampler` and `FrameQuality`; implemented and re-validated
+    clean — see [`../iterativeplan.md`](../iterativeplan.md) §A/§C), so the interval genuinely
+    controls density. The no-artificial-floor requirement on the interval stands; the
+    interval-vs-clip-length question above can now be studied on honest data.
 - **Sparse/middle interval** (VDF ~5–15s) — unchanged, still TBD; not exercised by the current
   edge-only build (see matcher-spec.md — the middle/interstitial path is future work).
 - Whether the middle is sampled at all in the fast path, or only in the interstitial pass.

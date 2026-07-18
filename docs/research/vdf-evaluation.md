@@ -401,14 +401,19 @@ First **begin-region** test: `vbr match --region begin --clip-length 5s --sample
 bumper none of them contain. Root cause chain, verified by probing keyframes with ffprobe and
 dumping the exact sampled frames as PNGs (that dump is now automated: `vbr match --dump-frames`):
 
-1. **The clip the matcher saw was 13/14 pure-black frames.** `GetDenseAiFrames` decodes
-   **keyframes only** (`-skip_frame nokey`, inherited from VDF's whole-file dedup scan) and its
-   `fps=1/0.2` filter fills the sampling grid by **duplicating** each keyframe. The clip region
-   has three keyframes — ~0.0s (black), ~1.0s (black), ~2.6s (the NETFLIX card) — which became
-   5 + 8 duplicated black frames plus **one** card frame. (An earlier entry above guessed
-   `GetDenseAiFrames` "dedupes near-identical frames" — the opposite: it *multiplies* them.)
-   Sampling also stops at the last keyframe's timestamp, so the ~2.4s where the card is actually
-   on screen was never sampled at all.
+1. **The clip the matcher saw collapsed to 3 distinct images, only one distinctive.**
+   `GetDenseAiFrames` decodes **keyframes only** (`-skip_frame nokey`, inherited from VDF's
+   whole-file dedup scan) and its `fps=1/0.2` filter fills the sampling grid by **duplicating**
+   each keyframe. The clip region has exactly three keyframes (full ffprobe frame map verified;
+   everything between them is P/B) — 0.021s (black), 1.022s (**blank white**: the ident
+   background flashing on, the scene cut that earned the I-frame), 2.607s (the red NETFLIX
+   card) — which became **6 duplicated black + 7 duplicated blank-white + one card frame = 14**.
+   (An earlier entry above guessed `GetDenseAiFrames` "dedupes near-identical frames" — the
+   opposite: it *multiplies* them.) The letters animation (~1.4–2.5s, the ident's most
+   distinctive content) sits entirely mid-GOP and was **never sampled at all**; the card's
+   ~2.2s on-screen hold is represented once. *(Correction, same day: this entry first said
+   "13/14 pure black" — an interpolation from viewing only 3 dump frames. The frame-by-frame
+   verification below fixed the composition; the mechanism is unchanged.)*
 2. **The search windows are mostly black too.** The Doctor Who rips keyframe every ~6s and the
    keyframes at 0s/6s are pure black. Near-black frames embed at **cosine 0.87–0.97 against any
    other near-black frame** (compression noise keeps them off 1.0) — whichever episodes' noise
@@ -422,6 +427,33 @@ dumping the exact sampled frames as PNGs (that dump is now automated: `vbr match
    6.0s keyframe smeared across fps ticks 6–11.8s). **Audio behaved correctly** throughout
    (45–73%, below the 0.80 threshold) — no defect on that path.
 
+**Ground-truth verification (same day — maintainer challenged the first write-up, rightly):**
+the maintainer exported a per-frame 0.2s reference grid of the ident from DaVinci Resolve
+(`test_materials/dd_netflix_bumper_davinci_export/24Frames/`) that looked nothing like the
+pipeline dump, plus a keyframe dump with far more variety than "3 keyframes" implies. Follow-up
+checks reconciled everything and hardened the diagnosis:
+
+- A **full-decode** `fps=1/0.2` dump of the same 5s yields **25 frames matching the DaVinci
+  reference frame-for-frame** (black → blank white → letters fly in → 3D shadow → red card
+  settles). ffmpeg produces the correct frames when asked — the defect is the pipeline's *frame
+  selection* (`-skip_frame nokey`), not decode capability, and not "an ffmpeg limitation."
+- The `-skip_frame nokey` decode itself is **pixel-correct**: the 3 keyframes decode identical
+  to the same instants under full decode — no corruption. Every frame the pipeline embedded was
+  a *genuine* frame of its timestamp; the pathology is which timestamps are represented and how
+  many times each.
+- The maintainer's higher-variety keyframe dump (`.../Keyframes/`) turned out to be from
+  `Bumper.mkv` — a DaVinci **re-encode** whose fresh GOP places I-frames at exactly
+  0/1.001/2.002/3.003/4.004/5.005 — not the original's keyframe structure (which really is just
+  3 I-frames in the first 5s; full frame map probed).
+- The `present=6/14` hits are **precisely the six black duplicates** — the blank-white
+  duplicates scored high-80s against these libraries (part of the bestCos floor), just under
+  the 0.90 presence threshold. Both frame classes are low-information; the planned filter must
+  reject **near-uniform (white) as well as near-black** — already §A1's wording.
+- **Not begin-specific:** the same episode's end region keyframes every **~1.4–3s** (scene-cut
+  driven, bright distinctive cards) — which is why the end-region validation passed. Severity
+  is **keyframe-cadence + content dependent, on both the clip and the candidate sides**; the
+  begin edge merely exposed it first.
+
 Consequences for earlier entries in this log: the **~65-pt TP/FP gap is end-region-specific**
 (that clip's frames are distinctive bright cards on scene-cut keyframes); the **0.2s-interval
 hard requirement** was really about rescuing sparse keyframes from fps rounding — density past
@@ -432,6 +464,45 @@ Fix plan (low-information luma filter on both sides + full decode of the short e
 the re-validation matrix: [`../iterativeplan.md`](../iterativeplan.md) — **pending decision, not
 yet implemented.** The CLI usability additions from the same session (recursive `--library`
 traversal + `--no-recurse`, `--output` report file, `--dump-frames` diagnostic) are implemented.
+*(Update, same day: implemented and validated — next entry.)*
+
+## FIX VALIDATED — full decode + low-information filter, clean matrix (2026-07-18)
+
+The §A fixes from [`../iterativeplan.md`](../iterativeplan.md) landed the same day:
+`VBR.Core.Fingerprinting.DenseFrameSampler` (full decode of the short extracts — same ffmpeg
+chain minus `-skip_frame nokey`) and `VBR.Core.Fingerprinting.FrameQuality` (VDF's own
+`SelectUsableDenseFrames` dark/duplicate guards — which the probe had bypassed — plus a
+calibrated near-uniform rejection: mean abs horizontal luma delta ≥ 1.0; blank-white ident
+frames measure 0.55–0.68, real content ≥ 1.33). Clip embeddings are now cached per run
+(`PrepareClip`), which also fails loudly on an all-black/blank clip. Thresholds and the
+presence-≥1 rule were left exactly at the spec's defaults — no tuning was needed.
+
+Re-validation matrix (all `--detection-mode visual`, `--sample-interval 0.2s`):
+
+| Run | Broken (2026-07-18 AM) | Fixed |
+|---|---|---|
+| DD begin 5s vs DD S01 | "99%" inflated by black-on-black | **12/12 MATCH, present=18/18, bestCos 99–100%, rigid 97–98%@0s** |
+| same vs Doctor Who S01 | 9 false MATCHes @ 87–97% | **0/13, bestCos 19–53%** |
+| same vs Avatar S01 | 4 false MATCHes | **0/20, bestCos 52–56%** |
+| DD end 10s vs DD S01 | 12/12 @ 98–99% (duplicate-inflated counts) | **12/12 MATCH, present=32–33/33, bestCos 99–100%, rigid 97%@16–20s** |
+| same vs Avatar S01 | 0/21 @ ≤33% | **0/20, bestCos 62–71%** |
+
+Reading the numbers:
+
+- **Begin-region separation is now real: TP 99–100% (presence 18/18) vs FP ≤56% (presence
+  0/18)** — and presence denominators mean something: every usable clip frame is a distinct
+  image, so `present=18/18` is eighteen different pictures found, not one black frame counted
+  six times.
+- **The end-region FP floor legitimately moved ≤33% → ≤71%.** The old floor compared a few
+  distinctive bright keyframe-cards against Avatar's few sampled keyframes; the honest pipeline
+  compares 33 usable clip frames against ~150 usable real-content frames per candidate — the
+  best coincidental cosine among vastly more real comparisons is higher. The margin to the 0.90
+  presence threshold stays wide, and rigid corroborates only true matches. **The "~65-pt gap"
+  is retired as a benchmark; the meaningful signal is presence counts (18/18 vs 0/18) plus a
+  region-dependent ~20–45-point cosine gap.**
+- The earlier "4s clip failed at 0.5s interval, succeeded at 0.2s" finding is obsolete with
+  full decode (the interval now genuinely controls density); ADR 0006's hard requirement it
+  motivated — no artificial floor on `--sample-interval` — stands.
 
 ## Open questions / next tests
 

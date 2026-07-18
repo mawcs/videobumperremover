@@ -58,8 +58,9 @@ Key options (run `--help` for the full list):
 - `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip/` + one numbered
   folder per candidate) to inspect exactly what the visual matcher compared.
 
-> **Known defect (2026-07-18):** begin-region / dark-bumper matching currently false-positives on
-> black frames — see [`iterativeplan.md`](iterativeplan.md) before trusting begin-region results.
+Both regions are validated end to end (2026-07-18): begin-region Netflix-ident test 12/12 true
+positives vs 0 false positives across two unrelated libraries, end-stack regression clean — the
+recorded numbers live in [`iterativeplan.md`](iterativeplan.md) §C.
 
 ### Test
 

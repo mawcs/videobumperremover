@@ -113,23 +113,39 @@ the *probe-validated pipeline itself* (both probe and port share them — parity
 
 1. **Step 3's "skip empty/black frames" has never filtered anything.** Probe and port skip only
    zero-length buffers, and `GetDenseAiFrames` never emits one (it slices fixed-size chunks or
-   fails the whole call). No black/low-information filtering exists anywhere — and near-black
-   frames embed at cosine 0.87–0.97 against *any* other near-black frame, which is exactly the
-   false-positive mode §1's "do not match on black/silence" rule exists to prevent.
+   fails the whole call). No black/low-information filtering exists anywhere — and low-information
+   frames embed at cosine 0.87–0.97 against *any* frame of the same character (near-black against
+   near-black, and equally blank-white against blank-white — the ident's background), which is
+   exactly the false-positive mode §1's "do not match on black/silence" rule exists to prevent.
+   The required filter must reject **near-uniform frames of any brightness**, not just dark ones.
 2. **Step 2's "sample densely" is keyframe-bound.** `GetDenseAiFrames` decodes only keyframes
    (`-skip_frame nokey`, a whole-file-scan optimization inherited from VDF's dedup) and its `fps`
    filter fills the requested grid by **duplicating** each keyframe. Consequences: distinct
-   sampled content is capped at keyframe cadence no matter how small `--sample-interval` is;
-   `present=h/n` counts duplicates as if they were independent evidence; the rigid ≥4-hit
-   corroborator is trivially satisfied by duplicates; and sampling stops at the *last keyframe's
-   timestamp*, so content after it is never seen at all.
+   sampled content is capped at keyframe cadence no matter how small `--sample-interval` is
+   (the test clip's 5s collapsed to 3 distinct images; the ident's letter animation sits entirely
+   mid-GOP and is never sampled); `present=h/n` counts duplicates as if they were independent
+   evidence; the rigid ≥4-hit corroborator is trivially satisfied by duplicates; and the span
+   after the last keyframe collapses to a single flushed sample.
 
-**Requirements this adds (fix not yet decided/implemented — plan and re-validation matrix in
-[`../iterativeplan.md`](../iterativeplan.md) §A/§C):** step 3's skip must become a real
-luma-based low-information filter (near-black / near-uniform rejection from the raw RGB bytes) on
-**both** clip and candidate sides, failing loudly when the clip retains no distinctive frames;
-and step 2 must **decode all frames** within the short extracted edge windows — full decode of a
-≤30s extract is cheap; keyframe-only decode is for whole-file scans, not this matcher.
+**Ground-truth verified (2026-07-18, against a per-frame DaVinci reference export +
+full-decode ffmpeg dumps):** the keyframes themselves decode pixel-correct — the defect is frame
+*selection*, duplication, and missing filtering, not decode corruption — and a full decode of the
+same 5s at the same 0.2s grid produces the correct 25 distinct frames. The defect is **not
+begin-edge-specific**: severity tracks local keyframe cadence × content distinctiveness on both
+the clip and candidate sides (the validated end-stack region keyframes every ~1.4–3s on bright
+cards, which is why end-region validation passed).
+
+**Requirements this adds — IMPLEMENTED AND VALIDATED (2026-07-18; plan and recorded
+re-validation numbers in [`../iterativeplan.md`](../iterativeplan.md) §A/§C):** step 3's skip is
+now a real low-information filter — `VBR.Core.Fingerprinting.FrameQuality` (VDF's own
+dark/duplicate guards from `ScanEngine.SelectUsableDenseFrames`, plus a calibrated near-uniform
+rejection, `MinDetail`) applied on **both** clip and candidate sides, failing loudly via
+`VisualBumperMatcher.PrepareClip` when the clip retains no distinctive frames; and step 2 now
+**decodes all frames** within the short extracted edge windows —
+`VBR.Core.Fingerprinting.DenseFrameSampler`, the same ffmpeg chain minus `-skip_frame nokey`.
+Re-validated clean: begin-region TP 12/12 @ 99–100% (present=18/18) vs FP 0/33 files (bestCos
+≤56%); end-stack regression 12/12 @ 99–100% vs 0/20 (≤71%). The presence-≥1 decision and every
+default threshold survived unchanged.
 
 ---
 
@@ -221,10 +237,13 @@ Grow it; don't fork a second tool:
 - [x] Every new source file carries the AGPLv3 header (AGENTS.md).
 
 > **2026-07-18 note:** the checklist above (parity with `VisualTailProbe`) still stands — but the
-> *validated pipeline itself* was subsequently found defective for begin-region / dark bumpers
+> *validated pipeline itself* was subsequently found defective for low-information frames
 > (black-frame false positives; see the §2 correction). "Done" here means "faithfully ports the
-> probe," not "matcher finished." New requirements are pending in
-> [`../iterativeplan.md`](../iterativeplan.md).
+> probe," not "matcher finished." **Same-day resolution:** the §2 correction's requirements were
+> implemented and re-validated clean ([`../iterativeplan.md`](../iterativeplan.md) §A/§C), so the
+> production matcher now *deliberately diverges* from the probe in exactly two ways — full decode
+> (`DenseFrameSampler`) and low-information filtering (`FrameQuality`) — and the probe's numbers
+> are superseded by the §C-recorded baselines.
 
 ---
 
