@@ -100,16 +100,22 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   the same session, the CLI also gained: recursive `--library` traversal by default
   (`--no-recurse` to disable), `--output <file>` report writing, and `--dump-frames <dir>` for
   dumping every sampled frame as PNGs for diagnosis.
-- **Removal command — initial design decided, not yet implemented (2026-07-19).**
-  [`docs/decisions/0007-removal-command.md`](docs/decisions/0007-removal-command.md) specs a new
-  `vbr remove`: v1 bundles clip extraction + matching + removal in one invocation (reuses
+- **Removal command — designed and built for stream-copy; re-encode next (2026-07-19).**
+  [`docs/decisions/0007-removal-command.md`](docs/decisions/0007-removal-command.md) specs
+  `vbr remove` (v1 bundles clip extraction + matching + removal in one invocation, reusing
   `match`'s parameters unchanged); cut point is arithmetic (see the Boundary detection bullet
   above), not per-file detected; output is **non-destructive** — a `name.vbr.ext` sibling file,
   never touching the original (a future `cleanup` command, not yet built, handles replacing
-  originals); `--re-encode` defaults to `true` because ffmpeg's stream-copy path realigns
-  subtitle cues poorly (`--re-encode false` is an explicit opt-out exception). Manifest schema
-  and re-encode algorithm/container specifics are still open — see the ADR. The maintainer is
-  speccing implementation details on top of this ADR next.
+  originals). **Built and verified against real media:** `VBR.Core.Removal.ClipRemover` +
+  `VBR.CLI.Commands.RemoveCommand` — **stream-copy only** (`--re-encode false`; the maintainer's
+  chosen build order). `--re-encode` still defaults to `true` per the ADR, but re-encode isn't
+  implemented yet, so the command errors clearly rather than silently doing the wrong thing if it
+  resolves `true`. Two ffmpeg gotchas verified empirically before trusting them: begin-region
+  seeks must place `-ss` *after* `-i` (snaps forward, safe); end-region `-t`/`-to` overshoots by
+  ~0.2s regardless of target, so the cut targets a keyframe ≥1s before the arithmetic point. A
+  live test also confirmed **a length sufficient to match a bumper is not necessarily sufficient
+  to remove it whole** — see ADR 0007's "Implementation findings." Manifest schema (a first
+  concrete JSON shape shipped) and re-encode algorithm/container specifics remain open.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 

@@ -19,38 +19,62 @@ using System.Globalization;
 using System.Text;
 using VBR.Core.Extraction;
 using VBR.Core.Matching;
+using VBR.Core.Removal;
 using VDF.Core.AI;
 using static VBR.CLI.Commands.SharedOptions;
 
 namespace VBR.CLI.Commands;
 
-/// <summary>One row of the match report — kept structured (rather than formatting straight to
-/// the console) so the same rows can be written to --output, and a machine-readable format
-/// (e.g. JSON) can serialize them later without reshaping the command. <c>File</c> is the
-/// library-relative path; exactly one of <c>Error</c> or the detail fields is populated.</summary>
-internal sealed record MatchRow(string File, bool Present, string? VisualDetail, string? AudioDetail, string? Error) {
+/// <summary>One row of the remove report. Mirrors <see cref="MatchRow"/> (match/detail fields)
+/// plus the removal outcome — kept as its own type rather than extending <c>MatchRow</c> since
+/// the extra fields (<c>OutputPath</c>, <c>RemovalError</c>) are meaningless for <c>match</c> and
+/// would just be dead weight there.</summary>
+internal sealed record RemoveRow(string File, bool Present, string? VisualDetail, string? AudioDetail,
+		string? Error, string? OutputPath, string? RemovalError) {
 	internal string ToLine() {
 		if (Error is not null)
 			return $"     {File,-48}  (error: {Error})";
 		var parts = new List<string>(2);
 		if (VisualDetail is not null) parts.Add(VisualDetail);
 		if (AudioDetail is not null) parts.Add($"[{AudioDetail}]");
-		return $"{(Present ? "MATCH" : "     ")}  {File,-48}  {string.Join("  ", parts)}";
+		string detail = string.Join("  ", parts);
+		if (!Present)
+			return $"     {File,-48}  {detail}";
+		if (RemovalError is not null)
+			return $"ERROR    {File,-48}  {detail}  (removal failed: {RemovalError})";
+		return $"REMOVED  {File,-48}  {detail}  -> {Path.GetFileName(OutputPath!)}";
 	}
 }
 
-internal static class MatchCommand {
+/// <summary>
+/// <c>vbr remove</c> — per ADR 0007 (docs/decisions/0007-removal-command.md): bundles clip
+/// extraction + matching + removal in one command, reusing <c>match</c>'s parameter surface.
+/// Never modifies the source; writes a sibling <c>name.vbr.ext</c> plus a JSON manifest per cut.
+/// Re-encode (Mode B, the eventual default) is not implemented yet — only <c>--re-encode false</c>
+/// (stream-copy) currently runs, per the maintainer's stated build order (stream-copy first, for
+/// faster iteration; re-encode second).
+/// </summary>
+internal static class RemoveCommand {
+
+	static readonly Option<bool> ReEncode = new("--re-encode") {
+		Description = "Re-encode (Mode B: frame-accurate, correct subtitle realignment) vs. " +
+			"stream-copy (Mode A: fast, keyframe-bound, subtitle cues NOT realigned for " +
+			"begin-region cuts). Default true — but re-encode isn't implemented yet; pass " +
+			"--re-encode false to actually remove anything right now.",
+		DefaultValueFactory = _ => true,
+	};
 
 	static readonly Option<FileInfo> Output = new("--output") {
-		Description = "Also write the match report to this file: the same per-file rows and " +
+		Description = "Also write the removal report to this file: the same per-file rows and " +
 			"summary as the console, plus a header recording the run's parameters.",
 	};
 
 	internal static Command Build() {
-		var cmd = new Command("match",
-			"Find a bumper's presence across a folder of videos. Visual DINOv2 presence matching " +
-			"runs by default; the reference clip is extracted internally from --clip-from — you " +
-			"never provide a pre-cut clip.");
+		var cmd = new Command("remove",
+			"Find a bumper's presence across a folder of videos and remove it from each match. " +
+			"Never modifies the source — writes a sibling 'name.vbr.ext' file instead, plus a " +
+			"JSON manifest recording exactly what was cut. Bundles clip extraction, matching, " +
+			"and removal in one command (see docs/decisions/0007-removal-command.md).");
 		cmd.Options.Add(ClipFrom);
 		cmd.Options.Add(Region);
 		cmd.Options.Add(ClipLength);
@@ -64,8 +88,18 @@ internal static class MatchCommand {
 		cmd.Options.Add(NoRecurse);
 		cmd.Options.Add(Output);
 		cmd.Options.Add(DumpFrames);
+		cmd.Options.Add(ReEncode);
 
 		cmd.SetAction(async (parseResult, ct) => {
+			bool reEncode = parseResult.GetValue(ReEncode);
+			if (reEncode) {
+				Console.Error.WriteLine(
+					"Error: re-encode removal (--re-encode true, the default) is not implemented " +
+					"yet. Pass --re-encode false to remove via stream-copy for now. See " +
+					"docs/decisions/0007-removal-command.md.");
+				return 1;
+			}
+
 			var clipFrom = parseResult.GetValue(ClipFrom)!;
 			ClipEdge region = parseResult.GetValue(Region);
 			TimeSpan clipLength = parseResult.GetValue(ClipLength);
@@ -81,6 +115,11 @@ internal static class MatchCommand {
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
+
+			if (region == ClipEdge.begin)
+				Console.Error.WriteLine(
+					"Note: begin-region stream-copy removal does not realign subtitle cues — " +
+					"cues will run early by the removed duration until re-encode is implemented.");
 
 			VisualBumperMatcher? visual = null;
 			try {
@@ -114,10 +153,6 @@ internal static class MatchCommand {
 						return 1;
 					}
 
-					// Embed + validate the clip once up front: an all-black/blank clip is an input
-					// error (matching on it only fabricates false positives), so fail the run with
-					// one clear message instead of erroring on every candidate row. Also warms the
-					// per-instance clip-embedding cache the per-file loop reuses.
 					if (visual is not null) {
 						try {
 							visual.PrepareClip(referenceClip.Path, ct);
@@ -133,37 +168,52 @@ internal static class MatchCommand {
 							new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
 						.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
 						.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipFrom.FullName), StringComparison.OrdinalIgnoreCase))
+						// A prior run's own output ("name.vbr.ext") must never be re-matched/re-cut.
+						.Where(f => !Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", StringComparison.OrdinalIgnoreCase))
 						.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 						.ToList();
 
 					int matchCount = 0;
+					int removedCount = 0;
 					int comparedCount = 0;
-					var rows = new List<MatchRow>(candidates.Count);
+					var rows = new List<RemoveRow>(candidates.Count);
 					foreach (string file in candidates) {
 						ct.ThrowIfCancellationRequested();
-						// Library-relative: with recursive traversal, same-named files in
-						// different subfolders must stay distinguishable.
 						string display = Path.GetRelativePath(library.FullName, file);
 						MatchResult? visualResult = null;
 						MatchResult? audioResult = null;
-						MatchRow row;
+						RemoveRow row;
 						try {
 							if (visual != null) visualResult = visual.Match(referenceClip.Path, file, searchRegion, ct);
 							if (audio != null) audioResult = audio.Match(referenceClip.Path, file, searchRegion, ct);
 							comparedCount++;
 							bool present = visualResult?.Present ?? audioResult?.Present ?? false;
-							if (present) matchCount++;
-							row = new MatchRow(display, present, visualResult?.Detail, audioResult?.Detail, null);
+							string? outputPath = null;
+							string? removalError = null;
+							if (present) {
+								matchCount++;
+								try {
+									var removed = ClipRemover.Remove(file, region, clipLength, RemovalMode.StreamCopy,
+										visualResult?.Detail ?? audioResult?.Detail, ct);
+									outputPath = removed.OutputPath;
+									removedCount++;
+								}
+								catch (Exception ex) {
+									removalError = ex.Message;
+								}
+							}
+							row = new RemoveRow(display, present, visualResult?.Detail, audioResult?.Detail, null, outputPath, removalError);
 						}
 						catch (Exception ex) {
-							row = new MatchRow(display, false, null, null, ex.Message);
+							row = new RemoveRow(display, false, null, null, ex.Message, null, null);
 						}
 						rows.Add(row);
 						Console.WriteLine(row.ToLine());
 					}
 
-					string summary = $"{matchCount}/{comparedCount} file(s) matched" +
-						(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors)." : ".");
+					string summary = $"{matchCount}/{comparedCount} file(s) matched, {removedCount} removed" +
+						(matchCount > removedCount ? $" ({matchCount - removedCount} failed)." : ".") +
+						(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors.)" : "");
 					Console.WriteLine();
 					Console.WriteLine(summary);
 
@@ -182,16 +232,12 @@ internal static class MatchCommand {
 		return cmd;
 	}
 
-	/// <summary>Writes the report (parameter header + the same rows/summary the console showed)
-	/// to <paramref name="output"/>. Returns false after printing an error if the file could not
-	/// be written — the caller turns that into a nonzero exit code, since the user explicitly
-	/// asked for the file.</summary>
-	static bool WriteReport(FileInfo output, IReadOnlyList<MatchRow> rows, string summary,
+	static bool WriteReport(FileInfo output, IReadOnlyList<RemoveRow> rows, string summary,
 			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
 			TimeSpan sampleInterval, DetectionMode mode, float presenceThreshold,
 			float rigidHitThreshold, float minSimilarity, DirectoryInfo library, bool recurse) {
 		var report = new StringBuilder();
-		report.AppendLine($"vbr match report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
+		report.AppendLine($"vbr remove report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine($"clip-from:      {clipFrom.FullName}");
 		report.AppendLine($"region: {region}   clip-length: {FormatSeconds(clipLength)}   " +
 			$"search-length: {FormatSeconds(searchLength)}   sample-interval: {FormatSeconds(sampleInterval)}");
@@ -199,8 +245,9 @@ internal static class MatchCommand {
 			$"detection-mode: {mode}   presence-threshold: {presenceThreshold:0.###}   " +
 			$"rigid-hit-threshold: {rigidHitThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
 		report.AppendLine($"library:        {library.FullName}   ({(recurse ? "recursive" : "top level only")})");
+		report.AppendLine($"mode:           stream-copy (--re-encode false)");
 		report.AppendLine(new string('-', 78));
-		foreach (MatchRow row in rows)
+		foreach (RemoveRow row in rows)
 			report.AppendLine(row.ToLine());
 		report.AppendLine();
 		report.AppendLine(summary);

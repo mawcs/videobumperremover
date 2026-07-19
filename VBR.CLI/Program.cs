@@ -19,4 +19,5 @@ using VBR.CLI.Commands;
 
 var root = new RootCommand("vbr-cli — Video Bumper Remover command-line interface");
 root.Subcommands.Add(MatchCommand.Build());
+root.Subcommands.Add(RemoveCommand.Build());
 return await root.Parse(args).InvokeAsync();

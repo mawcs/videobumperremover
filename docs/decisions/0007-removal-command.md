@@ -3,6 +3,13 @@
 - **Status:** accepted (core decisions below; re-encode algorithm/container/codec specifics are
   explicitly deferred — see Open questions)
 - **Date:** 2026-07-19
+- **Implementation status (2026-07-19):** `vbr remove` built and verified against real media —
+  **stream-copy (`--re-encode false`) only.** Re-encode (`--re-encode true`, the *decided*
+  default) is not implemented yet; the command errors clearly and tells the user to pass
+  `--re-encode false` if it resolves to true. This split build order was the maintainer's
+  explicit choice (stream-copy first, for faster iteration while testing) — it does not change
+  the decision above; `--re-encode` still defaults to `true` in the CLI, matching the target
+  design once Mode B lands.
 - **Related:** [`../design/removal-pipeline.md`](../design/removal-pipeline.md) (Mode A/B
   mechanics), [`../design/bumper-catalog.md`](../design/bumper-catalog.md) (catalog duration
   fields), [`0004-bumper-catalog.md`](0004-bumper-catalog.md), [`0006-edge-focused-fingerprinting.md`](0006-edge-focused-fingerprinting.md),
@@ -72,6 +79,10 @@ content→junk transition in each candidate. Design discussion concluded this is
    `ROADMAP.md` Phase 5's earlier "write outputs to a staging area" language, updated
    accordingly.)* User-configurable output location/naming is explicitly deferred — noted as a
    real future need ("I will probably want to give the user an option..."), not designed here.
+   **Rationale (maintainer):** co-located files are far easier to verify — select both and drop
+   them into MPC/VLC for a quick side-by-side check — than hunting across a separate staging
+   folder. A future option for separate folders/subfolders (as some batch ffmpeg front-ends
+   offer) is planned but not built.
 
 4. **A future `cleanup` command (name reserved, not built) will handle promoting or replacing
    originals with verified `.vbr.` outputs.** This is where "verification before destruction"
@@ -107,6 +118,40 @@ length in → garbage cut out, with no per-file check to catch it); re-encode-by
 output means the working `.vbr.` file sits live next to the original (a media server or casual
 browsing could surface both) until `cleanup` exists to resolve that; the fixed-timeslot-DVD-padding
 scenario (raised and set aside below) remains a theoretical gap if it's ever hit on unusual media.
+
+## Implementation findings (2026-07-19, stream-copy build)
+
+Two ffmpeg behaviors were verified empirically against real media (Daredevil S01E01's Netflix
+ident) before trusting them in code — see `VBR.Core.Removal.ClipRemover`'s doc comments for the
+full detail:
+
+- **Begin-region seeking is safe in the "output seeking" direction** (`-ss` placed *after* `-i`):
+  it snaps FORWARD to the next keyframe at or after the requested time — verified by seeking to
+  5s (inside the Netflix card, which starts at 2.607s) and landing on the *next* ident (6.027s),
+  never backward into the card. The kept segment can only start at or after the true boundary.
+- **End-region cutting is NOT safe with naive `-t`/`-to`.** It overshoots the requested duration
+  by a small, roughly constant amount (~0.2s observed, independent of the target — confirmed by
+  targeting three different points and seeing the same overshoot each time) to complete the
+  current frame-reorder buffer. Targeting an exact keyframe timestamp still overshot into that
+  keyframe's own content. `ClipRemover` compensates by finding a keyframe **at least 1 full
+  second before** the computed cut point (`EndCutOvershootSafetyMarginSeconds`), never the
+  nearest one — trading a bit of extra trimmed content for the guarantee that no bumper content
+  ever leaks into the kept output.
+
+**A live end-to-end test surfaced the exact risk this ADR's Consequences section flagged**
+("correctness now depends entirely on clip-selection precision"). The first test used
+`--clip-length 10s` — the figure validated earlier in this project for *matching* the Daredevil
+end-stack — and it left part of the stack (the "abc studios"/"MARVEL" cards) in the removed
+output, because the true stack (DeKnight → Goddard → ABC Studios → Marvel → Netflix → black) is
+~20.5s, not 10s. **A length sufficient to match is not necessarily sufficient to remove** — 10s
+of a ~20.5s stack is more than enough distinctive content for the presence matcher to find, but
+leaves the earlier ~10.5s of the stack sitting in the "kept" output. Corrected to 20.5s, the cut
+landed cleanly before the stack (present=70/70, source untouched, output duration confirmed by
+independent ffprobe). Separately, a begin-region test against the ~5s Netflix ident removed
+*exactly* 5.000s and landed precisely at the boundary with a **second, separate** intro sequence
+(a Marvel comic-page animation) that follows it — correct behavior, not a defect: that second
+sequence is a distinct bumper requiring its own catalog entry/invocation, not part of the one
+just measured.
 
 ## Open questions
 

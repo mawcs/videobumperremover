@@ -121,9 +121,9 @@ was flagged right after the initial scaffold and fixed before anything else was 
     recursion, relative paths, report file, dump structure (14 clip frames = the black-frame
     diagnosis numbers), and `--no-recurse`.
 
-### Removal command design — ADR 0007 (2026-07-19)
+### Removal command — designed and built (stream-copy) — ADR 0007 (2026-07-19)
 
-- **Decided (design only — no code yet):** [`decisions/0007-removal-command.md`](decisions/0007-removal-command.md)
+- **Decided:** [`decisions/0007-removal-command.md`](decisions/0007-removal-command.md)
   specs a new `vbr remove` command. v1 bundles clip extraction + matching + removal in one
   invocation, reusing `match`'s parameter surface unchanged (catalog/index-aware variants are
   future, additive work). Key resolutions:
@@ -143,17 +143,43 @@ was flagged right after the initial scaffold and fixed before anything else was 
     prior Cowork investigation) — not primarily for frame accuracy, though that follows too.
     `--re-encode false` (Mode A/stream-copy) remains available as an explicit v1 exception. See
     `design/removal-pipeline.md`'s 2026-07-19 update.
-  - Open (deferred, tracked in the ADR): manifest schema, re-encode algorithm/container/codec
-    specifics, `cleanup` command design, a possible lightweight post-cut sanity check (verify
-    one frame each side of the computed cut point via the existing presence matcher — proposed
-    as a cheap alternative to full boundary detection, not required).
+  - Open (deferred, tracked in the ADR): manifest schema (a first concrete shape shipped — see
+    below), re-encode algorithm/container/codec specifics, `cleanup` command design, a possible
+    lightweight post-cut sanity check (verify one frame each side of the computed cut point via
+    the existing presence matcher — proposed as a cheap alternative to full boundary detection,
+    not required).
+- **Built and verified against real media (2026-07-19), stream-copy only** (the maintainer's
+  chosen build order — re-encode next): `VBR.Core.Removal.ClipRemover` (arithmetic cut, ffmpeg
+  invocation, JSON manifest sidecar via a source-generated `JsonSerializerContext`),
+  `VBR.CLI.Commands.RemoveCommand` (`vbr remove`, errors clearly if `--re-encode` resolves
+  `true` since Mode B isn't built), and `VBR.CLI.Commands.SharedOptions` (factored out of
+  `MatchCommand` so `match`/`remove` share one option surface instead of drifting copies).
+  - **Two ffmpeg seek behaviors verified empirically before trusting them** (real Daredevil
+    media): begin-region `-ss` placed *after* `-i` snaps FORWARD to the next keyframe (safe —
+    never leaks bumper content backward); end-region `-t`/`-to` overshoots the requested duration
+    by a small, roughly constant amount (~0.2s, independent of target) — so end cuts target a
+    keyframe **≥1s before** the arithmetic cut point, never the nearest one. Both documented in
+    `ClipRemover`'s doc comments and ADR 0007's new "Implementation findings" section.
+  - **Live test caught a real precision gap the ADR had flagged as a risk, not a code bug:** a
+    `--clip-length 10s` end-region test (10s was validated earlier this session for *matching*
+    the Daredevil end-stack) left part of the ~20.5s real stack (`abc studios`/`MARVEL` cards) in
+    the "cleaned" output — a length sufficient to match is not necessarily sufficient to remove.
+    Corrected to 20.5s, the cut landed cleanly (present=70/70, output independently re-probed with
+    ffprobe, source confirmed byte-for-byte/timestamp untouched). A begin-region test removed
+    *exactly* 5.000s and landed precisely at a second, separate intro sequence (a Marvel
+    comic-page animation) — correct: that's a distinct bumper, not part of the one measured.
+  - 5 new unit tests (`VBR.Tests/Removal/ClipRemoverTests.cs`): pure tests for output-path
+    naming and the reject-not-implemented/reject-non-positive-length guards, plus an env-var-gated
+    real-media test (same skip-cleanly convention as `AudioBumperMatcherTests`) verifying output
+    exists, source is untouched, and the actual cut duration is independently re-probed.
 
 ## Open / next steps
 
-- [ ] **Removal engine — initial design decided, not yet implemented.** See
+- [ ] **Removal engine — designed (ADR 0007) and built for stream-copy; re-encode next.** See
   [ADR 0007](decisions/0007-removal-command.md) and the entry above: `vbr remove`, arithmetic
-  cut point (no per-file boundary detection), non-destructive `.vbr.` sibling output, re-encode
-  by default. Next: the maintainer is speccing implementation details on top of this ADR.
+  cut point (no per-file boundary detection), non-destructive `.vbr.` sibling output, verified
+  against real media. Next: implement Mode B (re-encode), including proper subtitle cue
+  realignment — the reason `--re-encode` defaults to `true` even though only `false` runs today.
 - [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file
   content→junk detection turned out to be unnecessary: bumper duration is empirically constant
