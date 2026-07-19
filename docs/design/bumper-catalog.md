@@ -124,20 +124,33 @@ so an imported index still resolves to the user's files.
 
 ## Precision is the tool's job, not the user's (design principle)
 
-Validated on the Daredevil end-stack (2026-07-15). The user must never need a frame-accurate clip.
+Validated on the Daredevil end-stack (2026-07-15). **Updated 2026-07-19** (see
+[ADR 0007](../decisions/0007-removal-command.md)): the *mechanism* below changed from per-file
+boundary detection to a one-time precise duration + arithmetic cut, after a maintainer spot-check
+across ~70 videos (multiple studios, multiple bumper lengths, including personally-ripped DVD
+sources) found bumper boundaries consistent to within ~0.02s. The **matching** step still only
+needs a generous rough region — that part is unchanged.
 
 - **Enroll from a generous rough region** (e.g. "the last ~20s" of one episode) that contains the
-  junk. The distinctive idents in it carry the match (97–98% on Daredevil); black/uniform frames
-  are low-information and must **not** be used as the matching signal (a mostly-black clip matches
-  black anywhere → false positives).
-- **Edge bumpers only need one boundary found.** An end bumper runs to EOF, a begin bumper from
-  BOF — so removal is "cut from the content→junk transition to the file edge." The trailing/leading
-  **black or silence padding is removed by definition** (it's between the transition and the edge),
-  and the *outer* edge never needs marking. The tool finds only the **inner** content→junk boundary
-  (boundary-growing / edge detection) and refines it toward frame accuracy.
-- **Match on distinctive content; remove the full extent** (including black/silence padding).
+  junk, for *matching* purposes. The distinctive idents in it carry the match (97–98% on
+  Daredevil); black/uniform frames are low-information and must **not** be used as the matching
+  signal (a mostly-black clip matches black anywhere → false positives; see the filtering built
+  in `VBR.Core.Fingerprinting.FrameQuality`).
+- **Edge bumpers only need one boundary found — and it's found once, not per file.** An end
+  bumper runs to EOF, a begin bumper from BOF — so removal is "cut from the content→junk
+  transition to the file edge," and the trailing/leading **black or silence padding is removed
+  by definition** (it's between the transition and the edge). Because bumper duration is
+  constant across files (the empirical finding above), that transition doesn't need to be
+  *detected* per candidate: it's `fileDuration − duration` (end) / `duration` (begin), computed
+  from the catalog entry's precisely-measured **`duration`** field. What used to be described
+  here as "boundary-growing / edge detection" is retired as a per-file runtime step — the
+  precision work happens **once**, at enrollment, when `duration`/`canonical_boundaries` are
+  measured (a clip-selection UI/UX problem, not a matching or removal one).
+- **Match on distinctive content; remove the full extent** (including black/silence padding) —
+  still true, just executed as arithmetic against a known duration rather than a search.
 
-Net: rough region in → tool nails the exact cut. No user precision required, ever.
+Net: rough region in → precise duration measured once at enrollment → tool computes the exact
+cut arithmetically for every file, no per-file search and no per-file user precision required.
 
 **Interface contract (enforce this in code):** every enrollment/matching entry point — API, CLI,
 UI — accepts a **source video path + a time range (or "last/first N seconds")**, never a pre-cut

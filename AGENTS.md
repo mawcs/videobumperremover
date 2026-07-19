@@ -56,8 +56,13 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   resolved: [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md).
   `VBR.Core`/`VBR.CLI`/`VBR.Tests` scaffolded; decision 6 (extend `VDF.GUI` in place vs. a
   separate `VBR.Gui`) is reopened — see the ADR's Open questions before scaffolding any UI.
-- **Boundary detection.** Turn a match offset (~0.2–0.5s resolution) into a precise cut point
-  (content→junk transition → file edge; edge bumpers cut to BOF/EOF so padding is auto-removed).
+- **Boundary detection — superseded by arithmetic cut points (2026-07-19).** Per-file
+  content→junk transition detection turned out to be unnecessary: a maintainer spot-check across
+  ~70 videos (multiple studios/lengths, incl. personally-ripped DVDs) found bumper duration
+  consistent to ~0.02s, so the cut point is `fileDuration − duration` (end) / `duration` (begin)
+  from a length measured **once**, not searched per file. See
+  [`docs/decisions/0007-removal-command.md`](docs/decisions/0007-removal-command.md). Precision
+  now lives entirely in clip selection (a UI/UX problem), not in per-file detection.
 - **GPU acceleration — Deep Clean turned out to be multi-phase; re-measure needed.** The
   `hwaccel=cuda` ~6.3× number only covers phase 1 — a second phase ("sampling keyframes," ~1
   day+ estimated, likely CPU-only ONNX inference) followed with no warning, so total-scan
@@ -95,6 +100,16 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   the same session, the CLI also gained: recursive `--library` traversal by default
   (`--no-recurse` to disable), `--output <file>` report writing, and `--dump-frames <dir>` for
   dumping every sampled frame as PNGs for diagnosis.
+- **Removal command — initial design decided, not yet implemented (2026-07-19).**
+  [`docs/decisions/0007-removal-command.md`](docs/decisions/0007-removal-command.md) specs a new
+  `vbr remove`: v1 bundles clip extraction + matching + removal in one invocation (reuses
+  `match`'s parameters unchanged); cut point is arithmetic (see the Boundary detection bullet
+  above), not per-file detected; output is **non-destructive** — a `name.vbr.ext` sibling file,
+  never touching the original (a future `cleanup` command, not yet built, handles replacing
+  originals); `--re-encode` defaults to `true` because ffmpeg's stream-copy path realigns
+  subtitle cues poorly (`--re-encode false` is an explicit opt-out exception). Manifest schema
+  and re-encode algorithm/container specifics are still open — see the ADR. The maintainer is
+  speccing implementation details on top of this ADR next.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 
@@ -117,6 +132,9 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
 - [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
   vs. re-encode) + per-video enhancements + output options.
+- [`docs/decisions/0007-removal-command.md`](docs/decisions/0007-removal-command.md) — the
+  `vbr remove` command: non-destructive `.vbr.` output, re-encode-by-default, arithmetic
+  (not per-file-detected) cut points. Read before speccing or building removal.
 - [`docs/design/code-organization.md`](docs/design/code-organization.md) — VBR-vs-VDF structure
   (option analysis; decided in
   [`docs/decisions/0005-code-organization.md`](docs/decisions/0005-code-organization.md)).

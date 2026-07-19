@@ -504,6 +504,30 @@ Reading the numbers:
   full decode (the interval now genuinely controls density); ADR 0006's hard requirement it
   motivated — no artificial floor on `--sample-interval` — stands.
 
+## Bumper duration is empirically constant across files — retires per-file boundary detection (2026-07-19)
+
+Manual finding (maintainer, DaVinci Resolve, not a code-based measurement): spot-checked bumper
+boundaries across **~70 videos** spanning multiple studios and multiple bumper lengths,
+including personally-ripped DVD sources predating this project. Boundaries were consistent to
+within **~0.02s** in every case. This holds because a studio ident is a single rendered asset
+spliced in by the same authoring pipeline every time — what varies across episodes (e.g. the
+Daredevil end-stack's 8–12s tail-offset drift recorded above) is the *position* of the bumper
+(credits-roll length before it), not the bumper's own duration.
+
+Consequence: the cut point for edge removal is **arithmetic** (`fileDuration − duration` for an
+end bumper, `duration` for a begin bumper) against a duration measured **once** per catalog
+entry, not detected per candidate file. This retires the "boundary-growing / edge detection"
+per-file mechanism previously described in `design/bumper-catalog.md` and the "Boundary
+detection" open item in `AGENTS.md`/`PROGRESS.md` — see [ADR 0007](../decisions/0007-removal-command.md)
+for the full decision and its knock-on updates to those docs. Precision moves entirely to
+*clip selection* (measuring the duration accurately once, a UI/UX problem) rather than being
+spent on a per-file search at removal time.
+
+A residual scenario was raised and explicitly set aside: DVD/broadcast content sometimes pads
+episodes to a fixed timeslot length independent of the bumper itself, which would break the
+constant-duration assumption. Not observed across the spot-checked corpus (which included DVD
+rips) — noted in ADR 0007's open questions in case it surfaces on unusual media later.
+
 ## Open questions / next tests
 
 - **Corrected validation for video → catalog:** the same-length-episodes test can't work even

@@ -260,26 +260,45 @@ removal queue with confidence.
 biggest net-new component — VDF finds and deletes whole duplicate files, but has no notion of
 excising a segment. Everything here is ours to build.)*
 
+**Initial design decided (2026-07-19):** [ADR 0007](decisions/0007-removal-command.md) — a new
+`vbr remove` command, v1 scoped to a single edge cut (bundles clip extraction + matching +
+removal, mirroring `vbr match`'s parameter surface). Key resolutions below; re-encode algorithm/
+container specifics remain open (see the ADR).
+
 Work:
 
 - Trim via FFmpeg with two clear modes (see
   [`design/removal-pipeline.md`](design/removal-pipeline.md)): **Mode A** lossless stream-copy
-  (fast, but keyframe-bound cut points) and **Mode B** a single re-encode pass
-  (`filter_complex` trim+concat, frame-accurate). Multiple segments removed in **one** ffmpeg
-  run in Mode B; multi-step in Mode A.
+  (fast, but keyframe-bound cut points **and unreliable subtitle cue realignment**) and
+  **Mode B** a single re-encode pass (`filter_complex` trim+concat, frame-accurate, proper
+  subtitle realignment). Multiple segments removed in **one** ffmpeg run in Mode B; multi-step
+  in Mode A (though a single edge cut needs no concat in either mode).
 - Build a **filter-graph builder** so removal and any enabled enhancements (Phase 8) compose
   into a single re-encode command rather than multiple passes.
-- Handle all three cases: front trim, end trim, and mid-video interstitial removal.
-- **Recompute chapter/scene marks and timestamps** against the post-cut timeline.
-- Write outputs to a staging area; never overwrite originals until explicitly confirmed.
+- Handle all three cases: front trim, end trim, and mid-video interstitial removal. (v1 of
+  `remove` targets a single edge — begin *or* end; middle/interstitial removal is later.)
+- **Cut point is arithmetic, not detected per file** — `fileDuration − duration` (end) /
+  `duration` (begin), from a precisely-measured, empirically-constant bumper length (~0.02s
+  consistency across a 70-video spot-check spanning studios/lengths — see
+  [`research/vdf-evaluation.md`](research/vdf-evaluation.md)). No per-file boundary-search
+  subsystem. Precision lives in clip selection (UI/UX, later), not in removal.
+- **Recompute chapter/scene marks and timestamps** against the post-cut timeline (needed for
+  begin/middle removal; an end-only cut shifts nothing before it).
+- **Non-destructive, decided:** never overwrite/delete originals. Output is a sibling file in
+  the same directory, named by inserting `.vbr.` before the extension (e.g. `S01E01.mkv` →
+  `S01E01.vbr.mkv`) — supersedes the earlier "staging area" framing. A separate, not-yet-built
+  `cleanup` command will handle promoting/replacing originals later.
 - Maintain a **removal manifest** per file (source, snippet start/end, method, output path,
   reversible?, **catalog entry that triggered the cut**) so every cut can be audited and
-  undone, and per-bumper statistics can be tallied.
+  undone, and per-bumper statistics can be tallied. Schema still TBD (ADR 0007 open question).
 
-Key decisions: stream-copy vs. re-encode policy; keyframe handling for frame-accurate cuts;
-staging vs. in-place-with-backup.
+Key decisions: ~~stream-copy vs. re-encode policy~~ **decided — re-encode (`--re-encode true`)
+is the default, stream-copy an explicit opt-out** (ADR 0007); ~~staging vs. in-place-with-backup~~
+**decided — sibling `.vbr.` file, no staging area** (ADR 0007); keyframe handling for
+frame-accurate cuts (still open — re-encode algorithm specifics).
 
 Open questions: how to handle files where a clean cut requires re-encoding a segment only?
+Manifest schema; `cleanup` command design (see ADR 0007's open questions).
 
 **Exit criteria:** confirmed queue processes into trimmed outputs with a full audit trail.
 

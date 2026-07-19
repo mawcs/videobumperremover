@@ -121,11 +121,46 @@ was flagged right after the initial scaffold and fixed before anything else was 
     recursion, relative paths, report file, dump structure (14 clip frames = the black-frame
     diagnosis numbers), and `--no-recurse`.
 
+### Removal command design — ADR 0007 (2026-07-19)
+
+- **Decided (design only — no code yet):** [`decisions/0007-removal-command.md`](decisions/0007-removal-command.md)
+  specs a new `vbr remove` command. v1 bundles clip extraction + matching + removal in one
+  invocation, reusing `match`'s parameter surface unchanged (catalog/index-aware variants are
+  future, additive work). Key resolutions:
+  - **Cut point is arithmetic, not per-file-detected** — `fileDuration − duration` (end) /
+    `duration` (begin) — following a maintainer spot-check across ~70 videos (multiple studios/
+    lengths, incl. personally-ripped DVD sources) finding bumper boundaries consistent to
+    ~0.02s. `--clip-length` is reused as the removal length; no second parameter. This **retires
+    the "boundary-growing / edge detection" per-file mechanism** previously described in
+    `design/bumper-catalog.md` (now updated) and the old "Boundary detection" open item below
+    (now updated to reflect this).
+  - **Non-destructive, sibling-file output:** never touches the original; writes `name.vbr.ext`
+    beside it. Supersedes the earlier "staging area" language in `ROADMAP.md` Phase 5. A future
+    `cleanup` command (reserved name, not built) will handle promoting/replacing originals —
+    that's where "verification before destruction" is actually enforced, not in `remove` itself.
+  - **`--re-encode <true|false>`, default `true`:** re-encode (Mode B) is now the default,
+    specifically because ffmpeg's stream-copy path realigns subtitle cues poorly (found via a
+    prior Cowork investigation) — not primarily for frame accuracy, though that follows too.
+    `--re-encode false` (Mode A/stream-copy) remains available as an explicit v1 exception. See
+    `design/removal-pipeline.md`'s 2026-07-19 update.
+  - Open (deferred, tracked in the ADR): manifest schema, re-encode algorithm/container/codec
+    specifics, `cleanup` command design, a possible lightweight post-cut sanity check (verify
+    one frame each side of the computed cut point via the existing presence matcher — proposed
+    as a cheap alternative to full boundary detection, not required).
+
 ## Open / next steps
 
-- [ ] **Boundary detection.** Turn a match offset (~0.2–0.5s resolution) into a precise cut point
-  — find the content→junk transition; for edge bumpers cut to BOF/EOF so black/silence padding is
-  removed by inclusion. (Refine offset toward frame accuracy.)
+- [ ] **Removal engine — initial design decided, not yet implemented.** See
+  [ADR 0007](decisions/0007-removal-command.md) and the entry above: `vbr remove`, arithmetic
+  cut point (no per-file boundary detection), non-destructive `.vbr.` sibling output, re-encode
+  by default. Next: the maintainer is speccing implementation details on top of this ADR.
+- [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
+  — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file
+  content→junk detection turned out to be unnecessary: bumper duration is empirically constant
+  (~0.02s across a 70-video spot-check), so the cut point is computed arithmetically from a
+  duration measured once, not searched per file. Precision now lives entirely in *clip
+  selection* (a UI/UX problem — a scrubber that assists frame-accurate boundary picking),
+  deferred like the rest of the UI.
 - [ ] **Sub-bumper extent.** Given a matched region, determine its true extent (grow boundaries
   until frames stop agreeing across all containing files); distinguish "whole stack" from "a piece."
 - [ ] **GPU acceleration.**

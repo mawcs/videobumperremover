@@ -4,6 +4,14 @@ How the removal engine (ROADMAP Phase 5) actually cuts segments, and why the opt
 per-video enhancements (Phase 8) share the same pass. Answers the question: "removing bumpers
 from the front, end, and middle — is that a multi-pass ffmpeg job?"
 
+**2026-07-19 update — re-encode is now the *default*, not just the enhancement fallback.** See
+[ADR 0007](../decisions/0007-removal-command.md). Investigation found ffmpeg's stream-copy path
+does a poor job realigning subtitle cues when trimming; re-encoding the video doesn't by itself
+fix this (subtitle streams are typically copied regardless of video codec choice), but the
+re-encode pass is where proper cue realignment is committed to happening. `vbr remove` therefore
+defaults `--re-encode` to `true` (Mode B below); Mode A (stream-copy) remains available via
+`--re-encode false` as an explicit, documented v1 exception, not a recommended default.
+
 ## Short answer
 
 It depends on stream-copy vs. re-encode:
@@ -14,17 +22,23 @@ It depends on stream-copy vs. re-encode:
 - **Re-encode:** it's a **single ffmpeg run** — a `filter_complex` graph trims each keep-segment
   and `concat`s them in one pass, frame-accurately.
 
-## Mode A — Lossless stream-copy (no enhancements, preserve quality)
+## Mode A — Lossless stream-copy (`--re-encode false`, opt-in exception)
 
-- Extract keep-segments with `-c copy`, then join with the **concat demuxer**.
+- Extract keep-segments with `-c copy`, then join with the **concat demuxer** (only needed for
+  multi-segment/interstitial removal — a single edge cut, front *or* end, is one `-c copy`
+  extraction, no concat required).
 - Pros: fast, zero quality loss, low CPU/GPU.
 - Cons: **keyframe-bound cut points** → not frame-accurate mid-GOP; audio/video sync and
-  timestamp continuity need care at joins.
+  timestamp continuity need care at joins; **unreliable subtitle cue realignment** (see the
+  2026-07-19 update above) — the reason this is no longer the default.
 - **Smart-cut** option: re-encode only the boundary GOPs around each cut and stream-copy the
   rest, to get frame accuracy without re-encoding the whole file. Real but fiddly/fragile;
   treat as an enhancement to Mode A, not the default.
+- Note: for an **end-region** bumper specifically, no subtitle cue shifting is needed at all —
+  nothing before the cut point moves. Begin-region and middle removal are where cues must shift,
+  independent of Mode A/B — see the "Chapters, scenes & timestamps" section below.
 
-## Mode B — Single re-encode pass (frame-accurate; required for any enhancement)
+## Mode B — Single re-encode pass (`--re-encode true`, the default; required for any enhancement)
 
 - One ffmpeg invocation: `filter_complex` with `trim`+`setpts` (video) and `atrim`+`asetpts`
   (audio) for each keep-segment, feeding a `concat` filter (`n=<segments>, v=1, a=1`).
@@ -92,8 +106,10 @@ growing this into a general-purpose transcoding UI.
 ## Implications for the engine
 
 - Build a filter-graph builder that composes trim/concat + enhancements into one command.
-- Keep a clean **Mode A (lossless) vs Mode B (re-encode)** switch; default to Mode A when no
-  enhancement is requested and quality preservation is wanted.
+- Keep a clean **Mode A (lossless) vs Mode B (re-encode)** switch, exposed as `--re-encode`
+  (default `true` → Mode B, per [ADR 0007](../decisions/0007-removal-command.md)). Mode A is an
+  explicit opt-out (`--re-encode false`), not the default — subtitle cue realignment reliability
+  now outweighs the speed/quality-preservation case for defaulting to stream-copy.
 - Record the exact ffmpeg command per file in the **removal manifest** (audit + reproducibility
   + undo), alongside the catalog entry that triggered the cut.
 - GPU: Mode B is the decode/encode-heavy path — this is where NVDEC/NVENC earn their keep.
