@@ -1,8 +1,16 @@
 # ADR 0008: The `cleanup` command — filename-derived pairing, pairwise commit, no secondary trash stage
 
-- **Status:** proposed — design complete, **not yet implemented**. The maintainer asked for this
-  ADR to be reviewed before any code is written.
+- **Status:** accepted. The three items the maintainer flagged for a final call are decided
+  (below); everything else in "Open questions" remains genuinely open.
 - **Date:** 2026-07-20
+- **Implementation status (2026-07-20):** built and verified. `VBR.Core.Cleanup.LibraryCleaner` +
+  `VBR.CLI.Commands.CleanupCommand`. 18 unit tests (temp-directory-based, no curated real-media
+  library needed for the core mark/promote/delete/recovery logic — only the two `--validate-files`
+  tests shell out to ffmpeg/ffprobe, same as `ClipRemoverTests`) plus a live end-to-end run through
+  the compiled CLI (recovery sweep + main pass + reporting, including a simulated interrupted-run
+  marker that got restored and cleaned in the same invocation). **Follow-up same day:** manifest
+  renamed to `name.json` (see Decision 3's implementation note); tests and docs updated to match,
+  full suite re-verified green.
 - **Related:** [`0007-removal-command.md`](0007-removal-command.md) (reserves the `cleanup` name —
   Decision 4; defines the `.vbr.` sibling-output convention and `ClipRemover.BuildOutputPath` this
   command inverts; records the "already-cut `.vbr.` as `--clip-from`" risk this command's existence
@@ -13,7 +21,8 @@
 ## Context
 
 ADR 0007 made `remove` strictly non-destructive: it only ever writes a `name.vbr.ext` sibling plus
-a `name.vbr.json` manifest, next to the untouched original. It explicitly reserved a `cleanup`
+a manifest (`name.json`, named after the *original* — see "Implementation findings," 2026-07-20),
+next to the untouched original. It explicitly reserved a `cleanup`
 command (name only, not built) to do the actual replace-original step, framing it as "where
 verification before destruction is actually enforced" — and left its design (verification gate,
 replace-vs-delete-original policy, backup retention) as an open question.
@@ -51,12 +60,13 @@ Two things motivated designing it now:
    manifest. **This is the only command permitted to delete video files or manifests**; `match`
    and `remove` never do (AGENTS.md's "never modify source videos in place" rule holds for both).
 
-2. **Traversal and scope.** Reuses `match`/`remove`'s `--library <folder>` / `--file <path>`
-   surface unchanged, including `--no-recurse` and `SharedOptions.ResolveCandidates`/
-   `CandidateSet` (the reuse ADR 0007 already flagged this command should support). A library walk
-   processes one directory at a time. Within a directory, **only files that currently have a live
-   `.vbr.` counterpart are ever touched** — an original with no `.vbr.` sibling is not inspected,
-   marked, or renamed.
+2. **Traversal and scope.** `--library <folder>` (with `--no-recurse` for top-level-only) walks the
+   directory tree and processes **one directory at a time** — within a directory, only files that
+   currently have a live `.vbr.` counterpart are ever touched; an original with no `.vbr.` sibling
+   is not inspected, marked, or renamed. `--file <path>` is scope-narrowed differently — see
+   Decision 10, which supersedes ADR 0007's original "reuse `ResolveCandidates`/`CandidateSet`
+   unchanged" note now that `cleanup`'s per-directory design makes `--file` genuinely different
+   from how it works for `match`/`remove`, not just a smaller candidate list.
 
 3. **Pairing is filename-derived, not manifest-derived.** Original ↔ output pairing uses the exact
    inverse of `ClipRemover.BuildOutputPath` ([`ClipRemover.cs:180`](../../VBR.Core/Removal/ClipRemover.cs))
@@ -67,6 +77,17 @@ Two things motivated designing it now:
    ([`ClipRemoverTests.cs:41-46`](../../VBR.Tests/Removal/ClipRemoverTests.cs)) covering the same
    cases, so the two functions can't silently drift apart. The manifest remains a diagnostic
    artifact only (Decision 6) — never a dependency for deciding what to touch.
+
+   **Implementation finding (2026-07-20):** writing this test surfaced a real bug before it
+   shipped — the naive inverse, applied to `name.vbr.json` (the manifest's original filename),
+   parsed as "a `.vbr.` output named `name.vbr`, extension `.json`" and would have offered up a
+   bogus `name.json` "original" to promote onto. Fixed by requiring the recovered original to end
+   in a recognized video extension (`ClipExtractor.VideoExtensions`). **Separately, the same day,
+   the manifest itself was renamed** to `name.json` (derived from the original path, not the
+   output — see ADR 0007's "Implementation findings," 2026-07-20), which sidesteps this exact
+   scenario entirely — `name.json` doesn't even superficially resemble the `.vbr.` pattern. The
+   video-extension guard stays anyway, per the maintainer, as defense against any other
+   `.vbr.something` non-video file, not just this one.
 
 4. **Content verification is opt-in: `--validate-files`, off by default.** When passed, before a
    candidate is allowed past pairing, ffprobe the `.vbr.` file and confirm it opens and its
@@ -93,11 +114,11 @@ Two things motivated designing it now:
    candidate, in order:
    a. *(if `--validate-files`)* Validate (Decision 4). Failure → log, add to the **broken** list,
       move to the next file. Original untouched.
-   b. **Mark:** rename the original `name.ext` → `name.ext.vbrdelete` (full original name plus a
-      trailing marker — not `.vbrdelete` inserted before the extension — so the marked file's last
-      extension is no longer a video extension; this incidentally shrinks the window in which a
-      player, indexer, or AV scanner might open/lock it while it's mid-flight). Failure → nothing
-      changed yet; log, add to broken list, next file.
+   b. **Mark:** rename the original `name.ext` → `name.ext.vbrdelete` (**decided**, maintainer,
+      2026-07-20 — full original name plus a trailing marker, not `.vbrdelete` inserted before the
+      extension, so the marked file's last extension is no longer a video extension; this
+      incidentally shrinks the window in which a player, indexer, or AV scanner might open/lock it
+      while it's mid-flight). Failure → nothing changed yet; log, add to broken list, next file.
    c. **Promote:** rename `name.vbr.ext` → `name.ext`. Failure → **roll back (b)**: rename
       `name.ext.vbrdelete` back to `name.ext`. If that rename *also* fails, log it distinctly as
       needing manual attention — this is the one case no in-process logic can fully resolve. Either
@@ -108,7 +129,8 @@ Two things motivated designing it now:
       file is left in place for the next run's recovery sweep (Decision 8) to retry. **Not** added
       to the broken list — the correctness-relevant work already succeeded. Tracked separately as
       **pending reclamation**.
-   f. **Delete the manifest** (`name.vbr.json`). Same best-effort treatment as (e).
+   f. **Delete the manifest** (`name.json`, next to the original — see Decision 3's implementation
+      note). Same best-effort treatment as (e).
 
    Rationale for narrowing rollback to (b)/(c) only: once the swap succeeds, a failure in (e) is a
    disk-space problem, not a correctness problem. Unwinding an already-successful, already-correct
@@ -147,9 +169,24 @@ Two things motivated designing it now:
    rename/delete call and recovery-sweep action, consistent with how `remove` logs its ffmpeg
    commands today.
 
-10. **`--file <path>` single-target support**, via the same `SharedOptions.ResolveCandidates`/
-    `CandidateSet` mechanism `match`/`remove` use — this was already promised as a forward-looking
-    requirement in ADR 0007 and needs no new design here.
+10. **`--file <path>` touches only that one file's own pairing/marker state — never the rest of
+    its directory (decided, maintainer, 2026-07-20).** For `match`/`remove`, `--file` is just a
+    one-element candidate list run through the same logic a `--library` scan would use. `cleanup`
+    can't reuse that shape as-is: `CleanDirectory` (Decisions 7-8) is inherently directory-scoped
+    (it lists every `.vbr.` file present and sweeps every stray marker in that directory), so
+    pointing it at a single file's directory would incidentally also touch unrelated sibling
+    episodes. Instead, `--file <path>` resolves the one target/original pair directly (via
+    Decision 3's pairing, trying both directions — the path given may be the original or the
+    `.vbr.` output) and runs Decision 7's per-pair steps, plus Decision 8's recovery check, on
+    **only that pair** — no directory listing at all.
+    **Why "the same directory as the file":** "the current file as it exists in the library" is
+    the intended scope, but without a library database there is no notion of a file's identity
+    beyond its current path — `remove` always writes the `.vbr.` sibling next to the source
+    (ADR 0007, Decision 3), so today "the current file as it exists" and "the same directory as
+    the file" are the same thing by construction. **Explicitly left open:** once a library
+    database/index exists, "the current file as it exists in the library" may need to resolve
+    through it instead (e.g. after a file has been moved) — not designed here, deferred until
+    that database exists.
 
 ## Consequences
 
@@ -171,14 +208,12 @@ deliberate conservatism trade-off, not an oversight.
 
 ## Open questions
 
-- **Exact marker suffix.** `.vbrdelete` appended after the full original filename (Decision 7b) is
-  a concrete proposal, not battle-tested — open to a different convention if the maintainer prefers
-  one, as long as it keeps the "doesn't look like a video file" property.
-- **`--dry-run`.** Floated once, early in discussion, but not actually debated or decided. Would
-  report what a run would do (files that would be cleaned / are already broken-looking /
-  pending-reclamation) without touching anything. Cheap to add on top of this design since the
-  recovery sweep and main pass are already read-then-act — worth a deliberate yes/no rather than
-  silently omitting it.
+- **`--dry-run`: decided, deferred (maintainer, 2026-07-20).** Not built now. Reconsideration
+  isn't warranted on cost grounds: Decision 7's per-pair steps are already a clean plan-then-act
+  sequence (compute paths and decisions first, mutate — `File.Move`/`File.Delete` — only at each
+  named step), so gating those specific calls behind a flag is the same small, mechanical change
+  whenever it's done. Building it now wouldn't avoid any rework later; it just wasn't asked for.
+  Worth revisiting only if real usage surfaces an actual need to preview a run, not pre-emptively.
 - **`--validate-files` duration tolerance** — reuse `ClipRemover`'s existing safety-margin constant
   directly, or does `cleanup` need its own (validation is checking a finished file after the fact,
   not choosing a cut point, so the right tolerance may not be the same number)?
@@ -186,6 +221,4 @@ deliberate conservatism trade-off, not an oversight.
 - **Pending-reclamation retry policy** — currently "the next `cleanup` run's recovery sweep retries
   it," with no in-process retry/backoff. Sufficient for a single-user desktop tool; flagged in case
   it isn't.
-- **Recovery sweep scope under `--file`** — presumably scoped to just that file's own directory and
-  pairing state rather than the whole library, but not explicitly decided.
 - Manifest schema itself remains open per ADR 0007 — unchanged by this ADR.

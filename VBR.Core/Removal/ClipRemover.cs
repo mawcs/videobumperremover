@@ -23,6 +23,7 @@ using System.Linq;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Threading;
+using System.Threading.Tasks;
 using VBR.Core.Extraction;
 using VDF.Core.FFTools;
 using VDF.Core.Utils;
@@ -153,7 +154,10 @@ public static class ClipRemover {
 			}
 		}
 
-		string manifestPath = Path.ChangeExtension(outputPath, ".json");
+		// Named after the ORIGINAL, not the .vbr. output (decided, maintainer, 2026-07-20) —
+		// keeps the manifest sorted next to the file it describes, and means it never has to be
+		// specifically excluded from anything that pattern-matches on the .vbr. convention.
+		string manifestPath = Path.ChangeExtension(sourcePath, ".json");
 		var entry = new RemovalManifestEntry(
 			Tool: "vbr remove",
 			TimestampUtc: DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
@@ -395,16 +399,34 @@ public static class ClipRemover {
 		var stopwatch = verbose ? Stopwatch.StartNew() : null;
 		using var process = new Process { StartInfo = psi };
 		process.Start();
-		string stderr = process.StandardError.ReadToEnd();
-		process.StandardOutput.ReadToEnd();
+
+		// Killing on cancellation must not depend on this thread ever reaching a check below —
+		// it's about to block in ReadToEnd()/WaitForExit(), neither of which return early on
+		// their own. A CancellationTokenRegistration callback fires independently of whatever
+		// this thread is doing, so Ctrl+C actually reaches ffmpeg instead of leaving it running
+		// as an orphan. Observed live (2026-07-20): killing `vbr remove` mid-encode left ffmpeg
+		// running in the background indefinitely, still fully using a CPU core.
+		using CancellationTokenRegistration killOnCancel = ct.Register(static s => {
+			var p = (Process)s!;
+			try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
+		}, process);
+
+		// Both streams must be drained concurrently, not sequentially: ffmpeg's progress/log
+		// output goes to stderr, which is large enough to fill the OS pipe buffer — reading one
+		// stream to completion first, while nothing drains the other, risks deadlocking ffmpeg
+		// against this process (same bug class hit and fixed in VBR.Tests's synthetic-clip
+		// helper, 2026-07-20).
+		Task<string> stderrTask = process.StandardError.ReadToEndAsync();
+		Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
 		bool exited = process.WaitForExit((int)timeout.TotalMilliseconds);
 		if (!exited || ct.IsCancellationRequested) {
-			try { process.Kill(); } catch { }
+			try { process.Kill(entireProcessTree: true); } catch { }
 			if (ct.IsCancellationRequested) throw new OperationCanceledException(ct);
 			throw new InvalidOperationException($"ffmpeg timed out removing the bumper from '{Path.GetFileName(sourcePath)}'.");
 		}
+		Task.WaitAll(stderrTask, stdoutTask);
 		if (process.ExitCode != 0)
-			throw new InvalidOperationException($"ffmpeg failed (exit {process.ExitCode}) removing the bumper from '{Path.GetFileName(sourcePath)}': {stderr.Trim()}");
+			throw new InvalidOperationException($"ffmpeg failed (exit {process.ExitCode}) removing the bumper from '{Path.GetFileName(sourcePath)}': {stderrTask.Result.Trim()}");
 		if (verbose)
 			Logger.Instance.Info($"[remove] ffmpeg completed in {stopwatch!.Elapsed.TotalSeconds:0.#}s.");
 	}

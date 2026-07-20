@@ -265,12 +265,54 @@ above bug silently truncating it early. Re-verified live through the actual `vbr
 cut, cues shifted from 6s/15s/25s to 1s/10s/20s, output duration and first-frame content both
 confirmed correct.
 
+## Implementation findings (2026-07-20, orphaned ffmpeg process + a corrupted test file)
+
+**A live `remove --re-encode true` run against real media appeared to hang** (maintainer,
+2026-07-20): the `.vbr.mkv` output sat at 0 bytes, CPU maxed, system sluggish, no manifest
+written, for 12+ minutes before being killed. Two separate things were found:
+
+- **A real bug: killing `vbr remove` (Ctrl+C) did not kill the child ffmpeg process.** Root
+  cause: `RunFfmpeg` blocked in a synchronous `Process.StandardError.ReadToEnd()` with no
+  cancellation awareness — the existing `ct.IsCancellationRequested` check right after it could
+  never be reached while that call was still blocked, so a stuck or merely slow ffmpeg process
+  had no way to be killed from outside except manually. **Fixed** by registering a
+  `CancellationTokenRegistration` immediately after `Process.Start()` that kills the process
+  (`entireProcessTree: true`) independent of whatever the calling thread is currently blocked on
+  — the standard .NET pattern for cancelling an otherwise-uncancellable blocking call. Applied to
+  both `ClipRemover.RunFfmpeg` and `ClipExtractor.Extract` (the latter needed a new
+  `CancellationToken` parameter threaded through from its three call sites). While in there, also
+  fixed both methods' `ReadToEnd()` calls to run concurrently (`ReadToEndAsync` on both streams
+  before waiting) rather than sequentially — draining one stream to completion before touching
+  the other risks deadlocking ffmpeg against this process if the undrained stream's OS pipe
+  buffer fills, a latent bug of the same shape hit (and fixed) independently the same day in
+  `VBR.Tests`'s synthetic-clip test helper.
+- **Not a bug: the source file itself was corrupted.** After the fix above, a retry still showed
+  ffmpeg running far slower than expected and producing an implausible frame count. Diagnosed
+  with `ffmpeg -v warning -i <source> -map 0:v:0 -f null -` (decode-only, no output written) —
+  it reported continuous `Application provided invalid, non monotonically increasing dts to
+  muxer` warnings, a classic corrupted/damaged-stream signature. Confirmed independently: the
+  file wouldn't play in MPC-BE either. The maintainer replaced it with a known-good copy from
+  their real library, which played and re-encoded normally. Worth noting for the record: the
+  earlier steps in the same run (short tail extraction via stream-copy, full-file audio
+  fingerprinting) had all completed without any sign of trouble — only a full video decode
+  (exactly what re-encoding requires) exercised the damaged part of the stream. No code change
+  follows from this — a damaged source file is not this project's problem to paper over — but if
+  a source-side sanity check (e.g. reusing `--validate-files`' ffprobe idea, pointed at the
+  *source* instead of the output) turns out to be worth having, note it here as a candidate.
+- **Manifest renamed:** `name.vbr.json` → `name.json`, derived from the *original* path instead
+  of the `.vbr.` output path (maintainer preference, 2026-07-20). Also updates ADR 0008, which
+  had already shipped a defensive fix for a bug this sidesteps entirely — see that ADR's Decision
+  3 note. `ClipRemover.Remove`, `VBR.Core.Cleanup.LibraryCleaner`, and both test suites updated
+  together; live-verified against real media (manifest correctly written as `....json`, not
+  `....vbr.json`, self-cleaned by the test as before).
+
 ## Open questions
 
 - **Manifest schema — a first concrete shape shipped** (`RemovalManifestEntry`: source, output,
   region, bumper length, source duration, cut point, mode, match detail — written as a
-  `name.vbr.json` JSON sidecar next to each output). Still open: whether this is the *final*
-  schema, or a per-run/aggregate manifest format is also wanted alongside the per-file sidecar.
+  `name.json` JSON sidecar next to the *original*, not the output — see "Implementation findings"
+  above, 2026-07-20). Still open: whether this is the *final* schema, or a per-run/aggregate
+  manifest format is also wanted alongside the per-file sidecar.
 - **Re-encode algorithm specifics — a first working, fixed placeholder shipped** (libx264 CRF 18
   preset medium video, AAC 192kbps audio when audio must be re-encoded — see "Implementation
   findings" above). Still open, per this ADR's Decision 5: real codec choice (HEVC/AV1?

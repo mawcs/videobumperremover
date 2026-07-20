@@ -105,8 +105,8 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   `vbr remove` (v1 bundles clip extraction + matching + removal in one invocation, reusing
   `match`'s parameters unchanged); cut point is arithmetic (see the Boundary detection bullet
   above), not per-file detected; output is **non-destructive** — a `name.vbr.ext` sibling file,
-  never touching the original (a future `cleanup` command, not yet built, handles replacing
-  originals). **`VBR.Core.Removal.ClipRemover` + `VBR.CLI.Commands.RemoveCommand`** implement
+  never touching the original (`cleanup` handles replacing originals — see below).
+  **`VBR.Core.Removal.ClipRemover` + `VBR.CLI.Commands.RemoveCommand`** implement
   both `--re-encode false` (stream-copy, built first per the maintainer's chosen order) and
   `--re-encode true` (re-encode, the decided default, built same day). Stream-copy gotchas
   verified empirically: begin-region seeks must place `-ss` *after* `-i` (snaps forward, safe);
@@ -129,8 +129,36 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   rationale. Logging to `log.txt` is unconditional; `--verbose` only gates the live echo.
   `--file <path>` is a single-file alternative to `--library <folder>` — exactly one required,
   via a new shared `SharedOptions.ResolveCandidates` that also de-duplicated the two commands'
-  candidate-enumeration logic. Both verified live. `cleanup` (future) should get the same
-  `--file` option per the maintainer — `ResolveCandidates` is already written generically enough.
+  candidate-enumeration logic. Both verified live.
+- **`cleanup` command designed and built (2026-07-20).**
+  [`docs/decisions/0008-cleanup-command.md`](docs/decisions/0008-cleanup-command.md) — the only
+  command permitted to delete video files. Promotes a verified `.vbr.` output to replace its
+  original: mark the original for deletion, promote the output into its name, then best-effort
+  delete the old original and manifest — fully resolved per file before moving to the next
+  (pairwise, not phase-batched). Pairing is **filename-derived** (the manifest was judged
+  undependable as a side-channel — it can be separated from, or deleted independently of, the
+  video it describes). Rollback covers only the mark/promote swap, never the final delete (a
+  disk-space problem, not a correctness one, once the swap has already succeeded). An
+  unconditional per-directory recovery sweep self-heals leftovers from a previous crashed/killed
+  run. No secondary trash stage — `remove`'s non-destructive sibling output already is the review
+  window. `--validate-files` (opt-in, off by default) ffprobes each output before it's allowed
+  near the original. `--file <path>` deliberately touches **only** that file's own pairing/marker
+  state, never the rest of its directory — different from `match`/`remove`'s `--file`, since
+  `cleanup`'s per-directory design made reusing that shape unsafe.
+  **`VBR.Core.Cleanup.LibraryCleaner` + `VBR.CLI.Commands.CleanupCommand`.** 18 tests, almost all
+  ordinary always-on unit tests against temp directories (no video content needed — a real file
+  lock, not a mock, forces the rollback path); verified live through the compiled CLI too.
+- **Orphaned ffmpeg process on cancellation, fixed (2026-07-20).** A live hang report (Ctrl+C
+  during `remove --re-encode true` left ffmpeg running as an orphan) traced to `RunFfmpeg`
+  blocking in a cancellation-blind `ReadToEnd()` before its own kill-on-cancel check could ever
+  run. Fixed in `ClipRemover.RunFfmpeg` and `ClipExtractor.Extract` via a
+  `CancellationTokenRegistration` that kills the process tree independent of what the calling
+  thread is blocked on; both methods' stdout/stderr reads also switched from sequential to
+  concurrent (same pipe-deadlock risk class as the `VBR.Tests` fix above). The specific run that
+  surfaced this turned out to be a corrupted test-media file, not a code bug — confirmed via
+  `ffmpeg ... -f null -` (non-monotonic DTS) and independently via MPC-BE refusing to play it.
+  **Manifest renamed** `name.vbr.json` → `name.json` (named after the original, maintainer
+  preference) — see ADR 0007/0008 "Implementation findings."
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 

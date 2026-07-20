@@ -170,6 +170,17 @@ internal static class SharedOptions {
 			"what's actually happening on a given run, not just the summary line.",
 	};
 
+	// cleanup-only, but defined here alongside Verbose/TargetFile/Library rather than in
+	// CleanupCommand — SharedOptions is this project's one place option definitions live,
+	// per its own doc comment above, even though this one option isn't shared with match/remove.
+	internal static readonly Option<bool> ValidateFiles = new("--validate-files") {
+		Description = "Before promoting each '.vbr.' output, ffprobe it and sanity-check its " +
+			"duration (against the manifest when present, or against the original's own probed " +
+			"duration otherwise). A file that fails is left alone and reported broken — the " +
+			"original is never touched. Off by default: the CLI can't enforce that a human " +
+			"reviewed the output, so this is an assist, not a substitute (ADR 0008).",
+	};
+
 	/// <summary>Resolved set of candidate files plus the root to print paths relative to (null
 	/// for a single-file target, where the display name is just the file name).</summary>
 	internal readonly record struct CandidateSet(IReadOnlyList<string> Files, string? LibraryRoot);

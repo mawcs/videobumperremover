@@ -18,6 +18,8 @@ using System;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using VDF.Core.FFTools;
 using VDF.Core.Utils;
 
@@ -78,17 +80,20 @@ public static class ClipExtractor {
 
 	/// <param name="verbose">Logs the exact ffmpeg command line and the extracted temp file's
 	/// size via <see cref="Logger"/> — proof of exactly what was run, for <c>--verbose</c>.</param>
+	/// <param name="ct">Killing ffmpeg on cancellation is best-effort — see the doc comment on
+	/// <see cref="Extract"/> for why a plain <see cref="CancellationToken.ThrowIfCancellationRequested"/>
+	/// check alone wouldn't be enough.</param>
 	/// <exception cref="FileNotFoundException">The source video does not exist.</exception>
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="region"/>'s duration is not positive.</exception>
 	/// <exception cref="InvalidOperationException">Extraction failed (ffmpeg missing, region out of range, etc.).</exception>
-	public static ExtractedClip ExtractToTemp(string sourceVideoPath, ClipRegion region, bool verbose = false) {
+	public static ExtractedClip ExtractToTemp(string sourceVideoPath, ClipRegion region, bool verbose = false, CancellationToken ct = default) {
 		if (!File.Exists(sourceVideoPath))
 			throw new FileNotFoundException("Source video not found.", sourceVideoPath);
 		if (region.Duration <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(region), "Clip region duration must be positive.");
 
 		string outputPath = Path.Combine(Path.GetTempPath(), $"vbr_clip_{Guid.NewGuid():N}.mkv");
-		if (!Extract(sourceVideoPath, region, outputPath, verbose))
+		if (!Extract(sourceVideoPath, region, outputPath, verbose, ct))
 			throw new InvalidOperationException(
 				$"Failed to extract the requested region from '{Path.GetFileName(sourceVideoPath)}' — " +
 				"check ffmpeg is on PATH and the region fits within the file's duration.");
@@ -97,7 +102,11 @@ public static class ClipExtractor {
 		return new ExtractedClip(outputPath);
 	}
 
-	static bool Extract(string sourceVideoPath, ClipRegion region, string outputPath, bool verbose) {
+	// Registers a kill-on-cancel callback independent of whatever this thread is currently
+	// blocked on (ReadToEnd/WaitForExit below don't return early on their own) — same fix, same
+	// rationale, as VBR.Core.Removal.ClipRemover.RunFfmpeg (2026-07-20): a Ctrl+C during a stuck
+	// or merely slow ffmpeg call must not leave it running as an orphan.
+	static bool Extract(string sourceVideoPath, ClipRegion region, string outputPath, bool verbose, CancellationToken ct = default) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardError = true,
@@ -123,16 +132,26 @@ public static class ClipExtractor {
 		psi.ArgumentList.Add(outputPath);
 		if (verbose)
 			Logger.Instance.Info($"[extract] {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
+		using var p = Process.Start(psi)!;
+		using CancellationTokenRegistration killOnCancel = ct.Register(static s => {
+			var proc = (Process)s!;
+			try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+		}, p);
 		try {
-			using var p = Process.Start(psi)!;
-			string stderr = p.StandardError.ReadToEnd();
-			p.StandardOutput.ReadToEnd();
+			// Concurrent, not sequential — draining stderr to completion before touching stdout
+			// (or vice versa) risks deadlocking ffmpeg against this process if the undrained
+			// stream's pipe buffer fills. Same fix as ClipRemover.RunFfmpeg (2026-07-20).
+			Task<string> stderrTask = p.StandardError.ReadToEndAsync();
+			Task<string> stdoutTask = p.StandardOutput.ReadToEndAsync();
 			p.WaitForExit(60_000);
+			ct.ThrowIfCancellationRequested();
+			Task.WaitAll(stderrTask, stdoutTask);
 			bool ok = p.HasExited && p.ExitCode == 0 && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
 			if (!ok && verbose)
-				Logger.Instance.Warn($"[extract] ffmpeg exit {(p.HasExited ? p.ExitCode : "(still running)")}: {stderr.Trim()}");
+				Logger.Instance.Warn($"[extract] ffmpeg exit {(p.HasExited ? p.ExitCode : "(still running)")}: {stderrTask.Result.Trim()}");
 			return ok;
 		}
+		catch (OperationCanceledException) { throw; }
 		catch { return false; }
 	}
 }

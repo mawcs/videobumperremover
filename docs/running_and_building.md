@@ -86,8 +86,8 @@ dotnet run --project VBR.CLI -- remove --help
 Finds a bumper (same matching as `vbr match` — reuses all its options, including `--file` for a
 single target and `--verbose` for a full ffmpeg-command/model-load audit trail) and removes it
 from every match, non-destructively: writes a sibling `name.vbr.ext` beside the source plus a
-JSON manifest (`name.vbr.json`), never touching the original. See
-[ADR 0007](decisions/0007-removal-command.md) for the full design.
+JSON manifest (`name.json`, named after the *original*, not the output), never touching the
+original. See [ADR 0007](decisions/0007-removal-command.md) for the full design.
 
 ```sh
 dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --library "D:\Media\Show"
@@ -127,6 +127,61 @@ the bumper). Both are documented, accepted v1 stream-copy characteristics (see t
 **Re-encode cut points are frame-accurate** (~28ms off in testing) — this is the main practical
 reason to prefer it beyond subtitle correctness.
 
+### Run — `vbr cleanup`
+
+```sh
+dotnet run --project VBR.CLI -- cleanup --help
+```
+
+Promotes verified `.vbr.` outputs (from a prior `vbr remove` run) to replace their originals —
+deletes the pre-cut original and its manifest. **The only command that deletes video files**; see
+[ADR 0008](decisions/0008-cleanup-command.md) for the full design. Run this *between*
+bumper-removal passes, once you've reviewed each `.vbr.` output — not as a substitute for
+reviewing them, and not automatically after `remove`.
+
+```sh
+dotnet run --project VBR.CLI -- cleanup --library "D:\Media\Show"
+```
+
+Or a single file — scoped to *only* that file, never the rest of its directory (decided,
+2026-07-20; see the ADR's Decision 10):
+
+```sh
+dotnet run --project VBR.CLI -- cleanup --file "D:\Media\Show\S01E05.mkv"
+```
+
+Key behavior:
+
+- **Pairing is filename-derived, not manifest-derived.** The JSON manifest can be separated from,
+  or deleted independently of, the video it describes, so it's never trusted to decide what to
+  touch — only the `.vbr.` naming convention is (the exact inverse of `remove`'s own
+  `name.ext` → `name.vbr.ext`).
+- **Per file: mark the original for deletion, promote the output into its name, delete the old
+  original and manifest — fully resolved before moving to the next file.** If promoting fails, the
+  mark is rolled back and the original is restored; a failure deleting the *old* original
+  afterward is never rolled back (the swap already succeeded — that's a disk-space problem, not a
+  correctness one) and is reported separately as "pending reclamation," not broken.
+- **A cheap recovery sweep runs automatically at the start of every directory**, before anything
+  else — no flag needed. It reconciles leftover marker files from a previous run that didn't
+  finish cleanly (crashed, killed, or otherwise interrupted): if the promotion had already
+  completed, it just retries the delete; if it hadn't, it restores the original and lets the
+  normal pass reprocess the pair from scratch in the same run.
+- **No trash/soft-delete stage.** `remove`'s non-destructive sibling output already is the review
+  window — the original survives untouched until you run `cleanup`. A second staged-deletion layer
+  here would just triple disk usage on libraries that are already large.
+- `--validate-files` — off by default. When set, ffprobes each `.vbr.` output and sanity-checks
+  its duration (precisely, against the manifest, when one is present and parses; otherwise a
+  coarser "shorter than the original" check) before it's allowed anywhere near the original. A
+  file that fails is reported broken and left completely alone. Off by default because the CLI
+  can't enforce that you actually reviewed the output — this assists that, it doesn't replace it.
+- `--output <file>` — also write the cleanup report to a file, same as `match`/`remove`.
+- `--verbose` — same logging hookup as `match`/`remove`: every mark/promote/delete call and
+  recovery action, to the console and `log.txt`.
+
+Report rows: `CLEANED`, `BROKEN` (needs attention — original untouched), `PENDING` (cleaned, but
+couldn't remove the old original/manifest — self-heals on a future run), `SKIPPED` (`--file` only:
+no `.vbr.` output exists for the target), and `RECOVER` for anything the startup sweep reconciled.
+
 ### Test
 
 ```sh
@@ -137,6 +192,13 @@ dotnet test VBR.Tests --filter "FullyQualifiedName~AudioBumperMatcherTests"
 `AudioBumperMatcherTests` and `ClipRemoverTests`' real-media case only run against real video
 files, gated by environment variables — they skip cleanly when unset, so a normal `dotnet test`
 run never needs them. Each header comment has the exact recipe; representative examples:
+
+`LibraryCleanerTests` (`vbr cleanup`'s mark/promote/delete/recovery logic) is different: it's pure
+filesystem manipulation with no video content involved, so almost all of it runs as ordinary,
+always-on tests against temp directories with plain dummy files — no environment variables, no
+curated library. The two `--validate-files` tests are the exception, shelling out to ffmpeg/
+ffprobe on PATH directly (a hard dependency of this whole project either way, not optional test
+setup).
 
 ```powershell
 $env:BUMPER_CLIP_EPISODE = "D:\Media\Show\S01E01.mkv"

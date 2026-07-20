@@ -257,7 +257,7 @@ was flagged right after the initial scaffold and fixed before anything else was 
   `CandidateSet` in `SharedOptions.cs` are written generically enough to be reused as-is when
   `cleanup` is designed — no rework anticipated.
 
-### `cleanup` command designed — ADR 0008 (2026-07-20)
+### `cleanup` command designed and implemented — ADR 0008 (2026-07-20)
 
 - **[ADR 0008](decisions/0008-cleanup-command.md) written and proposed — not yet implemented.**
   The maintainer asked for a design review before any code is written. Covers: filename-derived
@@ -275,6 +275,62 @@ was flagged right after the initial scaffold and fixed before anything else was 
   (2026-07-19): resolved by workflow, not a code guard — run `cleanup` between bumper-removal
   passes rather than stacking `remove` runs over a library that still holds prior `.vbr.` outputs.
   See ADR 0007's "Implementation findings" section for the resolution note.
+- **Three open items the maintainer flagged for a final call, decided (2026-07-20):** the deletion
+  marker suffix (`.vbrdelete`, appended after the full original filename) is final; `--dry-run` is
+  deferred — no cost-savings case for building it now, since Decision 7's per-file steps are
+  already plan-then-act, so gating the mutating calls behind a flag later is the same small change
+  whenever it happens; `--file` touches only its own target file's pairing/marker state, never the
+  rest of its directory (different from how `--file` works for `match`/`remove`, since `cleanup`'s
+  per-directory design made that shape impossible to reuse as-is — see ADR 0008 Decision 10).
+- **Implemented same day.** `VBR.Core.Cleanup.LibraryCleaner` (core logic) +
+  `VBR.CLI.Commands.CleanupCommand` (CLI wiring, registered in `Program.cs`) + `--validate-files`
+  added to `SharedOptions`. Writing tests first caught a real bug before it shipped: the naive
+  filename-inverse function would have mistaken a manifest (`name.vbr.json`) for a video output
+  and tried to pair it with a bogus `name.json` "original" — fixed by requiring the recovered
+  original to end in a recognized video extension (`ClipExtractor.VideoExtensions`), with a test
+  (`OriginalPathFor_ReturnsNullForNonVbrPaths`) covering exactly that case so it can't regress.
+  18 tests in `VBR.Tests/Cleanup/LibraryCleanerTests.cs`, almost all of them ordinary always-on
+  unit tests against temp directories (no video content needed for mark/promote/delete/recovery —
+  a real Windows file lock, not a mock, is used to force and verify the rollback path); only the
+  two `--validate-files` tests shell out to ffmpeg/ffprobe. Also verified live through the compiled
+  CLI: a scratch library with a normal pair, an untouched file with no `.vbr.` counterpart, and a
+  simulated interrupted-run marker — the recovery sweep restored the interrupted pair and the same
+  run cleaned it alongside the normal one, exactly as designed. Full solution builds with 0
+  warnings/errors; `dotnet test VBR.Tests` is 30 passed / 2 skipped (env-gated) / 0 failed.
+
+### Orphaned ffmpeg process on cancellation, fixed; a "hang" traced to a corrupted test file (2026-07-20)
+
+- **Live bug (maintainer): `vbr remove --re-encode true` appeared to hang** on a real episode —
+  0-byte output, CPU maxed, 12+ minutes, and killing the CLI (Ctrl+C) left ffmpeg running as an
+  orphaned process afterward. Root cause of the orphan: `RunFfmpeg` blocked in a synchronous,
+  cancellation-blind `Process.StandardError.ReadToEnd()` — the existing
+  `ct.IsCancellationRequested`-then-kill check right after it could never be reached while that
+  call was still blocked. **Fixed** in both `ClipRemover.RunFfmpeg` and `ClipExtractor.Extract`
+  (the latter gained a `CancellationToken` parameter, threaded through its three call sites) by
+  registering a `CancellationTokenRegistration` immediately after `Process.Start()` that kills the
+  process tree independent of what the calling thread is currently blocked on. While in both
+  methods, also switched `ReadToEnd()` on stdout/stderr from sequential to concurrent
+  (`ReadToEndAsync` on both before waiting) — draining one stream fully before the other risks
+  deadlocking ffmpeg against this process if the undrained stream's pipe buffer fills, the same
+  bug class independently hit (and fixed) the same day in `VBR.Tests`'s synthetic-clip helper.
+- **Not a bug: the source file was corrupted.** After the fix above, a retry was still far slower
+  than expected with an implausible frame count. `ffmpeg -v warning -i <source> -map 0:v:0 -f
+  null -` (decode-only, writes nothing) showed continuous "non monotonically increasing dts"
+  warnings — a corrupted-stream signature — and the file also wouldn't play in MPC-BE. The
+  maintainer swapped in a known-good copy from their real library; it played and re-encoded
+  normally. Notable: the earlier steps in the same run (short stream-copied tail extraction, full
+  audio fingerprinting) had all completed cleanly — only a full video decode start-to-cut-point
+  (what re-encoding requires) touched the damaged part of the stream. No code change from this;
+  see ADR 0007's "Open questions" for a possible future source-side validation idea.
+- **Manifest renamed:** `name.vbr.json` → `name.json`, derived from the original path rather than
+  the `.vbr.` output (maintainer preference). Sidesteps the manifest-mistaken-for-output bug class
+  entirely (the defensive video-extension check added when building `cleanup` stays anyway, as
+  extra robustness — see ADR 0008 Decision 3). `ClipRemover.Remove`, `LibraryCleaner`, and both
+  test suites updated; live-verified against real media through the actual env-gated
+  `ClipRemoverTests` case (manifest correctly written as `....json`).
+- Full solution: 0 warnings/errors. `dotnet test VBR.Tests`: 30 passed / 2 skipped / 0 failed
+  (re-verified after all of the above). See [ADR 0007](decisions/0007-removal-command.md) and
+  [ADR 0008](decisions/0008-cleanup-command.md) "Implementation findings" for full detail.
 
 ## Open / next steps
 

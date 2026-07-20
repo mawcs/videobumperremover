@@ -115,7 +115,7 @@ internal static class MatchCommand {
 
 				ExtractedClip referenceClip;
 				try {
-					referenceClip = ClipExtractor.ExtractToTemp(clipFrom.FullName, ClipRegion.For(region, clipLength), verbose);
+					referenceClip = ClipExtractor.ExtractToTemp(clipFrom.FullName, ClipRegion.For(region, clipLength), verbose, ct);
 				}
 				catch (Exception ex) when (ex is FileNotFoundException or ArgumentOutOfRangeException or InvalidOperationException) {
 					Console.Error.WriteLine($"Error: {ex.Message}");

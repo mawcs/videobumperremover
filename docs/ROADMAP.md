@@ -286,8 +286,9 @@ Work:
   begin/middle removal; an end-only cut shifts nothing before it).
 - **Non-destructive, decided:** never overwrite/delete originals. Output is a sibling file in
   the same directory, named by inserting `.vbr.` before the extension (e.g. `S01E01.mkv` →
-  `S01E01.vbr.mkv`) — supersedes the earlier "staging area" framing. A separate, not-yet-built
-  `cleanup` command will handle promoting/replacing originals later.
+  `S01E01.vbr.mkv`) — supersedes the earlier "staging area" framing. The separate `cleanup`
+  command handles promoting/replacing originals — built, see
+  [ADR 0008](decisions/0008-cleanup-command.md).
 - Maintain a **removal manifest** per file (source, snippet start/end, method, output path,
   reversible?, **catalog entry that triggered the cut**) so every cut can be audited and
   undone, and per-bumper statistics can be tallied. Schema still TBD (ADR 0007 open question).
@@ -298,8 +299,9 @@ is the default, stream-copy an explicit opt-out** (ADR 0007); ~~staging vs. in-p
 frame-accurate cuts (still open — re-encode algorithm specifics).
 
 Open questions: how to handle files where a clean cut requires re-encoding a segment only?
-Manifest schema (ADR 0007's open questions). `cleanup` command design is proposed —
-[ADR 0008](decisions/0008-cleanup-command.md) — pending the maintainer's review before it's built.
+Manifest schema (ADR 0007's open questions). `cleanup` is designed and built —
+[ADR 0008](decisions/0008-cleanup-command.md) — remaining open items are its own (duration
+tolerance for `--validate-files`, pending-reclamation retry policy).
 
 **Exit criteria:** confirmed queue processes into trimmed outputs with a full audit trail.
 

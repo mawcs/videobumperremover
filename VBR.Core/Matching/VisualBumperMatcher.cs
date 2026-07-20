@@ -150,7 +150,7 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		var clipRec = cachedClipRecord!;
 		int clipUsable = cachedClipUsable;
 
-		using var window = ClipExtractor.ExtractToTemp(candidatePath, searchRegion, verboseLogging);
+		using var window = ClipExtractor.ExtractToTemp(candidatePath, searchRegion, verboseLogging, ct);
 		string? candidateDumpLabel = dumpFramesDir is null ? null
 			: $"{++dumpSequence:000}-{Path.GetFileNameWithoutExtension(candidatePath)}";
 		var candidateRec = Embed(window.Path, candidateDumpLabel, ct);

@@ -79,7 +79,7 @@ public class ClipRemoverTests {
 			$"BUMPER_REMOVE_REGION must be 'begin' or 'end', got '{regionRaw}'.");
 
 		string outputPath = ClipRemover.BuildOutputPath(source!);
-		string manifestPath = Path.ChangeExtension(outputPath, ".json");
+		string manifestPath = Path.ChangeExtension(source!, ".json"); // named after the original, not the .vbr. output
 		CleanupLeftovers(outputPath, manifestPath);
 
 		var sourceInfo = new FileInfo(source!);
