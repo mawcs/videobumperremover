@@ -137,7 +137,8 @@ Promotes verified `.vbr.` outputs (from a prior `vbr remove` run) to replace the
 deletes the pre-cut original and its manifest. **The only command that deletes video files**; see
 [ADR 0008](decisions/0008-cleanup-command.md) for the full design. Run this *between*
 bumper-removal passes, once you've reviewed each `.vbr.` output — not as a substitute for
-reviewing them, and not automatically after `remove`.
+reviewing them, and not automatically after `remove`. `clean` works too — it's just a shorter
+alias for the same command.
 
 ```sh
 dotnet run --project VBR.CLI -- cleanup --library "D:\Media\Show"

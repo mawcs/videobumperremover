@@ -41,6 +41,7 @@ internal static class CleanupCommand {
 			"originals — deletes the pre-cut original and the manifest. The only command that " +
 			"deletes video files (see docs/decisions/0008-cleanup-command.md). Run this between " +
 			"bumper-removal passes, after reviewing the '.vbr.' outputs, not instead of reviewing them.");
+		cmd.Aliases.Add("clean"); // "cleanup" is the name of record everywhere (ADR 0008); "clean" is just shorter to type.
 		cmd.Options.Add(Library);
 		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
