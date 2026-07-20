@@ -268,7 +268,9 @@ confirmed correct.
   configurability, 10-bit/HDR preservation (currently downgraded to 8-bit — a known gap), GPU
   (NVENC) vs. CPU encode (currently CPU-only, which is genuinely slow for full episodes).
 - **`cleanup` command design** — verification gate, replace-vs-delete-original policy, backup
-  retention. Not scoped here.
+  retention. Not scoped here. **Should support `--file` single-target the same way `match`/
+  `remove` now do** (maintainer, 2026-07-20) — `SharedOptions.ResolveCandidates`/`CandidateSet`
+  are already written generically enough to reuse as-is.
 - **Catalog/index-aware `remove` parameters** — additive; must preserve the no-pre-cut-clip rule.
 - **User-configurable output naming/location** — sibling `.vbr.` suffix is the only supported
   behavior for now; staging directory or custom pattern are real future options, not designed.

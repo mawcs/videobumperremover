@@ -15,10 +15,12 @@
 //
 
 using System;
+using System.IO;
 using System.Threading;
 using VBR.Core.Extraction;
 using VDF.Core;
 using VDF.Core.FFTools;
+using VDF.Core.Utils;
 
 namespace VBR.Core.Matching;
 
@@ -43,19 +45,30 @@ public sealed class AudioBumperMatcher : IBumperMatcher {
 	public const float DefaultMinSimilarity = 0.80f;
 
 	readonly float minSimilarity;
+	readonly bool verboseLogging;
 
-	public AudioBumperMatcher(float minSimilarity = DefaultMinSimilarity) => this.minSimilarity = minSimilarity;
+	/// <param name="verboseLogging">Logs each fingerprint extraction (block count) and the
+	/// resulting comparison via <see cref="Logger"/>, and raises VDF's own ffmpeg/Chromaprint
+	/// extraction logging to <c>extendedLogging</c> level — for <c>--verbose</c>.</param>
+	public AudioBumperMatcher(float minSimilarity = DefaultMinSimilarity, bool verboseLogging = false) {
+		this.minSimilarity = minSimilarity;
+		this.verboseLogging = verboseLogging;
+	}
 
 	public string Name => "audio";
 
 	public MatchResult Match(string referenceClipPath, string candidatePath, ClipRegion searchRegion, CancellationToken ct = default) {
-		uint[]? clipFingerprint = ChromaprintEngine.ExtractFingerprint(referenceClipPath, extendedLogging: false, ct);
+		uint[]? clipFingerprint = ChromaprintEngine.ExtractFingerprint(referenceClipPath, verboseLogging, ct);
 		if (clipFingerprint is not { Length: >= 2 })
 			return new MatchResult(false, 0f, null, "no usable audio fingerprint on the reference clip");
+		if (verboseLogging)
+			Logger.Instance.Info($"[audio] '{Path.GetFileName(referenceClipPath)}': fingerprint extracted, {clipFingerprint.Length} blocks.");
 
-		uint[]? fileFingerprint = ChromaprintEngine.ExtractFingerprint(candidatePath, extendedLogging: false, ct);
+		uint[]? fileFingerprint = ChromaprintEngine.ExtractFingerprint(candidatePath, verboseLogging, ct);
 		if (fileFingerprint is not { Length: >= 2 })
 			return new MatchResult(false, 0f, null, "no usable audio track");
+		if (verboseLogging)
+			Logger.Instance.Info($"[audio] '{Path.GetFileName(candidatePath)}': fingerprint extracted, {fileFingerprint.Length} blocks.");
 
 		(int start, int count) = ResolveWindow(fileFingerprint.Length, searchRegion);
 		if (count < clipFingerprint.Length)
@@ -64,6 +77,8 @@ public sealed class AudioBumperMatcher : IBumperMatcher {
 		var (similarity, offsetBlocks) = ScanEngine.SlidingWindowCompare(
 			clipFingerprint, fileFingerprint[start..(start + count)], minSim: 0f);
 		int offset = start + offsetBlocks;
+		if (verboseLogging)
+			Logger.Instance.Info($"[audio] '{Path.GetFileName(candidatePath)}': sliding-window compare over blocks [{start}, {start + count}) -> similarity={similarity:P1} @ offset {offset}s.");
 		return new MatchResult(similarity >= minSimilarity, similarity, offset, $"audio={similarity:P0}@{offset}s");
 	}
 

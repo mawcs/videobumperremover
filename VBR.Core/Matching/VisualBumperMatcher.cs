@@ -24,6 +24,7 @@ using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
 using VDF.Core;
 using VDF.Core.AI;
+using VDF.Core.Utils;
 
 namespace VBR.Core.Matching;
 
@@ -76,6 +77,7 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	readonly float presenceThreshold;
 	readonly float rigidHitThreshold;
 	readonly string? dumpFramesDir;
+	readonly bool verboseLogging;
 	OnnxEmbedder? embedder;
 	bool clipFramesDumped;
 	int dumpSequence;
@@ -88,17 +90,23 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	/// <c>clip/</c>, then each candidate's search-window frames under a numbered subfolder in
 	/// match order. Frames are dumped pre-filtering, so the dump shows the unfiltered truth.
 	/// Null (the default) dumps nothing.</param>
+	/// <param name="verboseLogging">Logs the resolved ONNX model path on first use and, per
+	/// file, sampled/usable/filtered frame counts and each inference batch call, via
+	/// <see cref="Logger"/> — concrete, per-run proof that the model is actually being loaded
+	/// and invoked, not just trusted by reading the code.</param>
 	public VisualBumperMatcher(
 			double sampleInterval = DefaultSampleIntervalSeconds,
 			float presenceThreshold = DefaultPresenceThreshold,
 			float rigidHitThreshold = DefaultRigidHitThreshold,
-			string? dumpFramesDir = null) {
+			string? dumpFramesDir = null,
+			bool verboseLogging = false) {
 		if (sampleInterval <= 0)
 			throw new ArgumentOutOfRangeException(nameof(sampleInterval), "Sample interval must be positive.");
 		this.sampleInterval = sampleInterval;
 		this.presenceThreshold = presenceThreshold;
 		this.rigidHitThreshold = rigidHitThreshold;
 		this.dumpFramesDir = dumpFramesDir;
+		this.verboseLogging = verboseLogging;
 	}
 
 	public string Name => "visual";
@@ -114,7 +122,13 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	/// "no match" result.</exception>
 	public void PrepareClip(string referenceClipPath, CancellationToken ct = default) {
 		AiComponents.EnsureReady();
-		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
+		if (embedder is null) {
+			if (verboseLogging)
+				Logger.Instance.Info($"[visual] Loading ONNX model: {AiComponents.ModelPath}");
+			embedder = new OnnxEmbedder(AiComponents.ModelPath);
+			if (verboseLogging)
+				Logger.Instance.Info("[visual] ONNX inference session ready.");
+		}
 		string? dumpLabel = dumpFramesDir is null || clipFramesDumped ? null : "clip";
 		var record = Embed(referenceClipPath, dumpLabel, ct);
 		if (dumpLabel is not null) clipFramesDumped = true;
@@ -136,7 +150,7 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		var clipRec = cachedClipRecord!;
 		int clipUsable = cachedClipUsable;
 
-		using var window = ClipExtractor.ExtractToTemp(candidatePath, searchRegion);
+		using var window = ClipExtractor.ExtractToTemp(candidatePath, searchRegion, verboseLogging);
 		string? candidateDumpLabel = dumpFramesDir is null ? null
 			: $"{++dumpSequence:000}-{Path.GetFileNameWithoutExtension(candidatePath)}";
 		var candidateRec = Embed(window.Path, candidateDumpLabel, ct);
@@ -172,18 +186,29 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 
 	DenseEmbeddingStore.DenseRecord Embed(string path, string? dumpLabel, CancellationToken ct) {
 		byte[][] frames = DenseFrameSampler.SampleFrames(path, sampleInterval, MaxFramesPerFile, ct);
-		if (frames.Length == 0)
+		if (frames.Length == 0) {
+			if (verboseLogging)
+				Logger.Instance.Info($"[visual] '{Path.GetFileName(path)}': 0 frames sampled.");
 			return new DenseEmbeddingStore.DenseRecord(0, 0, (float)sampleInterval, Array.Empty<byte[]>());
+		}
 		if (dumpFramesDir is not null && dumpLabel is not null)
 			FrameDump.WritePngs(frames, Path.Combine(dumpFramesDir, dumpLabel));
 		bool[] usable = FrameQuality.SelectUsable(frames);
+		if (verboseLogging) {
+			int usableCount = usable.Count(u => u);
+			Logger.Instance.Info($"[visual] '{Path.GetFileName(path)}': {frames.Length} frames sampled, " +
+				$"{usableCount} usable after low-information filtering ({frames.Length - usableCount} dropped).");
+		}
 
 		var emb = new byte[frames.Length][];
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
 		var slots = new List<int>(OnnxEmbedder.MaxBatch);
+		int batchCount = 0;
 		void Flush() {
 			if (batch.Count == 0) return;
 			byte[][] vectors = embedder!.EmbedBatchQuantized(batch);
+			if (verboseLogging)
+				Logger.Instance.Info($"[visual] ONNX inference: embedded batch #{++batchCount} ({vectors.Length} frames, {vectors[0].Length}-byte quantized vectors).");
 			for (int k = 0; k < vectors.Length; k++) emb[slots[k]] = vectors[k];
 			batch.Clear();
 			slots.Clear();

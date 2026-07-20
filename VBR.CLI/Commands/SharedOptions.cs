@@ -17,8 +17,10 @@
 using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
+using System.Linq;
 using VBR.Core.Extraction;
 using VBR.Core.Matching;
+using VDF.Core.Utils;
 
 namespace VBR.CLI.Commands;
 
@@ -139,13 +141,20 @@ internal static class SharedOptions {
 		DefaultValueFactory = _ => DetectionMode.visual,
 	};
 
+	// Not Required: exactly one of Library/TargetFile must be given, validated in each command's
+	// action (System.CommandLine has no built-in "exactly one of" constraint) via ResolveCandidates.
 	internal static readonly Option<DirectoryInfo> Library = new("--library") {
-		Description = "Folder of video files to search. Subfolders are traversed by default — see --no-recurse.",
-		Required = true,
+		Description = "Folder of video files to search. Subfolders are traversed by default — " +
+			"see --no-recurse. Exactly one of --library or --file is required.",
+	};
+
+	internal static readonly Option<FileInfo> TargetFile = new("--file") {
+		Description = "A single video file to search, instead of a folder. Exactly one of " +
+			"--library or --file is required.",
 	};
 
 	internal static readonly Option<bool> NoRecurse = new("--no-recurse") {
-		Description = "Search only the top level of --library instead of traversing its subfolders.",
+		Description = "With --library: search only its top level instead of traversing subfolders. No effect with --file.",
 	};
 
 	internal static readonly Option<DirectoryInfo> DumpFrames = new("--dump-frames") {
@@ -154,4 +163,83 @@ internal static class SharedOptions {
 			"under a numbered subfolder — to inspect exactly what the matcher compared. Frame " +
 			"fNNN sits at NNN × --sample-interval into its extracted clip/window.",
 	};
+
+	internal static readonly Option<bool> Verbose = new("--verbose") {
+		Description = "Log detailed diagnostic info (model path, per-file frame/embedding " +
+			"counts, exact ffmpeg commands run) to the console and to VDF's log.txt — proof of " +
+			"what's actually happening on a given run, not just the summary line.",
+	};
+
+	/// <summary>Resolved set of candidate files plus the root to print paths relative to (null
+	/// for a single-file target, where the display name is just the file name).</summary>
+	internal readonly record struct CandidateSet(IReadOnlyList<string> Files, string? LibraryRoot);
+
+	/// <summary>
+	/// Validates exactly one of <paramref name="file"/>/<paramref name="library"/> was given and
+	/// resolves it to a candidate list — a single file as-is (no extension filtering: the user
+	/// named it explicitly), or every recognized video file under the library folder. Returns
+	/// null and sets <paramref name="error"/> on any validation failure; callers print the error
+	/// and exit nonzero.
+	/// </summary>
+	internal static CandidateSet? ResolveCandidates(FileInfo? file, DirectoryInfo? library, bool recurse, out string? error) {
+		if (file is null && library is null) {
+			error = "Error: one of --library or --file is required.";
+			return null;
+		}
+		if (file is not null && library is not null) {
+			error = "Error: specify only one of --library or --file, not both.";
+			return null;
+		}
+		if (file is not null) {
+			if (!file.Exists) {
+				error = $"Error: File not found: {file.FullName}";
+				return null;
+			}
+			error = null;
+			return new CandidateSet(new[] { file.FullName }, LibraryRoot: null);
+		}
+		if (!library!.Exists) {
+			error = $"Error: Library folder not found: {library.FullName}";
+			return null;
+		}
+		error = null;
+		var files = Directory.EnumerateFiles(library.FullName, "*",
+				new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
+			.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+			.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
+			.ToList();
+		return new CandidateSet(files, library.FullName);
+	}
+
+	/// <summary>Library-relative path for a resolved candidate (or just the file name for a
+	/// single-file target, where there's no library root to be relative to).</summary>
+	internal static string DisplayName(string file, string? libraryRoot) =>
+		libraryRoot is null ? Path.GetFileName(file) : Path.GetRelativePath(libraryRoot, file);
+
+	/// <summary>
+	/// When <paramref name="verbose"/>, echoes every log entry VBR.Core/VDF.Core raise via
+	/// <see cref="Logger"/> to stderr as they happen — Info/Warn/Error all always get written to
+	/// VDF's own log.txt regardless of this flag (VBR.Core logs unconditionally; there's nothing
+	/// to gate there), so --verbose only controls whether the CLI *also* echoes them live. Returns
+	/// an <see cref="IDisposable"/> that unsubscribes; dispose it when the command finishes so a
+	/// stale handler doesn't outlive the process (matters most for the CLI's own test runs).
+	/// </summary>
+	internal static IDisposable? SubscribeVerboseLogging(bool verbose) {
+		if (!verbose) return null;
+		Logger.LogEventHandler handler = entry => {
+			if (entry.IsSessionStart) return;
+			string tag = entry.Severity switch {
+				LogSeverity.Warning => "WARN ",
+				LogSeverity.Error => "ERROR",
+				_ => "INFO ",
+			};
+			Console.Error.WriteLine($"[{entry.Timestamp:HH:mm:ss} {tag}] {entry.Message}");
+		};
+		Logger.Instance.LogEntryAdded += handler;
+		return new Unsubscriber(() => Logger.Instance.LogEntryAdded -= handler);
+	}
+
+	sealed class Unsubscriber(Action unsubscribe) : IDisposable {
+		public void Dispose() => unsubscribe();
+	}
 }

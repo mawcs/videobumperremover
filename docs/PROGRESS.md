@@ -222,6 +222,39 @@ was flagged right after the initial scaffold and fixed before anything else was 
     validation tests across both modes instead); the real-media test now accepts an optional
     `BUMPER_REMOVE_MODE` env var.
 
+### `--verbose` logging + `--file` single-target (2026-07-20)
+
+- **VDF already has a logging system** (`VDF.Core.Utils.Logger`, public singleton, `Info`/`Warn`/
+  `Error` + a `LogEntryAdded` event, writes to `log.txt` next to the running executable or the
+  state folder). VDF.GUI already subscribes to it for its log panel; VDF.CLI never wired it up,
+  and neither did any VBR.\* code before now — confirmed by grep, not assumed.
+- **`--verbose` added to both `match` and `remove`** (`SharedOptions.SubscribeVerboseLogging`):
+  when set, every `Logger` entry raised anywhere (VBR.Core or VDF.Core) is echoed live to
+  stderr. Entries are written to `log.txt` **unconditionally** regardless of `--verbose` — VBR.Core
+  logs without checking a flag; `--verbose` only gates whether the CLI *also* prints them live.
+  Confirmed live: `log.txt` already contained VDF's own pre-existing Warning-level entries from
+  earlier in this project, predating any of today's changes.
+- **Debug/info statements added across the pipeline**, directly answering "is the AI model
+  actually being used": `VisualBumperMatcher` logs the resolved ONNX model path and confirms
+  session creation on first use, then per file logs sampled/usable/filtered frame counts and
+  **each inference batch call** (frame count + quantized vector byte length — concrete, checkable
+  numbers, not a trust-me claim). `ClipExtractor` and `ClipRemover` log the exact ffmpeg command
+  line for every extraction/cut, plus (for `remove`) the computed cut point and, for stream-copy
+  end cuts, the safety-margin rationale (arithmetic point → nearest safe keyframe → how much
+  extra was trimmed and why). `AudioBumperMatcher` logs fingerprint block counts and the
+  sliding-window comparison result. All verified live against real media (model path, batch
+  inference, exact ffmpeg commands, and cut-point rationale all confirmed in actual console/
+  `log.txt` output) — re-run any command with `--verbose` to see it yourself.
+- **`--file <path>` added to both commands as an alternative to `--library <folder>`** — exactly
+  one of the two is required, validated with a clear error either way
+  (`SharedOptions.ResolveCandidates`, also used to unify the previously-duplicated
+  candidate-enumeration logic in `match`/`remove`). Display names fall back to just the file name
+  (no library root to be relative to). Verified live for both commands.
+- **Forward-looking note for the future `cleanup` command** (not built yet): the maintainer
+  wants single-file targeting there too, in addition to a library. `ResolveCandidates`/
+  `CandidateSet` in `SharedOptions.cs` are written generically enough to be reused as-is when
+  `cleanup` is designed — no rework anticipated.
+
 ## Open / next steps
 
 - [ ] **Removal engine — both modes implemented; algorithm specifics still open.** See
@@ -229,7 +262,8 @@ was flagged right after the initial scaffold and fixed before anything else was 
   boundary detection), non-destructive `.vbr.` sibling output, both stream-copy and re-encode
   verified against real media. Still open (ADR 0007 "Open questions"): real codec choice
   (currently a fixed libx264/AAC placeholder), GPU (NVENC) encode (currently CPU-only and slow
-  for full episodes), 10-bit/HDR preservation, manifest schema finalization, `cleanup` command,
+  for full episodes), 10-bit/HDR preservation, manifest schema finalization, `cleanup` command
+  (should support `--file` single-target like `match`/`remove` do, per the maintainer),
   the "already-cut `.vbr.` as `--clip-from`" open risk logged above.
 - [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file

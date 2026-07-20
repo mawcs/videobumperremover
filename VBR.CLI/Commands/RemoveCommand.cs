@@ -74,10 +74,11 @@ internal static class RemoveCommand {
 
 	internal static Command Build() {
 		var cmd = new Command("remove",
-			"Find a bumper's presence across a folder of videos and remove it from each match. " +
-			"Never modifies the source — writes a sibling 'name.vbr.ext' file instead, plus a " +
-			"JSON manifest recording exactly what was cut. Bundles clip extraction, matching, " +
-			"and removal in one command (see docs/decisions/0007-removal-command.md).");
+			"Find a bumper's presence across a folder of videos (or a single file, via --file) " +
+			"and remove it from each match. Never modifies the source — writes a sibling " +
+			"'name.vbr.ext' file instead, plus a JSON manifest recording exactly what was cut. " +
+			"Bundles clip extraction, matching, and removal in one command " +
+			"(see docs/decisions/0007-removal-command.md).");
 		cmd.Options.Add(ClipFrom);
 		cmd.Options.Add(Region);
 		cmd.Options.Add(ClipLength);
@@ -88,10 +89,12 @@ internal static class RemoveCommand {
 		cmd.Options.Add(MinSimilarity);
 		cmd.Options.Add(Mode);
 		cmd.Options.Add(Library);
+		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
 		cmd.Options.Add(Output);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(ReEncode);
+		cmd.Options.Add(Verbose);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			bool reEncode = parseResult.GetValue(ReEncode);
@@ -108,10 +111,21 @@ internal static class RemoveCommand {
 			float rigidHitThreshold = parseResult.GetValue(RigidHitThreshold);
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
 			DetectionMode mode = parseResult.GetValue(Mode);
-			var library = parseResult.GetValue(Library)!;
+			var library = parseResult.GetValue(Library);
+			var targetFile = parseResult.GetValue(TargetFile);
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
+			bool verbose = parseResult.GetValue(Verbose);
+
+			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
+
+			CandidateSet? resolved = ResolveCandidates(targetFile, library, recurse, out string? resolveError);
+			if (resolved is null) {
+				Console.Error.WriteLine(resolveError);
+				return 1;
+			}
+			var (candidatePaths, libraryRoot) = resolved.Value;
 
 			if (region == ClipEdge.begin && !reEncode)
 				Console.Error.WriteLine(
@@ -130,15 +144,15 @@ internal static class RemoveCommand {
 						Console.Error.WriteLine("AI components ready.");
 					}
 					visual = new VisualBumperMatcher(sampleInterval.TotalSeconds, presenceThreshold, rigidHitThreshold,
-						dumpFramesDir: dumpFrames?.FullName);
+						dumpFramesDir: dumpFrames?.FullName, verboseLogging: verbose);
 				}
 				AudioBumperMatcher? audio = mode is DetectionMode.audio or DetectionMode.both
-					? new AudioBumperMatcher(minSimilarity)
+					? new AudioBumperMatcher(minSimilarity, verboseLogging: verbose)
 					: null;
 
 				ExtractedClip referenceClip;
 				try {
-					referenceClip = ClipExtractor.ExtractToTemp(clipFrom.FullName, ClipRegion.For(region, clipLength));
+					referenceClip = ClipExtractor.ExtractToTemp(clipFrom.FullName, ClipRegion.For(region, clipLength), verbose);
 				}
 				catch (Exception ex) when (ex is FileNotFoundException or ArgumentOutOfRangeException or InvalidOperationException) {
 					Console.Error.WriteLine($"Error: {ex.Message}");
@@ -146,11 +160,6 @@ internal static class RemoveCommand {
 				}
 
 				using (referenceClip) {
-					if (!library.Exists) {
-						Console.Error.WriteLine($"Error: Library folder not found: {library.FullName}");
-						return 1;
-					}
-
 					if (visual is not null) {
 						try {
 							visual.PrepareClip(referenceClip.Path, ct);
@@ -162,16 +171,13 @@ internal static class RemoveCommand {
 					}
 
 					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
-					// --clip-from is NOT excluded: it's a normal library file that (almost
+					// --clip-from is NOT excluded: it's a normal candidate that (almost
 					// certainly) also contains the bumper it was enrolled from — skipping it
 					// silently left its own copy of the bumper never removed, with no indication
 					// anywhere that it had been skipped.
-					var candidates = Directory.EnumerateFiles(library.FullName, "*",
-							new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
-						.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
+					var candidates = candidatePaths
 						// A prior run's own output ("name.vbr.ext") must never be re-matched/re-cut.
 						.Where(f => !Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", StringComparison.OrdinalIgnoreCase))
-						.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 						.ToList();
 
 					int matchCount = 0;
@@ -180,7 +186,7 @@ internal static class RemoveCommand {
 					var rows = new List<RemoveRow>(candidates.Count);
 					foreach (string file in candidates) {
 						ct.ThrowIfCancellationRequested();
-						string display = Path.GetRelativePath(library.FullName, file);
+						string display = DisplayName(file, libraryRoot);
 						MatchResult? visualResult = null;
 						MatchResult? audioResult = null;
 						RemoveRow row;
@@ -195,7 +201,7 @@ internal static class RemoveCommand {
 								matchCount++;
 								try {
 									var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
-										visualResult?.Detail ?? audioResult?.Detail, ct);
+										visualResult?.Detail ?? audioResult?.Detail, verbose, ct);
 									outputPath = removed.OutputPath;
 									removedCount++;
 								}
@@ -220,7 +226,7 @@ internal static class RemoveCommand {
 
 					if (output is not null && !WriteReport(output, rows, summary,
 							clipFrom, region, clipLength, searchLength, sampleInterval, mode,
-							presenceThreshold, rigidHitThreshold, minSimilarity, library, recurse, removalMode))
+							presenceThreshold, rigidHitThreshold, minSimilarity, library, targetFile, recurse, removalMode))
 						return 1;
 				}
 				return 0;
@@ -236,8 +242,8 @@ internal static class RemoveCommand {
 	static bool WriteReport(FileInfo output, IReadOnlyList<RemoveRow> rows, string summary,
 			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
 			TimeSpan sampleInterval, DetectionMode mode, float presenceThreshold,
-			float rigidHitThreshold, float minSimilarity, DirectoryInfo library, bool recurse,
-			RemovalMode removalMode) {
+			float rigidHitThreshold, float minSimilarity, DirectoryInfo? library, FileInfo? targetFile,
+			bool recurse, RemovalMode removalMode) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr remove report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine($"clip-from:      {clipFrom.FullName}");
@@ -246,7 +252,9 @@ internal static class RemoveCommand {
 		report.AppendLine(string.Create(CultureInfo.InvariantCulture,
 			$"detection-mode: {mode}   presence-threshold: {presenceThreshold:0.###}   " +
 			$"rigid-hit-threshold: {rigidHitThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
-		report.AppendLine($"library:        {library.FullName}   ({(recurse ? "recursive" : "top level only")})");
+		report.AppendLine(targetFile is not null
+			? $"file:           {targetFile.FullName}"
+			: $"library:        {library!.FullName}   ({(recurse ? "recursive" : "top level only")})");
 		report.AppendLine($"mode:           {(removalMode == RemovalMode.ReEncode ? "re-encode (--re-encode true)" : "stream-copy (--re-encode false)")}");
 		report.AppendLine(new string('-', 78));
 		foreach (RemoveRow row in rows)

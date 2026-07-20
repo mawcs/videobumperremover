@@ -19,6 +19,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using VDF.Core.FFTools;
+using VDF.Core.Utils;
 
 namespace VBR.Core.Extraction;
 
@@ -75,24 +76,28 @@ public static class ClipExtractor {
 	/// <summary>Extensions this project treats as video files.</summary>
 	public static readonly string[] VideoExtensions = { ".mkv", ".mp4", ".m4v", ".avi", ".mov", ".ts", ".webm", ".wmv" };
 
+	/// <param name="verbose">Logs the exact ffmpeg command line and the extracted temp file's
+	/// size via <see cref="Logger"/> — proof of exactly what was run, for <c>--verbose</c>.</param>
 	/// <exception cref="FileNotFoundException">The source video does not exist.</exception>
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="region"/>'s duration is not positive.</exception>
 	/// <exception cref="InvalidOperationException">Extraction failed (ffmpeg missing, region out of range, etc.).</exception>
-	public static ExtractedClip ExtractToTemp(string sourceVideoPath, ClipRegion region) {
+	public static ExtractedClip ExtractToTemp(string sourceVideoPath, ClipRegion region, bool verbose = false) {
 		if (!File.Exists(sourceVideoPath))
 			throw new FileNotFoundException("Source video not found.", sourceVideoPath);
 		if (region.Duration <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(region), "Clip region duration must be positive.");
 
 		string outputPath = Path.Combine(Path.GetTempPath(), $"vbr_clip_{Guid.NewGuid():N}.mkv");
-		if (!Extract(sourceVideoPath, region, outputPath))
+		if (!Extract(sourceVideoPath, region, outputPath, verbose))
 			throw new InvalidOperationException(
 				$"Failed to extract the requested region from '{Path.GetFileName(sourceVideoPath)}' — " +
 				"check ffmpeg is on PATH and the region fits within the file's duration.");
+		if (verbose)
+			Logger.Instance.Info($"[extract] '{Path.GetFileName(sourceVideoPath)}' -> {outputPath} ({new FileInfo(outputPath).Length:N0} bytes)");
 		return new ExtractedClip(outputPath);
 	}
 
-	static bool Extract(string sourceVideoPath, ClipRegion region, string outputPath) {
+	static bool Extract(string sourceVideoPath, ClipRegion region, string outputPath, bool verbose) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardError = true,
@@ -116,12 +121,17 @@ public static class ClipExtractor {
 		psi.ArgumentList.Add("-c");
 		psi.ArgumentList.Add("copy");
 		psi.ArgumentList.Add(outputPath);
+		if (verbose)
+			Logger.Instance.Info($"[extract] {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
 		try {
 			using var p = Process.Start(psi)!;
-			p.StandardError.ReadToEnd();
+			string stderr = p.StandardError.ReadToEnd();
 			p.StandardOutput.ReadToEnd();
 			p.WaitForExit(60_000);
-			return p.HasExited && p.ExitCode == 0 && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+			bool ok = p.HasExited && p.ExitCode == 0 && File.Exists(outputPath) && new FileInfo(outputPath).Length > 0;
+			if (!ok && verbose)
+				Logger.Instance.Warn($"[extract] ffmpeg exit {(p.HasExited ? p.ExitCode : "(still running)")}: {stderr.Trim()}");
+			return ok;
 		}
 		catch { return false; }
 	}

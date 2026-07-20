@@ -44,6 +44,12 @@ pre-cut clip file (see [`AGENTS.md`](../AGENTS.md) → "Clip extraction is the t
 dotnet run --project VBR.CLI -- match --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 10s --sample-interval 0.2s --library "D:\Media\Show"
 ```
 
+Target a single file instead of a folder with `--file`:
+
+```sh
+dotnet run --project VBR.CLI -- match --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 10s --sample-interval 0.2s --file "D:\Media\Show\S01E05.mkv"
+```
+
 Key options (run `--help` for the full list):
 
 - `--region begin|end` — which edge the bumper lives at; drives both clip extraction and where
@@ -51,12 +57,21 @@ Key options (run `--help` for the full list):
 - `--clip-length` (required) / `--search-length` (defaults to clip length + 20s) /
   `--sample-interval` (default 1s; go as low as ~0.2s for short clips) — durations take a bare
   number of seconds or a suffix (`5.1s`, `200ms`).
-- `--library` is traversed **recursively by default**; `--no-recurse` searches only its top
-  level. Results print library-relative paths.
+- **Exactly one of `--library <folder>` or `--file <path>` is required.** `--library` is
+  traversed **recursively by default**; `--no-recurse` searches only its top level (no effect
+  with `--file`). Results print library-relative paths, or just the file name for `--file`.
 - `--output <file>` — also write the match report (parameter header + the same rows/summary as
   the console) to a file.
 - `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip/` + one numbered
   folder per candidate) to inspect exactly what the visual matcher compared.
+- `--verbose` — logs the resolved ONNX model path, per-file sampled/usable frame counts, each
+  inference batch call, and the exact ffmpeg command lines run, to the console and to VDF's
+  `log.txt` (next to the running executable, or the state folder if that's not writable). VDF's
+  own `Logger` already wrote warnings/errors there before this project touched it —
+  `--verbose` adds detailed Info-level tracing on top, and it's on-by-default-to-disk: every
+  run logs to `log.txt` regardless of `--verbose`, which only controls whether the CLI *also*
+  echoes it live. Concrete proof the AI model is real, not just trusted by reading the code —
+  see [`PROGRESS.md`](PROGRESS.md) (2026-07-20 entry) for the full reasoning.
 
 Both regions are validated end to end (2026-07-18): begin-region Netflix-ident test 12/12 true
 positives vs 0 false positives across two unrelated libraries, end-stack regression clean — the
@@ -68,13 +83,20 @@ recorded numbers live in [`iterativeplan.md`](iterativeplan.md) §C.
 dotnet run --project VBR.CLI -- remove --help
 ```
 
-Finds a bumper (same matching as `vbr match` — reuses all its options) and removes it from every
-match, non-destructively: writes a sibling `name.vbr.ext` beside the source plus a JSON manifest
-(`name.vbr.json`), never touching the original. See
+Finds a bumper (same matching as `vbr match` — reuses all its options, including `--file` for a
+single target and `--verbose` for a full ffmpeg-command/model-load audit trail) and removes it
+from every match, non-destructively: writes a sibling `name.vbr.ext` beside the source plus a
+JSON manifest (`name.vbr.json`), never touching the original. See
 [ADR 0007](decisions/0007-removal-command.md) for the full design.
 
 ```sh
 dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --library "D:\Media\Show"
+```
+
+Or a single file, exactly as with `match`:
+
+```sh
+dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --file "D:\Media\Show\S01E05.mkv"
 ```
 
 **`--re-encode` defaults to `true` (Mode B — re-encode)**, and both modes are implemented and

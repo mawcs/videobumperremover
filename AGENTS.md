@@ -120,6 +120,17 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   also confirmed **a length sufficient to match a bumper is not necessarily sufficient to remove
   it whole** — see ADR 0007's "Implementation findings." Manifest schema (a first concrete JSON
   shape shipped), real codec choice, GPU encode, and 10-bit/HDR preservation remain open.
+- **`--verbose` + `--file` added to `match` and `remove` (2026-07-20).** VDF already has a
+  logging system (`VDF.Core.Utils.Logger`, `Info`/`Warn`/`Error`, writes to `log.txt`) that no
+  VBR.\* code had wired up until now. `--verbose` echoes it live and adds real tracing across the
+  pipeline — model path + session confirmation + per-batch inference counts (direct, per-run
+  proof the ONNX model is actually invoked, not just trusted from reading the code), plus the
+  exact ffmpeg command line for every extraction/cut and (for `remove`) the computed cut point's
+  rationale. Logging to `log.txt` is unconditional; `--verbose` only gates the live echo.
+  `--file <path>` is a single-file alternative to `--library <folder>` — exactly one required,
+  via a new shared `SharedOptions.ResolveCandidates` that also de-duplicated the two commands'
+  candidate-enumeration logic. Both verified live. `cleanup` (future) should get the same
+  `--file` option per the maintainer — `ResolveCandidates` is already written generically enough.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 

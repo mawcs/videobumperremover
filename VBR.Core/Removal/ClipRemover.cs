@@ -25,6 +25,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using VBR.Core.Extraction;
 using VDF.Core.FFTools;
+using VDF.Core.Utils;
 
 namespace VBR.Core.Removal;
 
@@ -100,6 +101,9 @@ public static class ClipRemover {
 	// keyframe spacing is unusually sparse and we fail loudly rather than guess.
 	const double KeyframeSearchWindowSeconds = 30.0;
 
+	/// <param name="verbose">Logs duration probing, the computed cut point and its rationale,
+	/// the exact ffmpeg command run, and the manifest write, via <see cref="Logger"/> — for
+	/// <c>--verbose</c>.</param>
 	/// <exception cref="FileNotFoundException"><paramref name="sourcePath"/> does not exist.</exception>
 	/// <exception cref="InvalidOperationException">Duration probing or the ffmpeg cut failed, or
 	/// (stream-copy only) no safe keyframe could be found before the computed end-region cut
@@ -107,13 +111,15 @@ public static class ClipRemover {
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="bumperLength"/> is not
 	/// positive, or is not shorter than the source file's duration.</exception>
 	public static RemovalResult Remove(string sourcePath, ClipEdge region, TimeSpan bumperLength,
-			RemovalMode mode, string? matchDetail = null, CancellationToken ct = default) {
+			RemovalMode mode, string? matchDetail = null, bool verbose = false, CancellationToken ct = default) {
 		if (bumperLength <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(bumperLength), "Bumper length must be positive.");
 		if (!File.Exists(sourcePath))
 			throw new FileNotFoundException("Source video not found.", sourcePath);
 
-		TimeSpan sourceDuration = ProbeDuration(sourcePath);
+		TimeSpan sourceDuration = ProbeDuration(sourcePath, verbose);
+		if (verbose)
+			Logger.Instance.Info($"[remove] '{Path.GetFileName(sourcePath)}': duration={sourceDuration.TotalSeconds:0.###}s, region={region}, bumperLength={bumperLength.TotalSeconds:0.###}s, mode={mode}.");
 		if (bumperLength >= sourceDuration)
 			throw new ArgumentOutOfRangeException(nameof(bumperLength),
 				$"Bumper length ({bumperLength.TotalSeconds:0.###}s) must be shorter than the " +
@@ -124,12 +130,14 @@ public static class ClipRemover {
 		if (mode == RemovalMode.StreamCopy) {
 			if (region == ClipEdge.begin) {
 				cutPointSeconds = bumperLength.TotalSeconds;
-				RunFfmpegOutputSeekCopy(sourcePath, cutPointSeconds, outputPath, ct);
+				RunFfmpegOutputSeekCopy(sourcePath, cutPointSeconds, outputPath, verbose, ct);
 			}
 			else {
 				double naiveCutPoint = sourceDuration.TotalSeconds - bumperLength.TotalSeconds;
 				cutPointSeconds = FindSafeEndCutPoint(sourcePath, naiveCutPoint, ct);
-				RunFfmpegDurationCopy(sourcePath, cutPointSeconds, outputPath, ct);
+				if (verbose)
+					Logger.Instance.Info($"[remove] End-cut safety margin: arithmetic point {naiveCutPoint:0.###}s -> nearest safe keyframe {cutPointSeconds:0.###}s ({naiveCutPoint - cutPointSeconds:0.###}s extra trimmed).");
+				RunFfmpegDurationCopy(sourcePath, cutPointSeconds, outputPath, verbose, ct);
 			}
 		}
 		else {
@@ -137,11 +145,11 @@ public static class ClipRemover {
 			// the cut point is the exact arithmetic value.
 			if (region == ClipEdge.begin) {
 				cutPointSeconds = bumperLength.TotalSeconds;
-				RunFfmpegOutputSeekReEncode(sourcePath, cutPointSeconds, outputPath, ct);
+				RunFfmpegOutputSeekReEncode(sourcePath, cutPointSeconds, outputPath, verbose, ct);
 			}
 			else {
 				cutPointSeconds = sourceDuration.TotalSeconds - bumperLength.TotalSeconds;
-				RunFfmpegDurationReEncode(sourcePath, cutPointSeconds, outputPath, ct);
+				RunFfmpegDurationReEncode(sourcePath, cutPointSeconds, outputPath, verbose, ct);
 			}
 		}
 
@@ -158,6 +166,8 @@ public static class ClipRemover {
 			Mode: mode.ToString(),
 			MatchDetail: matchDetail);
 		File.WriteAllText(manifestPath, JsonSerializer.Serialize(entry, RemovalJsonContext.Default.RemovalManifestEntry));
+		if (verbose)
+			Logger.Instance.Info($"[remove] Wrote output '{outputPath}' and manifest '{manifestPath}'.");
 
 		return new RemovalResult(outputPath, manifestPath, sourceDuration, TimeSpan.FromSeconds(cutPointSeconds), mode);
 	}
@@ -175,8 +185,8 @@ public static class ClipRemover {
 		return dir is { Length: > 0 } ? Path.Combine(dir, fileName) : fileName;
 	}
 
-	static TimeSpan ProbeDuration(string path) {
-		var info = FFProbeEngine.GetMediaInfo(path, extendedLogging: false);
+	static TimeSpan ProbeDuration(string path, bool verbose) {
+		var info = FFProbeEngine.GetMediaInfo(path, extendedLogging: verbose);
 		if (info is null || info.Duration <= TimeSpan.Zero)
 			throw new InvalidOperationException($"Could not determine duration for '{Path.GetFileName(path)}' (ffprobe failed or reported no duration).");
 		return info.Duration;
@@ -245,20 +255,20 @@ public static class ClipRemover {
 
 	// Begin-region: keep [cutPointSeconds, EOF). -ss placed AFTER -i (output seeking) — verified
 	// empirically to snap FORWARD to the next keyframe, never backward into the bumper.
-	static void RunFfmpegOutputSeekCopy(string sourcePath, double cutPointSeconds, string outputPath, CancellationToken ct) {
+	static void RunFfmpegOutputSeekCopy(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
 		var psi = StartFfmpegArgs(sourcePath);
 		psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		AddFfmpegCopyTail(psi, outputPath);
-		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, ct);
+		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, verbose, ct);
 	}
 
 	// End-region: keep [0, cutPointSeconds). No seek needed — the kept segment always starts at
 	// the file's own beginning.
-	static void RunFfmpegDurationCopy(string sourcePath, double cutPointSeconds, string outputPath, CancellationToken ct) {
+	static void RunFfmpegDurationCopy(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
 		var psi = StartFfmpegArgs(sourcePath);
 		psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		AddFfmpegCopyTail(psi, outputPath);
-		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, ct);
+		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, verbose, ct);
 	}
 
 	/// <summary>
@@ -287,7 +297,7 @@ public static class ClipRemover {
 	// there) resolved it, and as a side effect confirmed subtitle cues shift correctly through
 	// the transcode pipeline once the muxer stops running long: a synthetic SRT with cues at
 	// 6s/15s/25s, cut with a 5s begin-region bumper length, came out at exactly 1s/10s/20s.
-	static void RunFfmpegOutputSeekReEncode(string sourcePath, double cutPointSeconds, string outputPath, CancellationToken ct) {
+	static void RunFfmpegOutputSeekReEncode(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -301,14 +311,14 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: false);
-		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, ct);
+		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, verbose, ct);
 	}
 
 	// End-region: keep [0, cutPointSeconds). No seek needed — no seek, no bug (verified: audio
 	// copy alongside a re-encoded, -t-bounded video stream landed within 28ms of the exact
 	// requested cut point). Re-encoding removes the ~1s+ safety margin Mode A pays for GOP
 	// safety, at zero audio quality cost since copy is safe here.
-	static void RunFfmpegDurationReEncode(string sourcePath, double cutPointSeconds, string outputPath, CancellationToken ct) {
+	static void RunFfmpegDurationReEncode(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -322,7 +332,7 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: true);
-		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, ct);
+		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, verbose, ct);
 	}
 
 	static void AddFfmpegReEncodeTail(ProcessStartInfo psi, string outputPath, bool copyAudio) {
@@ -379,7 +389,10 @@ public static class ClipRemover {
 	// encode is exactly the unaddressed lever noted in removal-pipeline.md and deferred by ADR 0007.
 	static readonly TimeSpan ReEncodeTimeout = TimeSpan.FromHours(4);
 
-	static void RunFfmpeg(ProcessStartInfo psi, string sourcePath, TimeSpan timeout, CancellationToken ct) {
+	static void RunFfmpeg(ProcessStartInfo psi, string sourcePath, TimeSpan timeout, bool verbose, CancellationToken ct) {
+		if (verbose)
+			Logger.Instance.Info($"[remove] {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
+		var stopwatch = verbose ? Stopwatch.StartNew() : null;
 		using var process = new Process { StartInfo = psi };
 		process.Start();
 		string stderr = process.StandardError.ReadToEnd();
@@ -392,5 +405,7 @@ public static class ClipRemover {
 		}
 		if (process.ExitCode != 0)
 			throw new InvalidOperationException($"ffmpeg failed (exit {process.ExitCode}) removing the bumper from '{Path.GetFileName(sourcePath)}': {stderr.Trim()}");
+		if (verbose)
+			Logger.Instance.Info($"[remove] ffmpeg completed in {stopwatch!.Elapsed.TotalSeconds:0.#}s.");
 	}
 }
