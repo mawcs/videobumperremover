@@ -129,10 +129,12 @@ internal static class MatchCommand {
 					}
 
 					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
+					// --clip-from is NOT excluded: it's a normal library file that (almost
+					// certainly) also contains the bumper it was enrolled from, and silently
+					// skipping it left it unreported with no indication anywhere that happened.
 					var candidates = Directory.EnumerateFiles(library.FullName, "*",
 							new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
 						.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-						.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipFrom.FullName), StringComparison.OrdinalIgnoreCase))
 						.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 						.ToList();
 

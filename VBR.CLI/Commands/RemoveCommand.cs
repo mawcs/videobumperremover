@@ -164,10 +164,13 @@ internal static class RemoveCommand {
 					}
 
 					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
+					// --clip-from is NOT excluded: it's a normal library file that (almost
+					// certainly) also contains the bumper it was enrolled from — skipping it
+					// silently left its own copy of the bumper never removed, with no indication
+					// anywhere that it had been skipped.
 					var candidates = Directory.EnumerateFiles(library.FullName, "*",
 							new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
 						.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-						.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipFrom.FullName), StringComparison.OrdinalIgnoreCase))
 						// A prior run's own output ("name.vbr.ext") must never be re-matched/re-cut.
 						.Where(f => !Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", StringComparison.OrdinalIgnoreCase))
 						.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)

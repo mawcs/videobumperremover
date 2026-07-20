@@ -172,6 +172,25 @@ was flagged right after the initial scaffold and fixed before anything else was 
     naming and the reject-not-implemented/reject-non-positive-length guards, plus an env-var-gated
     real-media test (same skip-cleanly convention as `AudioBumperMatcherTests`) verifying output
     exists, source is untouched, and the actual cut duration is independently re-probed.
+  - **Surgical sub-length cuts confirmed working (2026-07-19, maintainer-prompted re-check):**
+    `--clip-length` isn't limited to "the whole bumper stack" — it removes exactly the length
+    given, anchored to the true edge, regardless of what else sits further inside. Re-verified
+    against the real Daredevil end-stack: `--clip-length 8s` removed only the Netflix card
+    (which sits at EOF−8s, confirmed via frame dump) while leaving ABC Studios/Marvel/Goddard/
+    DeKnight completely intact in the output. **Hard rule confirmed:** `--region begin|end`
+    always clips to BOF/EOF respectively — there is no "whole stack" concept in the code at all,
+    `ClipRemover` only ever does `fileDuration − length` / `length` arithmetic. Mid-video
+    (non-edge-anchored) removal remains explicitly out of scope, deferred to later.
+  - **Bug found and fixed (2026-07-19):** `match` and `remove` silently excluded `--clip-from`'s
+    own file from the candidate list — so enrolling from S01E01 and scanning/cleaning its own
+    season folder always skipped S01E01 itself, with zero indication in the output that this had
+    happened. Removed the exclusion in both `MatchCommand.cs` and `RemoveCommand.cs` (kept the
+    unrelated `.vbr.` self-exclusion in `remove`, which prevents re-processing a prior run's own
+    output — that one's correct and stays). Verified live: S01E01 now reports
+    `present=70/70  bestCos=100%` against its own season folder. Historical "N/12" figures
+    recorded earlier in this doc and in `iterativeplan.md`/`vdf-evaluation.md` were computed
+    under the old (excluding) behavior — not wrong for the code that produced them, but a future
+    re-run against the same folder will now correctly show "N/13."
 
 ## Open / next steps
 
