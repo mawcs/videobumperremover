@@ -196,6 +196,16 @@ per-file check to catch it — and the same mis-derived reference would apply id
 other file it matches in the run, not just one. No code change made in response to this; logged
 for later consideration.
 
+**Resolution (maintainer, 2026-07-20): no code change; current behavior stands.** The scenario
+only arises when a library is worked across multiple bumper-removal passes *without* running
+`cleanup` in between, leaving prior `.vbr.` outputs and their untouched originals side by side
+while starting a new pass with a different `--clip-length`. The intended workflow avoids this
+structurally: validate each `remove` pass, then run `cleanup` to promote/commit before starting
+the next pass. Running `cleanup` between passes costs time but buys back the accuracy and
+confidence a mid-stream guard on `remove` couldn't guarantee anyway — better enforced at
+`cleanup`'s own verification gate (still open, see below) than as a per-file check bolted onto
+`remove`.
+
 ## Implementation findings — Mode B / re-encode (2026-07-20)
 
 `--re-encode true` is now implemented (`ClipRemover.RunFfmpegOutputSeekReEncode` /
