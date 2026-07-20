@@ -5,6 +5,40 @@ task list doesn't transfer between tools). Kept as the running record — check 
 new ones as we go. For the *why* behind any of this, see the docs referenced inline and the
 findings log in [`research/vdf-evaluation.md`](research/vdf-evaluation.md).
 
+## Milestone: MVP reached (2026-07-20)
+
+The full pipeline now works end-to-end and non-destructively, verified against real media, not
+just synthetic tests: `vbr match` finds a bumper across a library from one hand-picked reference
+clip; `vbr remove` cuts it — stream-copy or frame-accurate re-encode — into a sibling file,
+never touching the original; `vbr cleanup` (alias `clean`) promotes reviewed outputs to replace
+their originals once trusted.
+
+**In the maintainer's own words, marking this moment:** *"I could use this tool as-is to begin
+cleaning up my library and it would be an improvement over my existing manual process of
+reviewing each file to find how much to trim off of it. Sure, it's slow, clumsy, and open to
+errors and problems if I don't handle it right. But, to me, that meets the definition of MVP."*
+The gain isn't that the tool measures a bumper for you — by design it doesn't, and per this
+project's hard rule it never guesses a cut point per file (ADR 0007) — it's that a bumper only
+needs to be measured **once**, by hand, and is then applied to every file that contains it,
+instead of eyeballing every file individually.
+
+**What MVP does *not* include**, scored honestly against the "five hard parts" at the top of
+[`ROADMAP.md`](ROADMAP.md):
+
+- **Detection — partial.** No per-file boundary search; BOF/EOF-anchored arithmetic only (a
+  deliberate hard rule, not a gap to close casually). Mid-video interstitials aren't handled.
+- **Fingerprinting + matching — done.** Visual DINOv2 presence matching (primary), audio
+  Chromaprint (accelerator).
+- **The bumper catalog — not started.** Every run takes a fresh `--clip-from`; nothing persists
+  across invocations, so a bumper identified today isn't remembered for the next rip.
+- **Verification UX — not started.** "Review before cleanup" today means dropping files into an
+  external player by hand; nothing in this tool shows you what changed.
+- **Removal — done.** Both modes, plus the non-destructive `remove` → `cleanup` commit split.
+
+Also missing: any GUI, GPU acceleration (CPU-only re-encode, genuinely slow for full episodes),
+and batching more than one bumper per invocation. This is a careful person's power tool right
+now, not yet something safe to hand to someone who won't read the output.
+
 ## Completed
 
 ### Repo & project setup

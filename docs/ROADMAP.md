@@ -24,6 +24,12 @@ flow becomes *identify → **enroll** → remove → keep in catalog*, and futur
 **video → catalog** (a fresh rip checked against every known bumper) rather than always
 starting from a hand-picked snippet.
 
+**Milestone (2026-07-20): MVP reached** — parts 2 (fingerprinting + matching) and 5 (removal) are
+done and verified against real media (`vbr match` / `vbr remove` / `vbr cleanup`). Part 1
+(detection) is deliberately partial — edge-anchored arithmetic only, no per-file boundary search
+or mid-video handling. Parts 3 (catalog) and 4 (verification UX) haven't started. Full writeup:
+[`PROGRESS.md`](PROGRESS.md).
+
 ## What we inherit from VDF vs. what's net-new
 
 This project is a fork of Video Duplicate Finder (see
