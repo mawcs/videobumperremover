@@ -191,14 +191,16 @@ was flagged right after the initial scaffold and fixed before anything else was 
     recorded earlier in this doc and in `iterativeplan.md`/`vdf-evaluation.md` were computed
     under the old (excluding) behavior — not wrong for the code that produced them, but a future
     re-run against the same folder will now correctly show "N/13."
-  - **Open risk logged, not addressed (maintainer test, 2026-07-19):** using an already-cut
-    `.vbr.` file as `--clip-from`, with a mismatched `--clip-length`, against a library still
-    holding both originals and `.vbr.` outputs (i.e. before `cleanup` exists/runs) — silently
-    removes the wrong amount from the original files' fresh `.vbr.` outputs (confirmed); does
-    **not** produce a `.vbr.vbr.` filename collision (that part of the maintainer's prediction
+  - **Open risk logged (maintainer test, 2026-07-19), resolved by workflow (2026-07-20):** using
+    an already-cut `.vbr.` file as `--clip-from`, with a mismatched `--clip-length`, against a
+    library still holding both originals and `.vbr.` outputs (i.e. before `cleanup` runs) —
+    silently removes the wrong amount from the original files' fresh `.vbr.` outputs (confirmed);
+    does **not** produce a `.vbr.vbr.` filename collision (that part of the maintainer's prediction
     didn't hold — `remove`'s existing `.vbr.`-suffix candidate filter incidentally prevents it).
-    Full mechanism and implications: [ADR 0007](decisions/0007-removal-command.md)
-    "Implementation findings." No fix decided yet — intentionally left open for now.
+    Full mechanism: [ADR 0007](decisions/0007-removal-command.md) "Implementation findings."
+    **No code guard added — resolved by running [`cleanup`](decisions/0008-cleanup-command.md)
+    between bumper-removal passes** instead of stacking `remove` runs over a library that still
+    holds prior `.vbr.` outputs; see ADR 0007's resolution note.
 
 ### Removal command — Mode B (re-encode) implemented (2026-07-20)
 
@@ -255,6 +257,25 @@ was flagged right after the initial scaffold and fixed before anything else was 
   `CandidateSet` in `SharedOptions.cs` are written generically enough to be reused as-is when
   `cleanup` is designed — no rework anticipated.
 
+### `cleanup` command designed — ADR 0008 (2026-07-20)
+
+- **[ADR 0008](decisions/0008-cleanup-command.md) written and proposed — not yet implemented.**
+  The maintainer asked for a design review before any code is written. Covers: filename-derived
+  original↔output pairing (the manifest was judged undependable as a side-channel — it can be
+  separated from, or deleted independently of, the video it describes); pairwise per-file
+  processing (mark original → promote output → delete old original, fully resolved before the
+  next file, replacing an earlier phase-batched draft); rollback narrowed to just the mark/promote
+  swap (a failed final delete is treated as a retryable housekeeping issue, not something that
+  unwinds an already-correct promotion); an unconditional per-directory startup sweep that
+  self-heals leftovers from a previous crashed/killed run; opt-in `--validate-files` (ffprobe/
+  duration check, off by default — the CLI can't enforce that a human reviewed the output, so this
+  is an assist, not a gate); and **no secondary trash/soft-delete stage** — `remove`'s non-destructive
+  sibling output already serves as the recycle bin, so `cleanup` commits directly once run.
+- **This closes the "already-cut `.vbr.` as `--clip-from`" risk** logged above and in ADR 0007
+  (2026-07-19): resolved by workflow, not a code guard — run `cleanup` between bumper-removal
+  passes rather than stacking `remove` runs over a library that still holds prior `.vbr.` outputs.
+  See ADR 0007's "Implementation findings" section for the resolution note.
+
 ## Open / next steps
 
 - [ ] **Removal engine — both modes implemented; algorithm specifics still open.** See
@@ -262,9 +283,10 @@ was flagged right after the initial scaffold and fixed before anything else was 
   boundary detection), non-destructive `.vbr.` sibling output, both stream-copy and re-encode
   verified against real media. Still open (ADR 0007 "Open questions"): real codec choice
   (currently a fixed libx264/AAC placeholder), GPU (NVENC) encode (currently CPU-only and slow
-  for full episodes), 10-bit/HDR preservation, manifest schema finalization, `cleanup` command
-  (should support `--file` single-target like `match`/`remove` do, per the maintainer),
-  the "already-cut `.vbr.` as `--clip-from`" open risk logged above.
+  for full episodes), manifest schema finalization, 10-bit/HDR preservation. The "already-cut
+  `.vbr.` as `--clip-from`" risk is resolved (workflow, not code — see above); `cleanup` command
+  design is no longer open, it's proposed in [ADR 0008](decisions/0008-cleanup-command.md) and
+  awaiting the maintainer's review before implementation.
 - [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file
   content→junk detection turned out to be unnecessary: bumper duration is empirically constant

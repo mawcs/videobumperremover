@@ -298,7 +298,8 @@ is the default, stream-copy an explicit opt-out** (ADR 0007); ~~staging vs. in-p
 frame-accurate cuts (still open — re-encode algorithm specifics).
 
 Open questions: how to handle files where a clean cut requires re-encoding a segment only?
-Manifest schema; `cleanup` command design (see ADR 0007's open questions).
+Manifest schema (ADR 0007's open questions). `cleanup` command design is proposed —
+[ADR 0008](decisions/0008-cleanup-command.md) — pending the maintainer's review before it's built.
 
 **Exit criteria:** confirmed queue processes into trimmed outputs with a full audit trail.
 
