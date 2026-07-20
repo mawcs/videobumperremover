@@ -100,22 +100,26 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   the same session, the CLI also gained: recursive `--library` traversal by default
   (`--no-recurse` to disable), `--output <file>` report writing, and `--dump-frames <dir>` for
   dumping every sampled frame as PNGs for diagnosis.
-- **Removal command — designed and built for stream-copy; re-encode next (2026-07-19).**
+- **Removal command — both modes built and verified (2026-07-20).**
   [`docs/decisions/0007-removal-command.md`](docs/decisions/0007-removal-command.md) specs
   `vbr remove` (v1 bundles clip extraction + matching + removal in one invocation, reusing
   `match`'s parameters unchanged); cut point is arithmetic (see the Boundary detection bullet
   above), not per-file detected; output is **non-destructive** — a `name.vbr.ext` sibling file,
   never touching the original (a future `cleanup` command, not yet built, handles replacing
-  originals). **Built and verified against real media:** `VBR.Core.Removal.ClipRemover` +
-  `VBR.CLI.Commands.RemoveCommand` — **stream-copy only** (`--re-encode false`; the maintainer's
-  chosen build order). `--re-encode` still defaults to `true` per the ADR, but re-encode isn't
-  implemented yet, so the command errors clearly rather than silently doing the wrong thing if it
-  resolves `true`. Two ffmpeg gotchas verified empirically before trusting them: begin-region
-  seeks must place `-ss` *after* `-i` (snaps forward, safe); end-region `-t`/`-to` overshoots by
-  ~0.2s regardless of target, so the cut targets a keyframe ≥1s before the arithmetic point. A
-  live test also confirmed **a length sufficient to match a bumper is not necessarily sufficient
-  to remove it whole** — see ADR 0007's "Implementation findings." Manifest schema (a first
-  concrete JSON shape shipped) and re-encode algorithm/container specifics remain open.
+  originals). **`VBR.Core.Removal.ClipRemover` + `VBR.CLI.Commands.RemoveCommand`** implement
+  both `--re-encode false` (stream-copy, built first per the maintainer's chosen order) and
+  `--re-encode true` (re-encode, the decided default, built same day). Stream-copy gotchas
+  verified empirically: begin-region seeks must place `-ss` *after* `-i` (snaps forward, safe);
+  end-region `-t`/`-to` overshoots by ~0.2s regardless of target, so the cut targets a keyframe
+  ≥1s before the arithmetic point. **Re-encode required finding and fixing a real ffmpeg bug**
+  before it could be trusted: `-ss` input-seeking combined with `-c:a copy` silently truncated
+  the output ~2s short regardless of an explicit `-t` bound — isolated via a synthetic-subtitle
+  test, fixed by re-encoding audio on the begin-region (seeking) path only. Re-encode is now
+  frame-accurate (~28ms off, vs. Mode A's 1s+ safety margin) and correctly realigns subtitle
+  cues — verified with a synthetic SRT (6s/15s/25s → 1s/10s/20s after a 5s cut). A live test
+  also confirmed **a length sufficient to match a bumper is not necessarily sufficient to remove
+  it whole** — see ADR 0007's "Implementation findings." Manifest schema (a first concrete JSON
+  shape shipped), real codec choice, GPU encode, and 10-bit/HDR preservation remain open.
 - **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 

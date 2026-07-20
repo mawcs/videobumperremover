@@ -6,11 +6,19 @@ from the front, end, and middle — is that a multi-pass ffmpeg job?"
 
 **2026-07-19 update — re-encode is now the *default*, not just the enhancement fallback.** See
 [ADR 0007](../decisions/0007-removal-command.md). Investigation found ffmpeg's stream-copy path
-does a poor job realigning subtitle cues when trimming; re-encoding the video doesn't by itself
-fix this (subtitle streams are typically copied regardless of video codec choice), but the
-re-encode pass is where proper cue realignment is committed to happening. `vbr remove` therefore
-defaults `--re-encode` to `true` (Mode B below); Mode A (stream-copy) remains available via
+does a poor job realigning subtitle cues when trimming. `vbr remove` therefore defaults
+`--re-encode` to `true` (Mode B below); Mode A (stream-copy) remains available via
 `--re-encode false` as an explicit, documented v1 exception, not a recommended default.
+
+**2026-07-20 update — Mode B implemented; subtitle realignment traced to a specific ffmpeg bug,
+not a general "copy doesn't shift timestamps" rule.** Building the begin-region re-encode path
+(where cues must shift) surfaced that `-ss` input-seeking combined with `-c:a copy` silently
+truncates the whole pipeline — not subtitles specifically, the entire output ran seconds short
+regardless of an explicit `-t` bound. Subtitles (`-c:s copy` throughout) shift correctly on their
+own once that's fixed by re-encoding audio too — ffmpeg's normal seek+transcode timestamp
+handling already rebases every mapped stream correctly; the earlier hypothesis that subtitles
+specifically needed separate explicit handling wasn't necessary in practice. Full isolation and
+the fix: [ADR 0007](../decisions/0007-removal-command.md) "Implementation findings — Mode B."
 
 ## Short answer
 
@@ -39,6 +47,15 @@ It depends on stream-copy vs. re-encode:
   independent of Mode A/B — see the "Chapters, scenes & timestamps" section below.
 
 ## Mode B — Single re-encode pass (`--re-encode true`, the default; required for any enhancement)
+
+**v1 implemented (2026-07-20) — single edge cut only.** `vbr remove` only ever cuts one bumper
+at one edge (begin *or* end; ADR 0007), so v1 needs no `filter_complex`/concat at all: a single
+`-ss`/`-t`-bounded re-encode per cut. Verified frame-accurate on real media (~28ms off a
+requested cut point, vs. Mode A's 1s+ safety margin) and correctly realigns subtitle cues for
+begin-region cuts (see ADR 0007's "Implementation findings — Mode B" for the ffmpeg bug that had
+to be found and fixed first). Video is CPU-encoded (libx264) with a fixed placeholder CRF —
+genuinely slow for full episodes; NVENC and multi-segment `filter_complex` support below remain
+future work, needed once multi-segment/interstitial removal exists:
 
 - One ffmpeg invocation: `filter_complex` with `trim`+`setpts` (video) and `atrim`+`asetpts`
   (audio) for each keep-segment, feeding a `concat` filter (`n=<segments>, v=1, a=1`).

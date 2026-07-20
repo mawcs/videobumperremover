@@ -74,13 +74,20 @@ match, non-destructively: writes a sibling `name.vbr.ext` beside the source plus
 [ADR 0007](decisions/0007-removal-command.md) for the full design.
 
 ```sh
-dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --library "D:\Media\Show" --re-encode false
+dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --library "D:\Media\Show"
 ```
 
-**`--re-encode false` is currently required** — re-encode (Mode B, the eventual default) isn't
-implemented yet; omitting the flag (or passing `true`) prints a clear error rather than silently
-doing something else. Stream-copy (Mode A) is built first per the maintainer's chosen order
-(faster to iterate on while testing); re-encode is next.
+**`--re-encode` defaults to `true` (Mode B — re-encode)**, and both modes are implemented and
+verified against real media:
+
+- **`true` (default): frame-accurate, correctly realigns subtitle cues.** Slow — it decodes and
+  re-encodes the *entire kept portion* of the file, not just the trimmed region (essentially the
+  whole episode for an end-region cut), so expect it to take roughly as long as a normal encode
+  of that file. Video is CPU-encoded (libx264, fixed placeholder quality settings — real
+  codec/GPU configurability is future work, see ADR 0007).
+- **`--re-encode false`: fast (no decode/encode at all), but keyframe-bound and — for
+  begin-region cuts specifically — does not realign subtitle cues.** Built first, per the
+  maintainer's chosen order, for faster iteration while testing.
 
 **`--clip-length` must be the bumper's full, true length — not just enough to match reliably.**
 Verified live (2026-07-19): a length that reliably *matches* a multi-card studio ident stack can
@@ -90,11 +97,13 @@ still be shorter than the *whole* stack, and removal cuts exactly what you tell 
 There's no per-file check to catch an under-measured length (by design — see ADR 0007) — get the
 length right at clip-selection time.
 
-Stream-copy cut points aren't exact: end-region cuts land at a keyframe **at least 1s before**
+**Stream-copy cut points aren't exact**: end-region cuts land at a keyframe **at least 1s before**
 the arithmetic cut point (ffmpeg's `-t`/`-to` overshoots by ~0.2s past any requested boundary, so
 the code trims a bit extra rather than risk leaking bumper content); begin-region cuts land at
 the next keyframe at or after the boundary (verified safe — snaps forward, never backward into
 the bumper). Both are documented, accepted v1 stream-copy characteristics (see the ADR).
+**Re-encode cut points are frame-accurate** (~28ms off in testing) — this is the main practical
+reason to prefer it beyond subtitle correctness.
 
 ### Test
 

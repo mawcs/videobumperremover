@@ -191,14 +191,46 @@ was flagged right after the initial scaffold and fixed before anything else was 
     recorded earlier in this doc and in `iterativeplan.md`/`vdf-evaluation.md` were computed
     under the old (excluding) behavior — not wrong for the code that produced them, but a future
     re-run against the same folder will now correctly show "N/13."
+  - **Open risk logged, not addressed (maintainer test, 2026-07-19):** using an already-cut
+    `.vbr.` file as `--clip-from`, with a mismatched `--clip-length`, against a library still
+    holding both originals and `.vbr.` outputs (i.e. before `cleanup` exists/runs) — silently
+    removes the wrong amount from the original files' fresh `.vbr.` outputs (confirmed); does
+    **not** produce a `.vbr.vbr.` filename collision (that part of the maintainer's prediction
+    didn't hold — `remove`'s existing `.vbr.`-suffix candidate filter incidentally prevents it).
+    Full mechanism and implications: [ADR 0007](decisions/0007-removal-command.md)
+    "Implementation findings." No fix decided yet — intentionally left open for now.
+
+### Removal command — Mode B (re-encode) implemented (2026-07-20)
+
+- **`--re-encode true` now works** — both removal modes are implemented and verified against
+  real media. Built same-day per the maintainer's stated order (stream-copy first, re-encode
+  second). Full detail: [ADR 0007](decisions/0007-removal-command.md) "Implementation findings —
+  Mode B."
+  - End-region: frame-accurate (28ms off a 20.5s cut, vs. Mode A's 1s+ safety-margin overshoot
+    on the same content). Audio/subtitles stream-copied — verified safe (no seek involved).
+  - Begin-region: also frame-accurate, **and correctly realigns subtitle cues** — the core
+    reason ADR 0007 defaults to re-encode. Verified with a synthetic 5-cue SRT: cues at
+    6s/15s/25s correctly became 1s/10s/20s after a 5s begin-region cut.
+  - **A real, reproducible ffmpeg bug was found and fixed along the way:** `-ss` input-seeking
+    combined with `-c:a copy` (audio stream-copy) silently produced output ~2s longer than
+    requested, regardless of whether an explicit `-t` bound was also given — isolated by
+    testing every copy/re-encode combination systematically, using output-seeking (sequential
+    decode from the true start) as an independent ground truth since the buggy mechanism
+    couldn't be used to verify itself. Fixed by re-encoding audio only on the begin-region
+    (seeking) path; end-region (no seek) keeps audio stream-copy, verified safe.
+  - Tests updated: the "not implemented" rejection test was replaced (parameterized existing
+    validation tests across both modes instead); the real-media test now accepts an optional
+    `BUMPER_REMOVE_MODE` env var.
 
 ## Open / next steps
 
-- [ ] **Removal engine — designed (ADR 0007) and built for stream-copy; re-encode next.** See
-  [ADR 0007](decisions/0007-removal-command.md) and the entry above: `vbr remove`, arithmetic
-  cut point (no per-file boundary detection), non-destructive `.vbr.` sibling output, verified
-  against real media. Next: implement Mode B (re-encode), including proper subtitle cue
-  realignment — the reason `--re-encode` defaults to `true` even though only `false` runs today.
+- [ ] **Removal engine — both modes implemented; algorithm specifics still open.** See
+  [ADR 0007](decisions/0007-removal-command.md): `vbr remove`, arithmetic cut point (no per-file
+  boundary detection), non-destructive `.vbr.` sibling output, both stream-copy and re-encode
+  verified against real media. Still open (ADR 0007 "Open questions"): real codec choice
+  (currently a fixed libx264/AAC placeholder), GPU (NVENC) encode (currently CPU-only and slow
+  for full episodes), 10-bit/HDR preservation, manifest schema finalization, `cleanup` command,
+  the "already-cut `.vbr.` as `--clip-from`" open risk logged above.
 - [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file
   content→junk detection turned out to be unnecessary: bumper duration is empirically constant

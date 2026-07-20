@@ -50,17 +50,20 @@ internal sealed record RemoveRow(string File, bool Present, string? VisualDetail
 /// <c>vbr remove</c> — per ADR 0007 (docs/decisions/0007-removal-command.md): bundles clip
 /// extraction + matching + removal in one command, reusing <c>match</c>'s parameter surface.
 /// Never modifies the source; writes a sibling <c>name.vbr.ext</c> plus a JSON manifest per cut.
-/// Re-encode (Mode B, the eventual default) is not implemented yet — only <c>--re-encode false</c>
-/// (stream-copy) currently runs, per the maintainer's stated build order (stream-copy first, for
-/// faster iteration; re-encode second).
+/// Both removal modes are implemented: re-encode (<c>--re-encode true</c>, the default —
+/// frame-accurate, correct subtitle realignment, but slow) and stream-copy
+/// (<c>--re-encode false</c> — fast, keyframe-bound, built first per the maintainer's stated
+/// order for faster iteration while testing).
 /// </summary>
 internal static class RemoveCommand {
 
 	static readonly Option<bool> ReEncode = new("--re-encode") {
-		Description = "Re-encode (Mode B: frame-accurate, correct subtitle realignment) vs. " +
-			"stream-copy (Mode A: fast, keyframe-bound, subtitle cues NOT realigned for " +
-			"begin-region cuts). Default true — but re-encode isn't implemented yet; pass " +
-			"--re-encode false to actually remove anything right now.",
+		Description = "Re-encode (Mode B: frame-accurate, correctly realigns subtitle cues) vs. " +
+			"stream-copy (Mode A: much faster — no decode/encode — but keyframe-bound, and " +
+			"begin-region cuts do NOT realign subtitle cues). Default true. Re-encode decodes " +
+			"and re-encodes the entire kept portion of the file, not just the trimmed region, so " +
+			"it is far slower than stream-copy — expect it to take roughly as long as encoding " +
+			"the video normally would.",
 		DefaultValueFactory = _ => true,
 	};
 
@@ -92,13 +95,7 @@ internal static class RemoveCommand {
 
 		cmd.SetAction(async (parseResult, ct) => {
 			bool reEncode = parseResult.GetValue(ReEncode);
-			if (reEncode) {
-				Console.Error.WriteLine(
-					"Error: re-encode removal (--re-encode true, the default) is not implemented " +
-					"yet. Pass --re-encode false to remove via stream-copy for now. See " +
-					"docs/decisions/0007-removal-command.md.");
-				return 1;
-			}
+			RemovalMode removalMode = reEncode ? RemovalMode.ReEncode : RemovalMode.StreamCopy;
 
 			var clipFrom = parseResult.GetValue(ClipFrom)!;
 			ClipEdge region = parseResult.GetValue(Region);
@@ -116,10 +113,11 @@ internal static class RemoveCommand {
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 
-			if (region == ClipEdge.begin)
+			if (region == ClipEdge.begin && !reEncode)
 				Console.Error.WriteLine(
 					"Note: begin-region stream-copy removal does not realign subtitle cues — " +
-					"cues will run early by the removed duration until re-encode is implemented.");
+					"cues will run out of sync with the removed duration. Use --re-encode true " +
+					"(the default) for correct subtitle timing.");
 
 			VisualBumperMatcher? visual = null;
 			try {
@@ -196,7 +194,7 @@ internal static class RemoveCommand {
 							if (present) {
 								matchCount++;
 								try {
-									var removed = ClipRemover.Remove(file, region, clipLength, RemovalMode.StreamCopy,
+									var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
 										visualResult?.Detail ?? audioResult?.Detail, ct);
 									outputPath = removed.OutputPath;
 									removedCount++;
@@ -222,7 +220,7 @@ internal static class RemoveCommand {
 
 					if (output is not null && !WriteReport(output, rows, summary,
 							clipFrom, region, clipLength, searchLength, sampleInterval, mode,
-							presenceThreshold, rigidHitThreshold, minSimilarity, library, recurse))
+							presenceThreshold, rigidHitThreshold, minSimilarity, library, recurse, removalMode))
 						return 1;
 				}
 				return 0;
@@ -238,7 +236,8 @@ internal static class RemoveCommand {
 	static bool WriteReport(FileInfo output, IReadOnlyList<RemoveRow> rows, string summary,
 			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
 			TimeSpan sampleInterval, DetectionMode mode, float presenceThreshold,
-			float rigidHitThreshold, float minSimilarity, DirectoryInfo library, bool recurse) {
+			float rigidHitThreshold, float minSimilarity, DirectoryInfo library, bool recurse,
+			RemovalMode removalMode) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr remove report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine($"clip-from:      {clipFrom.FullName}");
@@ -248,7 +247,7 @@ internal static class RemoveCommand {
 			$"detection-mode: {mode}   presence-threshold: {presenceThreshold:0.###}   " +
 			$"rigid-hit-threshold: {rigidHitThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
 		report.AppendLine($"library:        {library.FullName}   ({(recurse ? "recursive" : "top level only")})");
-		report.AppendLine($"mode:           stream-copy (--re-encode false)");
+		report.AppendLine($"mode:           {(removalMode == RemovalMode.ReEncode ? "re-encode (--re-encode true)" : "stream-copy (--re-encode false)")}");
 		report.AppendLine(new string('-', 78));
 		foreach (RemoveRow row in rows)
 			report.AppendLine(row.ToLine());

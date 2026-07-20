@@ -20,6 +20,11 @@
 //   $env:BUMPER_REMOVE_REGION="end"                        # or "begin"
 //   $env:BUMPER_REMOVE_LENGTH_SECONDS="10"
 //   dotnet test VBR.Tests --filter "FullyQualifiedName~ClipRemoverTests" -l "console;verbosity=detailed"
+//
+// Optional: $env:BUMPER_REMOVE_MODE = "reencode" (default "streamcopy"). Re-encode decodes and
+// re-encodes the ENTIRE kept portion of the source, not just the trimmed region — point this at
+// a short clip, not a full episode, or expect the test to run for as long as a normal encode of
+// that file's length would take.
 
 using System.Diagnostics;
 using System.Globalization;
@@ -41,24 +46,31 @@ public class ClipRemoverTests {
 		Assert.Equal(expected, ClipRemover.BuildOutputPath(source));
 	}
 
-	[Fact]
-	public void Remove_RejectsReEncode_AsNotYetImplemented() {
-		var ex = Assert.Throws<NotSupportedException>(() =>
-			ClipRemover.Remove(@"D:\doesnt-matter.mkv", ClipEdge.end, TimeSpan.FromSeconds(5), RemovalMode.ReEncode));
-		Assert.Contains("--re-encode false", ex.Message);
+	[Theory]
+	[InlineData(RemovalMode.StreamCopy)]
+	[InlineData(RemovalMode.ReEncode)]
+	public void Remove_RejectsNonPositiveBumperLength(RemovalMode mode) {
+		Assert.Throws<ArgumentOutOfRangeException>(() =>
+			ClipRemover.Remove(@"D:\doesnt-matter.mkv", ClipEdge.end, TimeSpan.Zero, mode));
 	}
 
-	[Fact]
-	public void Remove_RejectsNonPositiveBumperLength() {
-		Assert.Throws<ArgumentOutOfRangeException>(() =>
-			ClipRemover.Remove(@"D:\doesnt-matter.mkv", ClipEdge.end, TimeSpan.Zero, RemovalMode.StreamCopy));
+	[Theory]
+	[InlineData(RemovalMode.StreamCopy)]
+	[InlineData(RemovalMode.ReEncode)]
+	public void Remove_RejectsMissingSource(RemovalMode mode) {
+		string missing = Path.Combine(Path.GetTempPath(), $"vbr_missing_{Guid.NewGuid():N}.mkv");
+		Assert.Throws<FileNotFoundException>(() =>
+			ClipRemover.Remove(missing, ClipEdge.end, TimeSpan.FromSeconds(5), mode));
 	}
 
 	[SkippableFact]
-	public void Remove_StreamCopy_ProducesShorterFileAndManifest_WithoutTouchingSource() {
+	public void Remove_ProducesShorterFileAndManifest_WithoutTouchingSource() {
 		string? source = Environment.GetEnvironmentVariable("BUMPER_REMOVE_SOURCE");
 		string? regionRaw = Environment.GetEnvironmentVariable("BUMPER_REMOVE_REGION");
 		int lengthSeconds = int.TryParse(Environment.GetEnvironmentVariable("BUMPER_REMOVE_LENGTH_SECONDS"), out var l) ? l : 0;
+		string modeRaw = Environment.GetEnvironmentVariable("BUMPER_REMOVE_MODE") ?? "streamcopy";
+		RemovalMode mode = string.Equals(modeRaw, "reencode", StringComparison.OrdinalIgnoreCase)
+			? RemovalMode.ReEncode : RemovalMode.StreamCopy;
 
 		Skip.If(string.IsNullOrWhiteSpace(source) || string.IsNullOrWhiteSpace(regionRaw) || lengthSeconds <= 0,
 			"Set BUMPER_REMOVE_SOURCE, BUMPER_REMOVE_REGION (begin|end), and BUMPER_REMOVE_LENGTH_SECONDS to run this test.");
@@ -75,7 +87,8 @@ public class ClipRemoverTests {
 		DateTime sourceWriteTimeBefore = sourceInfo.LastWriteTimeUtc;
 
 		try {
-			var result = ClipRemover.Remove(source!, region, TimeSpan.FromSeconds(lengthSeconds), RemovalMode.StreamCopy);
+			var result = ClipRemover.Remove(source!, region, TimeSpan.FromSeconds(lengthSeconds), mode);
+			_out.WriteLine($"Mode: {mode}");
 			_out.WriteLine($"Output: {result.OutputPath}");
 			_out.WriteLine($"Manifest: {result.ManifestPath}");
 			_out.WriteLine($"Cut point: {result.CutPoint.TotalSeconds:0.###}s of source duration {result.SourceDuration.TotalSeconds:0.###}s");
