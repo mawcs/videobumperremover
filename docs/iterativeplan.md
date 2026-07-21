@@ -1,8 +1,184 @@
 # Iterative Plan Document
 
-This document catalogs planning concepts as we iterate in development.
+This document catalogs planning concepts as we iterate in development. Newest plan goes at the
+top, under its own second-level heading; older plans stay below under theirs, kept for historical
+reference rather than deleted or overwritten.
 
+## Mixed-density edge/middle fingerprinting — spike plan (2026-07-21)
 
+**Status:** proposed — not yet implemented. Written up per the maintainer's request after an
+earlier same-day test (`VisualBumperMatcherOffsetTests`, kept in the repo — see below) turned out
+to validate a different claim than the one in question.
+
+**Related:** [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md)
+(decisions 1/4/5 — the density profile and the non-uniform `(timestamp, value)` data model this
+spike needs a minimal slice of), [`PROGRESS.md`](PROGRESS.md) ("Edge-focused scan + a cached
+fingerprint/embedding index," the still-open item this spike de-risks).
+
+### The problem, precisely
+
+A bumper can touch the true edge of a file and still be longer than `edge-boundary` (the
+ultra-dense sampling window) — e.g. a 47s title sequence at the true beginning against a 20s
+boundary. That single bumper's fingerprint then needs **two densities inside one record**: dense
+samples from the true edge out to `edge-boundary`, sparse samples the rest of the way. Today's
+sampling (`VBR.Core.Fingerprinting.DenseFrameSampler`) and frame record
+(`VDF.Core.AI.DenseEmbeddingStore.DenseRecord`) both assume **one** interval for an entire region
+and infer each frame's time as `index × interval` — a formula that breaks the moment two
+intervals coexist. This was misdiagnosed once already this session as an *offset/alignment*
+problem (does a clip extracted away from the true edge still match?) — already tested and
+confirmed fine, but a different question from this one, which is about **density mixing within a
+single edge-anchored fingerprint**, not extraction offset.
+
+**Test corpus:** *Avatar: The Last Airbender* Season 1 (`test_materials/Avatar/Season 01`, 20 real
+episodes) — every episode opens with the same ~47s title sequence at the true beginning, long
+enough to genuinely exceed a 20s `edge-boundary`. Negative control: an existing unrelated corpus
+already validated as sharing no content with Avatar (Doctor Who or Daredevil).
+
+### Constraints (maintainer, 2026-07-21)
+
+Modifying `VBR.Core` is in bounds, provided the change: (a) doesn't lose existing functionality,
+(b) improves our existing matching, (c) isn't a huge new stack of code, (d) doesn't fundamentally
+change the existing strategy/architecture. Each step below is sized against these explicitly.
+
+### Step 1 — two small new types, additive only (`VBR.Core/Fingerprinting/`, new files)
+
+`EdgeDensityProfile.cs` — the three knobs the maintainer asked to expose, bundled as one value so
+they thread through signatures together instead of as three loose primitives:
+
+```csharp
+public readonly record struct EdgeDensityProfile(
+    TimeSpan EdgeBoundary, TimeSpan DenseInterval, TimeSpan SparseInterval);
+```
+
+`TimedFrame.cs` — an explicit timestamp per embedded frame, replacing the implicit
+`index × interval` that breaks under mixed density. This is the minimal slice of ADR 0006
+decision 4/5's non-uniform `(timestamp, value)` model needed to represent mixed-density data at
+all — not the full persistent sidecar record, just the in-memory shape:
+
+```csharp
+public readonly record struct TimedFrame(double TimestampSeconds, byte[] Embedding);
+```
+
+Neither type touches `DenseEmbeddingStore`/`DenseRecord` — those stay exactly as they are, still
+used by VDF's own whole-file AI-partial pass. This is new, additive surface area, not a
+replacement (constraint a).
+
+### Step 2 — the sampler (`VBR.Core/Fingerprinting/MixedDensitySampler.cs`, new)
+
+A small class (owns an `OnnxEmbedder`, same lifetime pattern as `VisualBumperMatcher`) with one
+method:
+
+```csharp
+public IReadOnlyList<TimedFrame> Sample(
+    string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
+    CancellationToken ct = default);
+```
+
+Algorithm — entirely composed from existing primitives, nothing new at the ffmpeg/decode level:
+
+1. Extract the **whole** requested region once: `ClipExtractor.ExtractToTemp(sourcePath,
+   ClipRegion.For(region, totalLength))` — identical to what `VisualBumperMatcher` already does.
+2. Within that temp file, carve the dense and sparse sub-regions as two further temp files via
+   `ClipRegion.At(...)` (already public, already used for the offset spike) — for `begin`: dense
+   = `At(0, edgeBoundary)`, sparse = `At(edgeBoundary, totalLength - edgeBoundary)`; for `end`,
+   mirrored: dense = `At(totalLength - edgeBoundary, edgeBoundary)`, sparse =
+   `At(0, totalLength - edgeBoundary)`.
+3. Run `DenseFrameSampler.SampleFrames` on each sub-region at its own interval — unchanged, reused
+   as-is.
+4. Run `FrameQuality.SelectUsable` on each — unchanged, reused as-is, applied consistently to both
+   densities.
+5. Embed the usable frames via `OnnxEmbedder.EmbedBatchQuantized`, batched exactly like
+   `VisualBumperMatcher.Embed` already does (same `OnnxEmbedder.MaxBatch` chunking loop).
+6. Assign each surviving frame its real timestamp (`zoneStart + index × zoneInterval`) and emit a
+   `TimedFrame`. Unlike `DenseRecord`, filtered-out frames are simply **omitted** rather than kept
+   as empty placeholder slots — the index↔time trick existed only to preserve an implicit time
+   formula that explicit timestamps no longer need. One small simplification, not a new concept.
+
+No changes to `ClipExtractor`, `DenseFrameSampler`, or `FrameQuality` — all three are reused
+verbatim (constraint c: this is composition, not a new stack).
+
+### Step 3 — teach `VisualBumperMatcher` to compare `TimedFrame` lists (modify existing file)
+
+`VisualBumperMatcher.Match` ([`VisualBumperMatcher.cs:147-185`](../VBR.Core/Matching/VisualBumperMatcher.cs#L147-185))
+currently inlines the presence loop directly over two `DenseEmbeddingStore.DenseRecord`s. Extract
+that loop (lines 161–176) into a small private static helper over the general shape both callers
+actually need:
+
+```csharp
+static (bool present, float best, double? bestTime, int hits) ComparePresence(
+    IReadOnlyList<TimedFrame> clip, IReadOnlyList<TimedFrame> candidate, float presenceThreshold);
+```
+
+Then:
+
+- The **existing** `Match(string referenceClipPath, string candidatePath, ClipRegion, ...)` path
+  converts its `DenseRecord` frames to `TimedFrame`s inline (`frame[i]` + `i × interval`, skipping
+  empty slots — a few lines) and calls the shared helper. This must produce **byte-identical
+  results** to today's behavior — same thresholds, same math, purely reorganized — and is the
+  concrete check for constraint (a).
+- A **new** public method, `MatchMixedDensity(IReadOnlyList<TimedFrame> clip, IReadOnlyList<TimedFrame> candidate)`,
+  calls the same shared helper directly with sampler-supplied frames. This is the literal answer
+  to "can `VisualBumperMatcher` handle this data" — yes, through this entry point, with zero
+  duplicated matching logic (constraint b: the matcher genuinely gains a capability, not a
+  bolted-on parallel path).
+
+**Explicitly not attempted here:** adapting the "rigid" ≥4-consistent-offset corroboration matcher
+(`ScanEngine.TryMatchDenseFrames`) to mixed-density data. It's corroboration-only, never gates a
+decision, and its `DenseRecord` input assumes a single interval — forcing it to accept
+`TimedFrame`s means touching upstream `VDF.Core` for no matching-correctness benefit. The
+mixed-density path reports presence-only results; the rigid number is simply absent for it.
+
+### Step 4 — the configurable test (`VBR.Tests/Matching/VisualBumperMatcherMixedDensityTests.cs`, new)
+
+A new file, not a modification of `VisualBumperMatcherOffsetTests.cs` — that test stays as
+committed, under its current name, and may get reused/tweaked for interstitial matching later per
+the maintainer's own call. Same env-var-gated, skip-cleanly convention as the existing real-media
+tests. Parameters, matching the maintainer's own worked example exactly:
+
+- `BUMPER_CLIP_EPISODE`, `BUMPER_EPISODES_DIR`, `BUMPER_REGION` — reused as-is from the existing
+  tests.
+- `BUMPER_MIXED_TOTAL_LENGTH_SECONDS` (e.g. `47`) — the full known bumper length.
+- `BUMPER_MIXED_EDGE_BOUNDARY_SECONDS` (e.g. `20`) — the ultra-dense zone length.
+- `BUMPER_MIXED_DENSE_INTERVAL_SECONDS` (e.g. `0.5`) — sampling interval inside the boundary.
+- `BUMPER_MIXED_SPARSE_INTERVAL_SECONDS` (e.g. `4`) — sampling interval beyond it.
+- Optional `BUMPER_MIXED_NEGATIVE_DIR` — an unrelated-content folder; when set, asserts **zero**
+  matches, alongside the positive assertion (at least one match) against `BUMPER_EPISODES_DIR`.
+
+Both the clip and every candidate get sampled through the **same** `MixedDensitySampler` call with
+the **same** `EdgeDensityProfile` before `VisualBumperMatcher.MatchMixedDensity` compares them —
+proving the actual scenario: one bumper, two densities, matched correctly end to end.
+
+### Explicitly out of scope for this spike
+
+- **Persistence.** No serialization of `TimedFrame` records to disk. This spike only needs
+  in-memory data for one test run; the real sidecar format is separate, already tracked (ADR 0006
+  decision 5, `PROGRESS.md`).
+- **The library-scan CLI.** This proves the sampling+matching primitive works. Wiring it into a
+  `vbr scan`-style command that walks a tree and builds a persistent index is the next, separate
+  task — this spike is a prerequisite for it, not a first draft of it.
+- **Middle-region/interstitial matching.** Likely served by the same primitives eventually (why
+  `VisualBumperMatcherOffsetTests` was kept), but a distinct effort from this one.
+
+### Verification plan
+
+1. Build clean.
+2. Re-run `VisualBumperMatcherOffsetTests` and confirm identical output to before the Step 3
+   refactor — the concrete proof that existing functionality survived (constraint a).
+3. Run the new mixed-density test live against Avatar with the maintainer's own numbers
+   (47 / 20 / 0.5 / 4) — confirm a positive match across the 20 episodes.
+4. Run again with a negative corpus set — confirm zero false matches.
+5. Only then treat the mixed-density mechanism as validated and ready to inform the real
+   `edge-boundary` default and the library-scan design.
+
+### Open questions, deliberately deferred until after the spike
+
+- Production defaults for `edge-boundary`/dense/sparse intervals — this spike's numbers are for
+  exercising the mechanism, not necessarily what ships.
+- Whether `MixedDensitySampler` becomes the *only* sampling path for `VisualBumperMatcher`
+  (retiring the single-interval path in `Embed`) or coexists as a special case for regions longer
+  than `edge-boundary`.
+
+---
 
 ## Fixing the visual matcher's black-frame false positives
 
