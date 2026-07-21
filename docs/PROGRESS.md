@@ -478,6 +478,11 @@ was flagged right after the initial scaffold and fixed before anything else was 
   (container remux, codec, quality) — all composing into the re-encode pass.
 - [ ] **Housekeeping:** verify VDF's exact license text is present; decide which VDF projects to
   drop (`VDF.Web`/`VDF.CLI`/`VDF.Benchmarks`); measure SMB throughput; confirm ffmpeg NVDEC/NVENC.
+- [ ] **Naming clarity:** rename `referenceClip`/`referenceClipPath` to `bumperClip`/
+  `bumperClipPath` throughout — `VisualBumperMatcher.cs`, `AudioBumperMatcher.cs`,
+  `IBumperMatcher.cs`, `MatchCommand.cs`, `RemoveCommand.cs`, `AudioBumperMatcherTests.cs`, and
+  `docs/design/matcher-spec.md`. "Reference" undersells that this specifically is the bumper
+  clip being matched against, not a generic reference input.
 
 ## Cross-cutting reminders (from AGENTS.md)
 
