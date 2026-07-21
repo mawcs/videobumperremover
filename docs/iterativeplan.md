@@ -1,6 +1,10 @@
-// (this is a planning doc — no license header; headers go on source files only)
+# Iterative Plan Document
 
-# Iterative plan — fixing the visual matcher's black-frame false positives
+This document catalogs planning concepts as we iterate in development.
+
+
+
+## Fixing the visual matcher's black-frame false positives
 
 **Status (final, 2026-07-18):** **all sections implemented and validated.** §B (CLI features)
 and §D (doc updates) landed first; §A (correctness fixes) followed on maintainer approval, and
@@ -15,7 +19,7 @@ restores), [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge
 
 ---
 
-## The reported problems
+### The reported problems
 
 1. `match` should traverse subtrees by default; a switch to *not* traverse would be prudent.
 2. A 5s Netflix bumper from the **begin** of Daredevil scored 99% — but validating against Doctor
@@ -28,7 +32,7 @@ Symptoms 2 and 3 are one bug. Symptoms 1 and 4 are missing CLI features.
 
 ---
 
-## Root cause: the matcher is comparing black frames to black frames
+### Root cause: the matcher is comparing black frames to black frames
 
 The CLI faithfully reproduces the validated probe — this is **not** a mis-port. The problem is two
 latent defects in the shared decode/sample pipeline that the begin-region / Netflix-ident scenario
@@ -39,7 +43,7 @@ The extraction + decode chain was replicated on the real test files
 `GetDenseAiFrames` → [`FfmpegEngine.cs:1009`](../VDF.Core/FFTools/FfmpegEngine.cs#L1009)) and the
 frames the matcher actually sees were dumped to PNG and inspected.
 
-### Finding 1 — "14 frames" is really 3 distinct images, only one of them distinctive
+#### Finding 1 — "14 frames" is really 3 distinct images, only one of them distinctive
 
 *(Corrected 2026-07-18, second pass — the first write-up of this finding said "13 of 14 frames
 are pure black," an interpolation from viewing only 3 dump frames. Ground-truth verification
@@ -84,13 +88,13 @@ pipeline dump — and follow-up checks confirmed why, while validating the mecha
   Severity is **keyframe-cadence + content dependent, on both the clip and candidate sides**;
   the begin edge just happened to expose it first.
 
-### Finding 2 — the search windows are black too
+#### Finding 2 — the search windows are black too
 
 Doctor Who's mp4s have keyframes every ~6s (0, 6, 12, 18, 24), and the keyframes at 0s and 6s are
 pure black (verified visually). So each candidate's search window is also mostly duplicated black
 frames.
 
-### Finding 3 — there is no black-frame filter anywhere
+#### Finding 3 — there is no black-frame filter anywhere
 
 The spec's "skip empty/black frames" step ([`matcher-spec.md`](design/matcher-spec.md), §2 step 3)
 is implemented in both the probe and the port as "skip zero-length buffers" — but
@@ -100,7 +104,7 @@ validation passed anyway because the Daredevil end-stack clip is a long run of d
 cards landing on scene-cut keyframes — the pathological all-dark-keyframes case simply never came
 up until begin-region testing.
 
-### Why this explains every symptom
+#### Why this explains every symptom
 
 - **DINOv2 embeddings of near-black frames cluster tightly** — cosine 0.87–0.97 against other
   near-black frames (compression noise keeps them just off 1.0). Episodes where the noise happened
@@ -121,9 +125,9 @@ re-recorded after the fix.
 
 ---
 
-## Plan
+### Plan
 
-### A. Correctness fixes (both needed — either alone still fails) — IMPLEMENTED (2026-07-18)
+#### A. Correctness fixes (both needed — either alone still fails) — IMPLEMENTED (2026-07-18)
 
 1. **Low-information frame filter (implements the spec's existing rule).** ✅ Implemented as
    `VBR.Core.Fingerprinting.FrameQuality`: reuses VDF's own AI-partial-scan guards
@@ -149,7 +153,7 @@ re-recorded after the fix.
    necessary: the §C matrix passed with the spec's original presence rule (≥1 distinctive frame
    at ≥0.90 cosine) and every default untouched.
 
-### B. CLI features requested — IMPLEMENTED (2026-07-18)
+#### B. CLI features requested — IMPLEMENTED (2026-07-18)
 
 4. **Recursive library traversal by default.**
    [`MatchCommand.cs:198`](../VBR.CLI/Commands/MatchCommand.cs#L198) currently enumerates a single
@@ -168,7 +172,7 @@ re-recorded after the fix.
    Write the sampled clip/window frames as images. This diagnosis required rebuilding the pipeline
    by hand; this switch makes the next "why did this match?" a ten-second glance.
 
-### C. Re-validation matrix — PASSED (2026-07-18, all five runs; `--detection-mode visual`, 0.2s interval)
+#### C. Re-validation matrix — PASSED (2026-07-18, all five runs; `--detection-mode visual`, 0.2s interval)
 
 | Test | Expectation | Result |
 |---|---|---|
@@ -193,7 +197,7 @@ Re-recorded baselines and notes:
 - Doctor Who/Avatar library file counts differ from the first (broken) runs because the stray
   `intro*.mkv` clips are no longer in those folders.
 
-### D. Documentation debt this uncovered — DONE (2026-07-18)
+#### D. Documentation debt this uncovered — DONE (2026-07-18)
 
 - **`matcher-spec.md`:** "skip empty/black frames" must be specified as a real luma filter, and the
   keyframe-only-decode discovery recorded (it also colors ADR 0006's "dense sampling" framing —
@@ -203,7 +207,7 @@ Re-recorded baselines and notes:
 
 ---
 
-## Ordering & risk
+### Ordering & risk
 
 Do **A1 + A2 together**, then re-validate (**C**), then **B4 / B5** (independent, can land anytime),
 then docs (**D**).
