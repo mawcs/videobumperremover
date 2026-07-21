@@ -245,6 +245,14 @@ choosing which duplicate file to delete. Fix the inherited UX problems logged in
 Work:
 
 - Present candidate matches with thumbnails and inline playback of the matched region.
+- **Discovery assist (net-new, distinct from the above — logged 2026-07-21, not yet
+  designed).** Verifying a *proposed* match is one problem; finding an *unknown* bumper in the
+  first place is another, currently 100% manual (scrub for a begin/end bumper, then a
+  low-confidence scrub through the middle for interstitials) and unsolved. Proposed direction: a
+  DaVinci-style filmstrip of small per-file thumbnails — moderate density at the edges, higher
+  through the middle specifically to help spot interstitials. Full detail, including which
+  existing VDF primitive to reuse and the storage/timing recommendation, in `PROGRESS.md`'s open
+  list.
 - Show the proposed cut (start/end) on a timeline, with a little context on each side.
 - Make the **sub-bumper** and **interstitial** cases explicit: surface whether a match is
   at an edge or mid-video, and whether a shorter match might be part of a longer bumper.

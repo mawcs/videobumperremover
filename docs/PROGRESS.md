@@ -405,7 +405,7 @@ was flagged right after the initial scaffold and fixed before anything else was 
   near-uniform rejection, both sides, loud `PrepareClip` failure on an all-black clip) + §A2
   `DenseFrameSampler` full decode of the short edge windows + clip-embed caching per run. §C
   re-validation matrix **passed clean**: begin TP 12/12 @ 99–100% (present=18/18) vs FP 0/13 DW
-  + 0/20 Avatar (bestCos ≤56%); end-stack regression 12/12 @ 99–100% vs 0/20 Avatar (≤71% —
+  - 0/20 Avatar (bestCos ≤56%); end-stack regression 12/12 @ 99–100% vs 0/20 Avatar (≤71% —
   floor legitimately higher than the old ≤33% keyframe-only baseline; see the 2026-07-18 "FIX
   VALIDATED" entry in `research/vdf-evaluation.md`). Presence rule and all default thresholds
   unchanged; 5 new `FrameQuality` unit tests.
@@ -471,6 +471,30 @@ was flagged right after the initial scaffold and fixed before anything else was 
     never mutate originals until confirmed.
   - [ ] **Verification UI** (Avalonia) — preview/confirm cuts; fix the VDF UX traps in `ux-issues.md`.
     UI project structure itself is a reopened question — see ADR 0005 Open questions.
+- [ ] **Bumper discovery assist (logged 2026-07-21, not designed/built).** Finding an *unknown*
+  bumper is currently fully manual and error-prone — the maintainer's own workflow is scrub for a
+  begin bumper, find its length, scrub the end, then a low-confidence pass through the middle for
+  interstitials. More than a "nice to have": it gates the catalog's enroll step for every bumper
+  not already known, and nowhere in `ROADMAP.md`'s phases is manual discovery of a *new* bumper
+  actually addressed. Proposed direction: a filmstrip of small per-file thumbnails
+  (DaVinci-timeline-style) — moderate density at the edges, higher through the middle
+  specifically to help spot interstitials — using VDF's existing
+  `ScanEngine.ExtractThumbnailJpeg(path, position, maxWidth, jpegQuality)` (already used for
+  VDF's own results-grid thumbnails). **Not** the 224×224 ONNX frames
+  (`VBR.Core.Diagnostics.FrameDump`) — that's a matching-diagnostic artifact (square, resized,
+  tied to the expensive full-decode path), wrong shape and cost for a human-display thumbnail.
+  Leaning on-demand generation (when a file is opened for review) over scan-time precompute —
+  most files won't need human eyes once the catalog matcher covers known bumpers, so
+  precomputing for the whole library pays for review that mostly won't happen. Generating during
+  live UI scrolling was also considered and set aside for now — ffmpeg seek+decode per thumbnail
+  likely can't keep up with fast scrolling without a background-fill-behind-a-placeholder cache,
+  which is a bigger lift than the basic on-demand version. Decoupled from the ADR 0006 three-signal
+  DB-scan work in flight — doesn't share a data model with pHash/audio/embeddings, doesn't touch
+  `FileEntry` or the new sidecar, so it can bolt on later without rework. Possible cheap follow-on
+  once sparse-middle pHash/embedding data exists from the scan: a "flag anomalous positions" pass
+  to make the filmstrip self-highlighting instead of requiring the user to eyeball every frame
+  (the "be suspicious of a bumper" idea raised early on, previously deferred). See `ROADMAP.md`
+  Phase 4.
 - [ ] **Two-tier design.** Fast optimized **edge** path (common case) vs. heavier **mid-video
   interstitial** path (on demand).
 - [ ] **Stretch (Phase 8):** per-video enhancements (aspect fix, letterbox/text crop, deinterlace,
