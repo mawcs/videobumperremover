@@ -158,30 +158,71 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		if (candidateUsable < 1)
 			return new MatchResult(false, 0f, null, "no usable frames in the search window");
 
-		// Presence matcher (ours): best per-frame cosine + how many clip frames appear anywhere
-		// in the candidate's search window at >= presenceThreshold.
-		float best = 0f;
-		int bestFrame = -1;
-		int hits = 0;
-		for (int c = 0; c < clipRec.Frames.Length; c++) {
-			if (clipRec.Frames[c].Length == 0) continue;
-			float clipBest = 0f;
-			for (int s = 0; s < candidateRec.Frames.Length; s++) {
-				if (candidateRec.Frames[s].Length == 0) continue;
-				float cos = EmbeddingMath.CosineSimilarity(clipRec.Frames[c], candidateRec.Frames[s]);
-				if (cos > clipBest) clipBest = cos;
-				if (cos > best) { best = cos; bestFrame = s; }
-			}
-			if (clipBest >= presenceThreshold) hits++;
-		}
-		double? bestTime = bestFrame < 0 ? null : bestFrame * sampleInterval;
+		(bool present, float best, double? bestTime, int hits) =
+			ComparePresence(ToTimedFrames(clipRec), ToTimedFrames(candidateRec), presenceThreshold);
 
 		// Rigid matcher (VDF) for comparison/corroboration only — never gates the decision.
 		bool rigidOk = ScanEngine.TryMatchDenseFrames(candidateRec, clipRec, rigidHitThreshold, out float rigidSim, out int rigidOffset);
 		string rigid = rigidOk ? $"rigid={rigidSim:P0}@{rigidOffset}s" : "rigid:no";
 		string detail = $"present={hits}/{clipUsable}  bestCos={best:P0}  {rigid}  win={candidateUsable}/{candidateRec.Frames.Length}";
 
-		return new MatchResult(hits >= 1, best, bestTime, detail);
+		return new MatchResult(present, best, bestTime, detail);
+	}
+
+	/// <summary>
+	/// Compares two independently-gathered mixed-density fingerprints (see
+	/// <see cref="Fingerprinting.MixedDensitySampler"/>) — the entry point for an edge-anchored
+	/// bumper longer than one sampling interval can usefully cover on its own. Same presence rule
+	/// as <see cref="Match"/> (see <see cref="ComparePresence"/> — no temporal alignment required
+	/// between the two sides, so it doesn't matter that each side may carry two different
+	/// densities), but takes pre-sampled frames instead of extracting/embedding internally.
+	/// Rigid-matcher corroboration is not computed here — <c>ScanEngine.TryMatchDenseFrames</c>
+	/// assumes one uniform interval per side; see docs/iterativeplan.md, "Mixed-density edge/middle
+	/// fingerprinting," for why adapting it wasn't worth the upstream touch for this spike.
+	/// </summary>
+	public MatchResult MatchMixedDensity(IReadOnlyList<Fingerprinting.TimedFrame> clipFrames, IReadOnlyList<Fingerprinting.TimedFrame> candidateFrames) {
+		if (candidateFrames.Count < 1)
+			return new MatchResult(false, 0f, null, "no usable frames in the search window");
+		(bool present, float best, double? bestTime, int hits) = ComparePresence(clipFrames, candidateFrames, presenceThreshold);
+		string detail = $"present={hits}/{clipFrames.Count}  bestCos={best:P0}  win={candidateFrames.Count}";
+		return new MatchResult(present, best, bestTime, detail);
+	}
+
+	/// <summary>
+	/// The presence comparison itself, shared by <see cref="Match"/> (via <see cref="ToTimedFrames"/>)
+	/// and <see cref="MatchMixedDensity"/>: best per-frame cosine, plus how many clip frames appear
+	/// anywhere in the candidate at &gt;= <paramref name="presenceThreshold"/>. Timestamp-tagged
+	/// rather than index-based, so it behaves identically whether both sides share one sampling
+	/// interval (today's <see cref="Match"/>) or not (<see cref="MatchMixedDensity"/>) — presence
+	/// never required alignment between the two sides, just real per-frame content to compare.
+	/// </summary>
+	static (bool present, float best, double? bestTimeSeconds, int hits) ComparePresence(
+			IReadOnlyList<Fingerprinting.TimedFrame> clipFrames, IReadOnlyList<Fingerprinting.TimedFrame> candidateFrames, float presenceThreshold) {
+		float best = 0f;
+		double? bestTime = null;
+		int hits = 0;
+		foreach (var clip in clipFrames) {
+			float clipBest = 0f;
+			foreach (var candidate in candidateFrames) {
+				float cos = EmbeddingMath.CosineSimilarity(clip.Embedding, candidate.Embedding);
+				if (cos > clipBest) clipBest = cos;
+				if (cos > best) { best = cos; bestTime = candidate.TimestampSeconds; }
+			}
+			if (clipBest >= presenceThreshold) hits++;
+		}
+		return (hits >= 1, best, bestTime, hits);
+	}
+
+	/// <summary>Converts a <see cref="DenseEmbeddingStore.DenseRecord"/>'s implicit
+	/// <c>index × IntervalSeconds</c> timing into explicit <see cref="Fingerprinting.TimedFrame"/>s
+	/// (dropping empty/filtered slots), so <see cref="Match"/> can share <see cref="ComparePresence"/>
+	/// with <see cref="MatchMixedDensity"/> instead of keeping two copies of the comparison loop.</summary>
+	static List<Fingerprinting.TimedFrame> ToTimedFrames(DenseEmbeddingStore.DenseRecord record) {
+		var list = new List<Fingerprinting.TimedFrame>(record.Frames.Length);
+		for (int i = 0; i < record.Frames.Length; i++)
+			if (record.Frames[i].Length > 0)
+				list.Add(new Fingerprinting.TimedFrame(i * record.IntervalSeconds, record.Frames[i]));
+		return list;
 	}
 
 	DenseEmbeddingStore.DenseRecord Embed(string path, string? dumpLabel, CancellationToken ct) {

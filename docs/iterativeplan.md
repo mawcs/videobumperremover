@@ -6,9 +6,38 @@ reference rather than deleted or overwritten.
 
 ## Mixed-density edge/middle fingerprinting — spike plan (2026-07-21)
 
-**Status:** proposed — not yet implemented. Written up per the maintainer's request after an
-earlier same-day test (`VisualBumperMatcherOffsetTests`, kept in the repo — see below) turned out
-to validate a different claim than the one in question.
+**Status: implemented and validated (2026-07-21), same day.** Written up per the maintainer's
+request after an earlier same-day test (`VisualBumperMatcherOffsetTests`, kept in the repo — see
+below) turned out to validate a different claim than the one in question. Built exactly as planned
+below, with one deliberate accommodation: the maintainer asked to leave room for pHash as a second
+per-position signal "very soon," so `MixedDensitySampler` factors frame-gathering (extract →
+full-decode → low-information filter → timestamp) into its own signal-agnostic internal step
+(`GatherFrames`, returning plain timestamped RGB24 frames) separate from embedding (`Sample`) — a
+future pHash addition consumes the same gathered frames rather than triggering a second decode
+pass. No pHash code was written; this is structure only.
+
+**Result — real media, both directions:**
+
+| Test | Corpus | Expectation | Result |
+|---|---|---|---|
+| `MatchMixedDensity_FindsAnEdgeBumperLongerThanTheBoundary` (positive) | Avatar: The Last Airbender S01, 20 episodes, 47s true-begin intro, profile = 20s dense @ 0.5s / 27s sparse @ 4s | most/all episodes match | ✅ **19/19 other episodes MATCH**, present 21–25/40 usable clip frames, bestCos 96–99% |
+| Same clip vs. Doctor Who (2005) S01, 13 episodes (negative control) | unrelated content | zero false positives | ✅ **0/13**, present=0/40 on every file, bestCos 23–49% |
+
+~50-point gap between the true-positive floor (96%) and the false-positive ceiling (49%), zero
+false positives — the mechanism works cleanly on the actual scenario: one 47s bumper, genuinely
+mixed density on both the reference clip and every candidate, matched via
+`VisualBumperMatcher.MatchMixedDensity` with no temporal alignment between the two sides.
+
+**Regression check (constraint a):** `VisualBumperMatcherOffsetTests` was re-run byte-for-byte
+identical before and after the `VisualBumperMatcher.Match` refactor (same `present`/`bestCos`/
+`rigid`/`win` numbers on every one of the 12 Daredevil episodes) — the existing single-interval
+path is provably unaffected.
+
+**Files:** new — `VBR.Core/Fingerprinting/EdgeDensityProfile.cs`, `TimedFrame.cs`,
+`MixedDensitySampler.cs`; `VBR.Tests/Matching/VisualBumperMatcherMixedDensityTests.cs`. Modified —
+`VBR.Core/Matching/VisualBumperMatcher.cs` (`Match` refactored onto a shared `ComparePresence`
+helper via a new `ToTimedFrames` conversion; added `MatchMixedDensity`). No changes to
+`DenseFrameSampler`, `FrameQuality`, `ClipExtractor`, or any VDF.Core file.
 
 **Related:** [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md)
 (decisions 1/4/5 — the density profile and the non-uniform `(timestamp, value)` data model this
