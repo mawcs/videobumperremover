@@ -205,6 +205,11 @@ Work:
 - Reuse/extend VDF's fingerprint index so scans don't reprocess unchanged files. Our index uses
   **edge-focused, variable-density sampling** (dense edges, sparse middle) + region tags — see
   [`decisions/0006-edge-focused-fingerprinting.md`](decisions/0006-edge-focused-fingerprinting.md).
+  **The mixed-density sampling + matching mechanism itself is validated (2026-07-21):** a bumper
+  longer than the dense edge zone (e.g. a 47s intro against a 20s boundary) matches correctly via
+  one fingerprint spanning both densities, confirmed on real media with zero false positives — see
+  [`iterativeplan.md`](iterativeplan.md) "Mixed-density edge/middle fingerprinting." The
+  persistent index and the library-scan CLI it will run inside remain net-new.
 - Run **snippet → library**: "find all videos containing snippet X" efficiently.
 - Stand up the **bumper catalog** store (per
   [`design/bumper-catalog.md`](design/bumper-catalog.md)): persist bumper entries with

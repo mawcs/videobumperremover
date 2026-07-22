@@ -466,6 +466,24 @@ was flagged right after the initial scaffold and fixed before anything else was 
     range and extract the clip internally — see "Clip-input contract fixed" above. Still applies
     as a standing rule to every *future* entry point (catalog enroll, UI marking, etc.).
   - [ ] Edge-focused scan + a **cached** fingerprint/embedding index (scan once, compare cheaply).
+    - [x] **Mixed-density fingerprinting mechanism — implemented and validated (2026-07-21).**
+      The specific risk this item was blocked on — a bumper that touches the true edge but is
+      *longer* than `edge-boundary` needs one fingerprint spanning two densities, dense near the
+      edge and sparse beyond it — is resolved, not just theorized. New:
+      `VBR.Core.Fingerprinting.EdgeDensityProfile`/`TimedFrame`/`MixedDensitySampler` (frame
+      gathering factored out from embedding as its own signal-agnostic step, so an eventual pHash
+      addition reuses the same decoded frames rather than re-decoding — the maintainer flagged
+      pHash as coming "very soon"); `VisualBumperMatcher.MatchMixedDensity` (new, alongside the
+      existing `Match`, which was refactored onto a shared `ComparePresence` helper and re-verified
+      to produce byte-identical output before/after). Validated on real media: Avatar S01's actual
+      47s true-begin intro (profile 20s dense at 0.5s / 27s sparse at 4s) — **19/19 other episodes
+      MATCH** (present 21–25/40 usable clip frames, bestCos 96–99%) — vs. 13 unrelated Doctor Who
+      episodes — **0/13**, bestCos ≤49% (present=0/40 on every file). ~50-point separation, zero
+      false positives. Full plan + results:
+      [`iterativeplan.md`](iterativeplan.md) → "Mixed-density edge/middle fingerprinting." Note
+      this validates the *sampling + matching primitive* the index will run on — persistence (the
+      actual sidecar file) and the library-scan CLI itself remain open, hence this parent item
+      stays unchecked.
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.
