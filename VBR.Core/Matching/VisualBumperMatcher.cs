@@ -69,6 +69,12 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	/// <summary>Matches VisualTailProbe's coded default (<c>BUMPER_HIT_PERCENT</c>).</summary>
 	public const float DefaultRigidHitThreshold = 0.89f;
 
+	/// <summary>Presence threshold for pHash comparisons (<see cref="MatchMixedDensityPHash"/>).
+	/// pHash's 64-bit hash is coarser than a DINOv2 cosine, so it gets its own default rather than
+	/// sharing <see cref="DefaultPresenceThreshold"/>; matches VDF's own pHash duplicate gate
+	/// (<c>Settings.Percent</c>, default 96%).</summary>
+	public const float DefaultPHashPresenceThreshold = 0.96f;
+
 	// VisualTailProbe's own cap; generous relative to any edge window this project searches
 	// (a 30s window at the densest validated interval, 0.2s, is 150 frames).
 	const int MaxFramesPerFile = 400;
@@ -186,6 +192,37 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		(bool present, float best, double? bestTime, int hits) = ComparePresence(clipFrames, candidateFrames, presenceThreshold);
 		string detail = $"present={hits}/{clipFrames.Count}  bestCos={best:P0}  win={candidateFrames.Count}";
 		return new MatchResult(present, best, bestTime, detail);
+	}
+
+	/// <summary>
+	/// pHash counterpart to <see cref="MatchMixedDensity"/>: same presence question ("does any
+	/// clip position appear somewhere in the candidate"), but over <see cref="Fingerprinting.TimedPHash"/>
+	/// pairs via Hamming similarity (<see cref="Fingerprinting.FrameHashing.Similarity"/>) instead
+	/// of DINOv2 cosine. Exploratory, per docs/decisions/0006-edge-focused-fingerprinting.md's
+	/// 2026-07-21 amendment — measures how pHash performs on the same real bumpers/candidates
+	/// DINOv2 is validated against. Never gates a decision on its own (matcher-spec.md: DINOv2 is
+	/// the primary signal); this is a static, state-free comparison so callers can run it purely
+	/// for comparison without needing a matcher instance (no ONNX session involved).
+	/// </summary>
+	public static MatchResult MatchMixedDensityPHash(
+			IReadOnlyList<Fingerprinting.TimedPHash> clipHashes, IReadOnlyList<Fingerprinting.TimedPHash> candidateHashes,
+			float presenceThreshold = DefaultPHashPresenceThreshold) {
+		if (candidateHashes.Count < 1)
+			return new MatchResult(false, 0f, null, "no usable frames in the search window");
+		float best = 0f;
+		double? bestTime = null;
+		int hits = 0;
+		foreach (var clip in clipHashes) {
+			float clipBest = 0f;
+			foreach (var candidate in candidateHashes) {
+				float sim = Fingerprinting.FrameHashing.Similarity(clip.PHash, candidate.PHash);
+				if (sim > clipBest) clipBest = sim;
+				if (sim > best) { best = sim; bestTime = candidate.TimestampSeconds; }
+			}
+			if (clipBest >= presenceThreshold) hits++;
+		}
+		string detail = $"present={hits}/{clipHashes.Count}  bestSim={best:P0}  win={candidateHashes.Count}";
+		return new MatchResult(hits >= 1, best, bestTime, detail);
 	}
 
 	/// <summary>

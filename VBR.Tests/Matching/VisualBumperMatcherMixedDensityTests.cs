@@ -21,6 +21,13 @@
 // This is a different claim than VisualBumperMatcherOffsetTests (which touches neither true edge,
 // single density) -- see the doc for why the two are not interchangeable.
 //
+// Also logs pHash numbers (VisualBumperMatcher.MatchMixedDensityPHash) alongside the DINOv2
+// numbers for every file, gathered from the same sampled frames via
+// MixedDensitySampler.SampleWithPHash -- exploratory, per ADR 0006's 2026-07-21 amendment ("pHash
+// added as a third signal"). pHash is logged only, never asserted on: DINOv2 stays the sole
+// pass/fail signal (matcher-spec.md), this just shows what pHash alone would have said on the
+// same real bumper/candidates.
+//
 // Run (PowerShell), using the real Avatar: The Last Airbender S01 intro (~47s of identical
 // content at the true beginning of every episode -- long enough to genuinely exceed a 20s
 // edge-boundary):
@@ -79,7 +86,9 @@ public class VisualBumperMatcherMixedDensityTests {
 		// so this doesn't double the AI components this test loads.
 		using var matcher = new VisualBumperMatcher();
 
-		IReadOnlyList<TimedFrame> clipFrames = sampler.Sample(clipEpisode!, region, totalLength, profile);
+		MixedDensitySampler.SampleResult clipSample = sampler.SampleWithPHash(clipEpisode!, region, totalLength, profile);
+		IReadOnlyList<TimedFrame> clipFrames = clipSample.Embeddings;
+		IReadOnlyList<TimedPHash> clipHashes = clipSample.PHashes;
 		Skip.If(clipFrames.Count == 0,
 			"The reference clip produced no usable frames after low-information filtering -- adjust " +
 			"BUMPER_MIXED_TOTAL_LENGTH_SECONDS/BUMPER_MIXED_EDGE_BOUNDARY_SECONDS or pick a different clip episode.");
@@ -95,16 +104,22 @@ public class VisualBumperMatcherMixedDensityTests {
 		Skip.If(episodes.Count == 0, "No other episode files found in BUMPER_EPISODES_DIR.");
 
 		var results = episodes.Select(ep => {
-			IReadOnlyList<TimedFrame> candidateFrames = sampler.Sample(ep, region, totalLength, profile);
-			return (File: ep, Result: matcher.MatchMixedDensity(clipFrames, candidateFrames));
+			MixedDensitySampler.SampleResult candidateSample = sampler.SampleWithPHash(ep, region, totalLength, profile);
+			MatchResult dino = matcher.MatchMixedDensity(clipFrames, candidateSample.Embeddings);
+			MatchResult phash = VisualBumperMatcher.MatchMixedDensityPHash(clipHashes, candidateSample.PHashes);
+			return (File: ep, Dino: dino, PHash: phash);
 		}).ToList();
-		foreach (var (file, result) in results.OrderByDescending(r => r.Result.BestScore))
-			_out.WriteLine($"{Path.GetFileName(file),-56}  {result.Detail}");
+		foreach (var (file, dino, phash) in results.OrderByDescending(r => r.Dino.BestScore))
+			_out.WriteLine($"{Path.GetFileName(file),-56}  dino: {dino.Detail}  |  phash: {phash.Detail}");
 
-		Assert.True(results.Any(r => r.Result.Present),
+		Assert.True(results.Any(r => r.Dino.Present),
 			$"Expected at least one episode to match a {totalLengthSeconds}s mixed-density bumper " +
 			$"fingerprint ({edgeBoundarySeconds}s dense / {totalLengthSeconds - edgeBoundarySeconds}s sparse) " +
 			$"at >= {VisualBumperMatcher.DefaultPresenceThreshold:P0} presence.");
+
+		int truePositivesByPHash = results.Count(r => r.PHash.Present);
+		_out.WriteLine($"pHash (informational only, presence >= {VisualBumperMatcher.DefaultPHashPresenceThreshold:P0}): " +
+			$"{truePositivesByPHash}/{results.Count} episodes present.");
 
 		string? negativeDir = Environment.GetEnvironmentVariable("BUMPER_MIXED_NEGATIVE_DIR");
 		if (!string.IsNullOrWhiteSpace(negativeDir) && Directory.Exists(negativeDir)) {
@@ -113,15 +128,21 @@ public class VisualBumperMatcherMixedDensityTests {
 				.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 				.ToList();
 			var negativeResults = negatives.Select(f => {
-				IReadOnlyList<TimedFrame> candidateFrames = sampler.Sample(f, region, totalLength, profile);
-				return (File: f, Result: matcher.MatchMixedDensity(clipFrames, candidateFrames));
+				MixedDensitySampler.SampleResult candidateSample = sampler.SampleWithPHash(f, region, totalLength, profile);
+				MatchResult dino = matcher.MatchMixedDensity(clipFrames, candidateSample.Embeddings);
+				MatchResult phash = VisualBumperMatcher.MatchMixedDensityPHash(clipHashes, candidateSample.PHashes);
+				return (File: f, Dino: dino, PHash: phash);
 			}).ToList();
-			foreach (var (file, result) in negativeResults.OrderByDescending(r => r.Result.BestScore))
-				_out.WriteLine($"[negative] {Path.GetFileName(file),-46}  {result.Detail}");
+			foreach (var (file, dino, phash) in negativeResults.OrderByDescending(r => r.Dino.BestScore))
+				_out.WriteLine($"[negative] {Path.GetFileName(file),-46}  dino: {dino.Detail}  |  phash: {phash.Detail}");
 
-			Assert.False(negativeResults.Any(r => r.Result.Present),
+			Assert.False(negativeResults.Any(r => r.Dino.Present),
 				$"Expected zero matches against unrelated content in {negativeDir}, got " +
-				$"{negativeResults.Count(r => r.Result.Present)}.");
+				$"{negativeResults.Count(r => r.Dino.Present)}.");
+
+			int falsePositivesByPHash = negativeResults.Count(r => r.PHash.Present);
+			_out.WriteLine($"pHash (informational only, presence >= {VisualBumperMatcher.DefaultPHashPresenceThreshold:P0}) " +
+				$"on negatives: {falsePositivesByPHash}/{negativeResults.Count} episodes present.");
 		}
 	}
 }

@@ -32,12 +32,10 @@ namespace VBR.Core.Fingerprinting;
 ///
 /// Frame gathering (extract → full-decode → low-information filtering → timestamp assignment) is
 /// factored into <see cref="GatherFrames"/>, deliberately separate from embedding: it produces
-/// plain timestamped RGB24 frames, signal-agnostic. Only <see cref="Sample"/> turns those into
-/// DINOv2 embeddings. When pHash is added as a second per-position signal, it consumes the same
-/// <see cref="GatherFrames"/> output (downsampling the already-decoded 224×224 RGB24 frame to
-/// 32×32 grayscale in-process, the way <c>FrameQuality</c> already reads RGB24 directly — VDF's
-/// own pHash path takes a separate ffmpeg-side 32×32 extraction instead, which would be a second
-/// decode here and is exactly what this seam avoids) rather than a second decode pass.
+/// plain timestamped RGB24 frames, signal-agnostic. <see cref="Sample"/> turns those into DINOv2
+/// embeddings only; <see cref="SampleWithPHash"/> turns the same gathered frames into both DINOv2
+/// embeddings *and* <see cref="TimedPHash"/> pHashes (via <see cref="FrameHashing"/>) in one pass,
+/// so adding the second signal costs no extra decode.
 /// </summary>
 public sealed class MixedDensitySampler : IDisposable {
 	// Same cap VisualBumperMatcher applies per extracted region; a single dense or sparse zone is
@@ -129,6 +127,46 @@ public sealed class MixedDensitySampler : IDisposable {
 		}
 		Flush();
 		return result;
+	}
+
+	/// <summary>Both per-position signals from one <see cref="Sample"/>-style call: DINOv2
+	/// embeddings and pHashes, gathered from a single <see cref="GatherFrames"/> decode pass so
+	/// comparing the two signals never costs a second extract/decode of the source video.</summary>
+	public readonly record struct SampleResult(IReadOnlyList<TimedFrame> Embeddings, IReadOnlyList<TimedPHash> PHashes);
+
+	/// <summary>
+	/// Like <see cref="Sample"/>, but also computes each surviving frame's pHash (<see cref="FrameHashing.ComputePHash"/>)
+	/// from the very same decoded RGB24 bytes handed to the embedder — exploratory: lets callers
+	/// compare how pHash performs against DINOv2 on identical positions/candidates (see
+	/// docs/decisions/0006-edge-focused-fingerprinting.md's 2026-07-21 amendment). Does not change
+	/// or replace <see cref="Sample"/>.
+	/// </summary>
+	public SampleResult SampleWithPHash(
+			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile, CancellationToken ct = default) {
+		AiComponents.EnsureReady();
+		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
+
+		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, ct);
+		var embeddings = new List<TimedFrame>(sampled.Count);
+		var hashes = new List<TimedPHash>(sampled.Count);
+		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
+		var batchTimestamps = new List<double>(OnnxEmbedder.MaxBatch);
+		void Flush() {
+			if (batch.Count == 0) return;
+			byte[][] vectors = embedder!.EmbedBatchQuantized(batch);
+			for (int k = 0; k < vectors.Length; k++)
+				embeddings.Add(new TimedFrame(batchTimestamps[k], vectors[k]));
+			batch.Clear();
+			batchTimestamps.Clear();
+		}
+		foreach (SampledFrame frame in sampled) {
+			hashes.Add(new TimedPHash(frame.TimestampSeconds, FrameHashing.ComputePHash(frame.Rgb24)));
+			batch.Add(frame.Rgb24);
+			batchTimestamps.Add(frame.TimestampSeconds);
+			if (batch.Count == OnnxEmbedder.MaxBatch) Flush();
+		}
+		Flush();
+		return new SampleResult(embeddings, hashes);
 	}
 
 	public void Dispose() => embedder?.Dispose();

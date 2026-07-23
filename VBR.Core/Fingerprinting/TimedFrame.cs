@@ -23,10 +23,9 @@ namespace VBR.Core.Fingerprinting;
 /// 0006 decisions 4/5's non-uniform <c>(timestamp, value)</c> model needed to represent
 /// mixed-density data at all; not the persistent sidecar record, just the in-memory shape.
 ///
-/// Deliberately embedding-only for now, not a general multi-signal container: the maintainer
-/// intends to add pHash as a second per-position signal soon (docs/iterativeplan.md). When that
-/// lands, it plugs into <see cref="MixedDensitySampler"/>'s frame-gathering stage (already
-/// factored out from embedding — see that class) rather than into this type, since a pHash is
-/// computed from the same already-decoded RGB24 frame, not from an embedding.
+/// Deliberately embedding-only, not a general multi-signal container: pHash is a second,
+/// independent per-position signal (<see cref="TimedPHash"/>), gathered alongside this one by
+/// <see cref="MixedDensitySampler.SampleWithPHash"/> from the same already-decoded frame rather
+/// than folded into this type.
 /// </summary>
 public readonly record struct TimedFrame(double TimestampSeconds, byte[] Embedding);
