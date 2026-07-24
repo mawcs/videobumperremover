@@ -37,21 +37,35 @@ public enum ClipEdge { begin, end }
 /// A region of a source video to extract. Per "precision is the tool's job, not the user's"
 /// (docs/design/bumper-catalog.md): callers never supply a pre-cut clip file — they point at a
 /// video and a rough region, and this library extracts internally. <c>Start</c> null means
-/// "measured from end of file" (the last <see cref="Duration"/> seconds); non-null means
-/// "measured from the start of the file."
+/// "measured backward from end of file" (see <see cref="EndOffset"/>); non-null means "measured
+/// from the start of the file."
 /// </summary>
 public readonly record struct ClipRegion {
 	public TimeSpan? Start { get; init; }
+
+	/// <summary>Only meaningful when <see cref="Start"/> is null: how far before EOF this region's
+	/// *start* sits. Equal to <see cref="Duration"/> means the region reaches the true end (what
+	/// <see cref="Tail"/> sets); larger than <see cref="Duration"/> means it ends short of the true
+	/// end (see <see cref="BeforeEnd"/>).</summary>
+	public TimeSpan EndOffset { get; init; }
+
 	public TimeSpan Duration { get; init; }
 
 	/// <summary>The first <paramref name="duration"/> of the video.</summary>
 	public static ClipRegion Head(TimeSpan duration) => new() { Start = TimeSpan.Zero, Duration = duration };
 
 	/// <summary>The last <paramref name="duration"/> of the video.</summary>
-	public static ClipRegion Tail(TimeSpan duration) => new() { Start = null, Duration = duration };
+	public static ClipRegion Tail(TimeSpan duration) => new() { Start = null, EndOffset = duration, Duration = duration };
 
 	/// <summary>An explicit <paramref name="start"/>..<paramref name="start"/>+<paramref name="duration"/> range.</summary>
 	public static ClipRegion At(TimeSpan start, TimeSpan duration) => new() { Start = start, Duration = duration };
+
+	/// <summary>A <paramref name="duration"/>-long region starting <paramref name="endOffset"/>
+	/// before EOF — like <see cref="Tail"/>, but for a window that doesn't reach the true end (e.g.
+	/// the sparser, farther-out zone of a mixed-density edge fingerprint, which sits before the
+	/// dense zone that itself reaches EOF). Requires <paramref name="endOffset"/> &gt;=
+	/// <paramref name="duration"/>.</summary>
+	public static ClipRegion BeforeEnd(TimeSpan endOffset, TimeSpan duration) => new() { Start = null, EndOffset = endOffset, Duration = duration };
 
 	/// <summary><see cref="Head"/> for <see cref="ClipEdge.begin"/>, <see cref="Tail"/> for <see cref="ClipEdge.end"/>.</summary>
 	public static ClipRegion For(ClipEdge edge, TimeSpan duration) => edge == ClipEdge.begin ? Head(duration) : Tail(duration);
@@ -148,6 +162,20 @@ public static class ClipExtractor {
 		return true;
 	}
 
+	/// <summary>Appends the <c>-ss</c>/<c>-sseof</c> input-seek args for <paramref name="region"/> —
+	/// shared with <see cref="Fingerprinting.DenseFrameSampler"/>'s region-aware overload so a
+	/// direct source decode uses exactly the same seek semantics this extractor does.</summary>
+	internal static void AppendSeekArgs(System.Collections.Generic.IList<string> argumentList, ClipRegion region) {
+		if (region.Start is { } start) {
+			argumentList.Add("-ss");
+			argumentList.Add(start.TotalSeconds.ToString(CultureInfo.InvariantCulture));
+		}
+		else {
+			argumentList.Add("-sseof");
+			argumentList.Add((-region.EndOffset.TotalSeconds).ToString(CultureInfo.InvariantCulture));
+		}
+	}
+
 	static bool RunFfmpegExtract(string sourceVideoPath, ClipRegion region, string outputPath, bool streamCopy, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
@@ -157,14 +185,7 @@ public static class ClipExtractor {
 			CreateNoWindow = true,
 		};
 		psi.ArgumentList.Add("-y");
-		if (region.Start is { } start) {
-			psi.ArgumentList.Add("-ss");
-			psi.ArgumentList.Add(start.TotalSeconds.ToString(CultureInfo.InvariantCulture));
-		}
-		else {
-			psi.ArgumentList.Add("-sseof");
-			psi.ArgumentList.Add((-region.Duration.TotalSeconds).ToString(CultureInfo.InvariantCulture));
-		}
+		AppendSeekArgs(psi.ArgumentList, region);
 		psi.ArgumentList.Add("-i");
 		psi.ArgumentList.Add(sourceVideoPath);
 		psi.ArgumentList.Add("-t");

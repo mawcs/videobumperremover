@@ -4,6 +4,75 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## MixedDensitySampler: direct-from-source decode, no chained extraction (2026-07-24)
+
+**Status: implemented and validated.** Follow-up to the pHash addition below — testing a real 5s
+Caprica end-card (`VisualBumperMatcherMixedDensityTests`, short-bumper case) surfaced a real bug,
+and the maintainer's own manual `ffmpeg` investigation correctly identified the architecture as the
+root cause, not a one-off corrupt file.
+
+**The bug:** `GatherFrames` extracted the whole edge region to a temp file
+(`ClipExtractor.ExtractToTemp`), then extracted each dense/sparse zone as a *second* stream-copy
+hop out of *that* temp file (`AppendZone`) — up to three chained ffmpeg processes per candidate
+zone. On real media this produced two distinct, real failure modes: (1) a `-sseof` seek landing on
+non-monotonic DTS in the source silently produced a duration-inflated, duplicate-padded first-stage
+extract (a 5s request came out 14+s); (2) stream-copying *again* out of a file whose first
+extraction needed the re-encode fallback could itself produce an outright-corrupt Matroska remux
+(`Marvel's Daredevil S01E03`: "Duplicate element" / invalid EBML, ffprobe couldn't read a duration
+back at all) — this one crashed the whole comparison run before a per-file try/catch was added.
+
+**The maintainer's question, and the answer:** "why cut a clip first instead of extracting frames
+directly from the source, the way a plain `ffmpeg -sseof -N -i source -vf fps=...` command does?"
+— correct, and it's what `VisualBumperMatcher`'s validated single-density path was closer to
+already (one `ExtractToTemp` + one `DenseFrameSampler` decode, not three hops).
+`ClipExtractor.ExtractToTemp` exists because it's shared with `AudioBumperMatcher`, which needs a
+real playable file (Chromaprint fingerprints a file, not a frame stream) — that requirement doesn't
+apply to visual/pHash frame sampling at all.
+
+**Fix:** `DenseFrameSampler` gained a region-aware overload —
+`SampleFrames(sourcePath, ClipRegion, interval, maxFrames, ct)` — that seeks (`-ss`/`-sseof` + `-t`,
+via a new `ClipExtractor.AppendSeekArgs` shared with `ClipExtractor.RunFfmpegExtract` so both build
+identical seek args) and decodes directly from the original source in **one** ffmpeg process, no
+intermediate file. `ClipRegion` gained `BeforeEnd(endOffset, duration)` (a duration-long window
+starting `endOffset` before EOF, not necessarily reaching it) — the one zone shape (the "end"
+region's sparse zone) that wasn't already expressible via the existing `Head`/`Tail`/`At`. `Tail`
+now sets a `EndOffset` field equal to its duration internally; behavior for every existing
+`Head`/`Tail`/`At` caller (the validated single-density `VisualBumperMatcher.Match`,
+`AudioBumperMatcher`, both CLI commands) is unchanged — confirmed by inspection, not just intent:
+`EndOffset == Duration` for `Tail` reproduces the exact same `-sseof` argument as before.
+`MixedDensitySampler.GatherFrames`/`AppendZone` now compute each zone directly against
+`sourcePath` (no `whole` intermediate at all).
+
+**Re-validated (2026-07-24), same clip/library as the bug report:** Caprica 5s end-card, 18
+episodes — floor improved slightly, **93–100% bestCos** (was 91–99% through the old double-hop
+path) — the extra re-mux hop was quietly costing quality on top of being a corruption risk.
+Daredevil Season 01 as negative corpus, 13 episodes plus the previously-crashing `S01E03` — **no
+crash**; `S01E03` now resolves cleanly to "no usable frames in the search window" (its literal last
+5s has no real video content at all — see below), FP ceiling **56–68%** (was 62–72%), zero
+false positives. Whole run **23s** (was 60–70s) — one decode per zone instead of up to three.
+
+**A second, separate finding along the way (not yet fixed, not a code bug):** several Daredevil
+episodes' *video* stream ends measurably before the *container*'s reported duration — confirmed via
+`ffprobe`, episode `S01E01`: last video frame at `3172.440s`, last audio frame at `3175.210s`,
+container duration `3175.231s` — a **2.8s video/audio gap** (audio-only tail, e.g. trailing
+network-outro music/silence with no matching picture). `-sseof` seeks against the *container*
+duration, so a request for "the last N seconds" can land partly or entirely in that video-less gap;
+`S01E03`'s gap is apparently even larger (a 5s request found zero video frames at all, even via a
+direct single-hop re-encode). This is unrelated to the chained-extraction bug above — it would
+affect a single-hop direct decode identically — and doesn't affect this project's actual target
+(Daredevil's own bumper, the Netflix end-card, sits well inside the file, not in this trailing gap;
+this only came up because Daredevil was being used as *unrelated negative content* for the Caprica
+bumper). Logged in `docs/PROGRESS.md`'s open items as a real, general "video ends before container
+EOF" resilience gap worth a deliberate fix (e.g. a safety margin on EOF-relative seeks) rather than
+a blind guess, since it trades off how close to the true edge a request can land.
+
+**Files:** modified — `VBR.Core/Extraction/ClipExtractor.cs` (`ClipRegion.EndOffset`/`BeforeEnd`,
+`AppendSeekArgs`), `VBR.Core/Fingerprinting/DenseFrameSampler.cs` (region-aware overload),
+`VBR.Core/Fingerprinting/MixedDensitySampler.cs` (`GatherFrames`/`AppendZone` rewritten, no `whole`
+extraction). No changes to `VisualBumperMatcher`, `AudioBumperMatcher`, or any CLI command.
+
+---
+
 ## Mixed-density edge/middle fingerprinting — spike plan (2026-07-21)
 
 **Status: implemented and validated (2026-07-21), same day.** Written up per the maintainer's

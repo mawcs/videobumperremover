@@ -424,6 +424,19 @@ was flagged right after the initial scaffold and fixed before anything else was 
   `MinDetail` when very few frames survive at all (today it applies the same bar whether one frame
   is borderline or one-of-many is), or widen the sampled window so more of any fade-in/out is
   captured.
+- [ ] **`-sseof` can land in a video-less tail on real files (flagged 2026-07-24, no fix yet).**
+  Confirmed via `ffprobe` on a real Daredevil episode: the *video* stream's last frame sits 2.8s
+  before the *container*'s reported duration (an audio-only tail — trailing music/silence with no
+  matching picture); another episode's gap is apparently ≥5s (a direct single-hop re-encode of its
+  last 5s produced zero video frames). `-sseof` seeks against the container duration, so an
+  EOF-relative request can land partly or fully past the true last video frame. Not a code bug —
+  real files just do this — but worth a deliberate fix since any `end`-region request is exposed:
+  candidates are a safety margin on EOF-relative seeks (trade-off: how close to the true edge a
+  request can land vs. how much slack to reserve) or probing the real last-frame time once per
+  file. See [`iterativeplan.md`](iterativeplan.md) → "MixedDensitySampler: direct-from-source
+  decode" for the full finding; didn't block that fix since it doesn't affect this project's actual
+  targets (bumpers sit well inside files, not in a trailing video-less gap) and is now handled
+  gracefully (clean "no usable frames," not a crash) rather than silently wrong.
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005 and
   **[`design/matcher-spec.md`](design/matcher-spec.md)** — the authoritative "definition of done."
   Read the spec first: the PRIMARY matcher is the visual DINOv2 presence path, audio is a secondary

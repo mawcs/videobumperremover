@@ -32,12 +32,25 @@ namespace VBR.Core.Fingerprinting;
 /// docs/iterativeplan.md, "Mixed-density edge/middle fingerprinting," for why this exists
 /// separately rather than extending the single-interval path in place.
 ///
-/// Frame gathering (extract → full-decode → low-information filtering → timestamp assignment) is
-/// factored into <see cref="GatherFrames"/>, deliberately separate from embedding: it produces
-/// plain timestamped RGB24 frames, signal-agnostic. <see cref="Sample"/> turns those into DINOv2
+/// Frame gathering (seek+decode → low-information filtering → timestamp assignment) is factored
+/// into <see cref="GatherFrames"/>, deliberately separate from embedding: it produces plain
+/// timestamped RGB24 frames, signal-agnostic. <see cref="Sample"/> turns those into DINOv2
 /// embeddings only; <see cref="SampleWithPHash"/> turns the same gathered frames into both DINOv2
 /// embeddings *and* <see cref="TimedPHash"/> pHashes (via <see cref="FrameHashing"/>) in one pass,
 /// so adding the second signal costs no extra decode.
+///
+/// Each dense/sparse zone is decoded directly from the source in one ffmpeg process via
+/// <see cref="DenseFrameSampler"/>'s region-aware overload — **not** via
+/// <see cref="VBR.Core.Extraction.ClipExtractor.ExtractToTemp"/>. An earlier version extracted the
+/// whole edge region to a temp file first, then extracted each zone as a *second* stream-copy hop
+/// out of that temp file — two chained ffmpeg processes per zone, each capable of independently
+/// mis-seeking. On real media (2026-07-23) that chain produced two distinct failure modes: (1) a
+/// `-sseof` seek landing on a run of non-monotonic DTS in the source silently produced a
+/// duration-inflated, duplicate-padded first-stage extract; (2) stream-copying *again* out of a
+/// file whose first extraction needed a re-encode fallback could itself produce an outright-corrupt
+/// Matroska remux (ffprobe couldn't even read a duration back). One direct seek+decode per zone —
+/// the same shape as a plain <c>ffmpeg -sseof -N -i source -vf fps=...</c> command run by hand —
+/// removes the extra hop these both depended on.
 /// </summary>
 public sealed class MixedDensitySampler : IDisposable {
 	// Same cap VisualBumperMatcher applies per extracted region; a single dense or sparse zone is
@@ -73,25 +86,30 @@ public sealed class MixedDensitySampler : IDisposable {
 			edgeBoundary = totalLength;
 		TimeSpan sparseLength = totalLength - edgeBoundary;
 
-		using ExtractedClip whole = ClipExtractor.ExtractToTemp(sourcePath, ClipRegion.For(region, totalLength), ct: ct);
-
 		var frames = new List<SampledFrame>();
-		// For `begin`, the true edge is the region's own start (real time 0 == true BOF), so the
-		// dense zone sits at temp-time 0. For `end`, the true edge is the region's own end (real
-		// time == true EOF), so the dense zone sits at the far side of the extracted temp file.
-		// Either way, whichever zone touches the region boundary that IS the true edge gets the
-		// dense interval; the other gets the sparse interval.
+		// Zone start labels are relative to the requested window (0 = the near end of totalLength
+		// from the `region` edge), not absolute file time -- purely for consistent, readable
+		// timestamps/diagnostics. Nothing downstream needs true-file-absolute times: presence
+		// matching (ComparePresence) never requires temporal alignment between clip and candidate.
 		double denseZoneStart = region == ClipEdge.begin ? 0 : sparseLength.TotalSeconds;
 		double sparseZoneStart = region == ClipEdge.begin ? edgeBoundary.TotalSeconds : 0;
 
-		if (edgeBoundary > TimeSpan.Zero)
-			AppendZone(whole.Path, ClipRegion.At(TimeSpan.FromSeconds(denseZoneStart), edgeBoundary),
-				profile.DenseInterval, denseZoneStart, frames,
+		// Each zone is a region directly against the true edge of `sourcePath` -- computed without
+		// ever materializing a "whole edge region" intermediate file (see the class doc comment).
+		if (edgeBoundary > TimeSpan.Zero) {
+			ClipRegion denseRegion = region == ClipEdge.begin
+				? ClipRegion.At(TimeSpan.Zero, edgeBoundary)      // first edgeBoundary of the file
+				: ClipRegion.Tail(edgeBoundary);                  // last edgeBoundary of the file
+			AppendZone(sourcePath, denseRegion, profile.DenseInterval, denseZoneStart, frames,
 				DumpDir(dumpFramesDir, dumpLabel, "dense"), ct);
-		if (sparseLength > TimeSpan.Zero)
-			AppendZone(whole.Path, ClipRegion.At(TimeSpan.FromSeconds(sparseZoneStart), sparseLength),
-				profile.SparseInterval, sparseZoneStart, frames,
+		}
+		if (sparseLength > TimeSpan.Zero) {
+			ClipRegion sparseRegion = region == ClipEdge.begin
+				? ClipRegion.At(edgeBoundary, sparseLength)       // the sparseLength right after the dense zone
+				: ClipRegion.BeforeEnd(totalLength, sparseLength); // the sparseLength right before the dense zone
+			AppendZone(sourcePath, sparseRegion, profile.SparseInterval, sparseZoneStart, frames,
 				DumpDir(dumpFramesDir, dumpLabel, "sparse"), ct);
+		}
 
 		frames.Sort((a, b) => a.TimestampSeconds.CompareTo(b.TimestampSeconds));
 		return frames;
@@ -100,10 +118,9 @@ public sealed class MixedDensitySampler : IDisposable {
 	static string? DumpDir(string? dumpFramesDir, string? dumpLabel, string zone) =>
 		dumpFramesDir is null ? null : Path.Combine(dumpFramesDir, $"{dumpLabel}-{zone}");
 
-	static void AppendZone(string wholeRegionPath, ClipRegion zone, TimeSpan interval, double zoneStartSeconds,
+	static void AppendZone(string sourcePath, ClipRegion zone, TimeSpan interval, double zoneStartSeconds,
 			List<SampledFrame> frames, string? dumpDir, CancellationToken ct) {
-		using ExtractedClip zoneClip = ClipExtractor.ExtractToTemp(wholeRegionPath, zone, ct: ct);
-		byte[][] rgbFrames = DenseFrameSampler.SampleFrames(zoneClip.Path, interval.TotalSeconds, MaxFramesPerZone, ct);
+		byte[][] rgbFrames = DenseFrameSampler.SampleFrames(sourcePath, zone, interval.TotalSeconds, MaxFramesPerZone, ct);
 		if (dumpDir is not null) FrameDump.WritePngs(rgbFrames, dumpDir);
 		bool[] usable = FrameQuality.SelectUsable(rgbFrames);
 		for (int i = 0; i < rgbFrames.Length; i++) {

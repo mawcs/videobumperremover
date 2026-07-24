@@ -20,13 +20,14 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using VBR.Core.Extraction;
 using VDF.Core.AI;
 using VDF.Core.FFTools;
 
 namespace VBR.Core.Fingerprinting;
 
 /// <summary>
-/// Dense frame sampling for the visual matcher: decodes **all** frames of a short extract and
+/// Dense frame sampling for the visual matcher: decodes **all** frames of a short window and
 /// emits one 224×224 RGB24 frame per <c>intervalSeconds</c>. This deliberately differs from
 /// VDF's <c>FfmpegEngine.GetDenseAiFrames</c>, which decodes keyframes only
 /// (<c>-skip_frame nokey</c>) — a sane optimization for whole-file dedup scans that is wrong for
@@ -34,8 +35,20 @@ namespace VBR.Core.Fingerprinting;
 /// to 3 distinct images, losing the letter animation entirely) and lets the fps filter
 /// manufacture duplicate "evidence" (see docs/iterativeplan.md §A2 and the 2026-07-18 correction
 /// in docs/design/matcher-spec.md). Full decode is affordable precisely because callers only
-/// ever hand this short <see cref="VBR.Core.Extraction.ClipExtractor"/> extracts — never a
-/// full-length episode (matcher-spec: sampling is edge-focused, structurally).
+/// ever hand this a short window — never a full-length episode (matcher-spec: sampling is
+/// edge-focused, structurally).
+///
+/// Two entry points: <see cref="SampleFrames(string, double, int, CancellationToken)"/> decodes a
+/// file whole (for a caller that already extracted a small clip, e.g. <see cref="VBR.Core.Matching.VisualBumperMatcher"/>);
+/// <see cref="SampleFrames(string, ClipRegion, double, int, CancellationToken)"/> seeks directly
+/// into a full-length source and decodes just the requested region, in one ffmpeg process — no
+/// prior <see cref="VBR.Core.Extraction.ClipExtractor"/> call. <see cref="MixedDensitySampler"/>
+/// uses the latter: chaining two separate stream-copy extractions (a whole edge region, then a
+/// sub-zone carved out of *that* temp file) turned out to be a real corruption vector on real
+/// media (2026-07-23 finding — a second stream-copy hop produced an outright-corrupt Matroska
+/// remux on one real file), not just avoidable overhead. One direct seek+decode, matching what a
+/// plain <c>ffmpeg -sseof -N -i source -vf fps=...</c> command does by hand, has one fewer hop to
+/// go wrong.
 /// </summary>
 public static class DenseFrameSampler {
 	/// <summary>
@@ -45,7 +58,20 @@ public static class DenseFrameSampler {
 	/// dumps) can see the unfiltered truth.
 	/// </summary>
 	/// <exception cref="InvalidOperationException">ffmpeg failed or timed out.</exception>
-	public static byte[][] SampleFrames(string path, double intervalSeconds, int maxFrames, CancellationToken ct = default) {
+	public static byte[][] SampleFrames(string path, double intervalSeconds, int maxFrames, CancellationToken ct = default) =>
+		SampleFrames(path, region: null, intervalSeconds, maxFrames, ct);
+
+	/// <summary>
+	/// Like the three-arg overload, but seeks directly into <paramref name="sourcePath"/> using
+	/// <paramref name="region"/> — the same <c>-ss</c>/<c>-sseof</c> + <c>-t</c> args
+	/// <see cref="VBR.Core.Extraction.ClipExtractor"/> uses (via <see cref="ClipExtractor.AppendSeekArgs"/>)
+	/// — instead of requiring a pre-extracted file. One ffmpeg process does seek+decode+sample.
+	/// </summary>
+	/// <exception cref="InvalidOperationException">ffmpeg failed or timed out.</exception>
+	public static byte[][] SampleFrames(string sourcePath, ClipRegion region, double intervalSeconds, int maxFrames, CancellationToken ct = default) =>
+		SampleFrames(sourcePath, (ClipRegion?)region, intervalSeconds, maxFrames, ct);
+
+	static byte[][] SampleFrames(string path, ClipRegion? region, double intervalSeconds, int maxFrames, CancellationToken ct) {
 		if (intervalSeconds <= 0)
 			throw new ArgumentOutOfRangeException(nameof(intervalSeconds));
 		int frameBytes = OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3;
@@ -60,7 +86,12 @@ public static class DenseFrameSampler {
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-nostdin");
 		psi.ArgumentList.Add("-an"); psi.ArgumentList.Add("-sn"); psi.ArgumentList.Add("-dn");
+		if (region is { } r) ClipExtractor.AppendSeekArgs(psi.ArgumentList, r);
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);
+		if (region is { } r2) {
+			psi.ArgumentList.Add("-t");
+			psi.ArgumentList.Add(r2.Duration.TotalSeconds.ToString(CultureInfo.InvariantCulture));
+		}
 		psi.ArgumentList.Add("-vf");
 		// Same filter chain the keyframe path used (verified frame-for-frame against a DaVinci
 		// per-frame reference export on 2026-07-18) — minus the -skip_frame nokey input option.
