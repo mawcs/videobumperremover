@@ -173,6 +173,23 @@ a catalog slot in without rework:
 
 ### 3.2 CLI surface (expandable)
 
+> **Amendment (2026-07-24) — mixed-density + pHash wired in; rigid corroboration dropped.** The
+> bullets below are the 2026-07-17 design as originally finalized; still accurate for the
+> single-density case (defaults reproduce it exactly). Since then: `--edge-boundary` and
+> `--sparse-interval` were added so `--clip-length` can exceed a small dense zone (mixed-density
+> sampling, `VBR.Core.Fingerprinting.MixedDensitySampler` — validated on Avatar's 47s intro);
+> `--detection-mode` gained `phash` (pHash alone, sole decision-maker) and `all` (visual+audio+phash,
+> visual still decides when it ran) — `--phash-presence-threshold` controls it, default 0.96;
+> `visual`/`audio`/`both` are unchanged. Internally, `match`/`remove` no longer extract the
+> reference/candidate clips via `ClipExtractor` for the visual/pHash path at all — they decode
+> directly from source via `MixedDensitySampler` (see `docs/iterativeplan.md`'s 2026-07-24 entries
+> for why: a chained stream-copy extraction was a real corruption vector on real media). **The
+> `[rigid …]` corroboration number is gone from the printed line and `--rigid-hit-threshold` is
+> removed** — `ScanEngine.TryMatchDenseFrames` assumes one uniform interval and was never adapted to
+> mixed-density frames; it never gated the decision, so this is a reporting loss only, accepted
+> deliberately (maintainer sign-off, 2026-07-24) rather than kept as a parallel single-density-only
+> code path.
+
 `vbr` is a multi-command root (it already is — `System.CommandLine`, see `VBR.CLI/Program.cs`).
 Grow it; don't fork a second tool:
 

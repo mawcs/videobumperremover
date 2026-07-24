@@ -512,6 +512,46 @@ was flagged right after the initial scaffold and fixed before anything else was 
       this validates the *sampling + matching primitive* the index will run on — persistence (the
       actual sidecar file) and the library-scan CLI itself remain open, hence this parent item
       stays unchecked.
+    - [x] **pHash added as a comparison signal (2026-07-23), then both pHash and mixed-density
+      wired into `vbr match`/`vbr remove` themselves (2026-07-24).** Previously both existed only
+      in `VBR.Core`/tests, zero references from `VBR.CLI`. Along the way, two real bugs surfaced
+      and were fixed — not scope creep, the actual blockers to trusting this on real media: (1)
+      `MixedDensitySampler` chained two stream-copy extractions per zone (whole region, then a
+      sub-zone out of *that* temp file) — a real corruption vector on real DVD-rip media (a `-sseof`
+      seek landing on non-monotonic source DTS silently produced a duration-inflated, padded
+      extract; a second stream-copy hop out of a re-encoded intermediate could produce an
+      outright-corrupt Matroska remux, crashing one real Daredevil episode). Fixed by decoding each
+      zone directly from the source in one ffmpeg process (`DenseFrameSampler`'s new region-aware
+      overload + `ClipExtractor.AppendSeekArgs`/`ClipRegion.BeforeEnd`) — no intermediate file at
+      all. (2) Separately, some real files' *video* stream ends measurably before the *container*'s
+      reported duration (confirmed via `ffprobe`: 2.8s gap on one Daredevil episode, audio-only
+      tail) — `-sseof` seeks against the container, so it can land past the last real frame; logged
+      as an open item below (not blocking, doesn't affect this project's actual bumper targets).
+      Full diagnosis + before/after numbers: `iterativeplan.md`'s 2026-07-24 entries.
+      **CLI change:** `match`/`remove` now sample directly via `MixedDensitySampler` instead of
+      `ClipExtractor`+`VisualBumperMatcher.Match` for the visual/pHash path (audio unchanged);
+      new `--edge-boundary`/`--sparse-interval` (mixed-density, defaults reproduce today's
+      single-density behavior exactly) and `--phash-presence-threshold`; `--detection-mode` gained
+      `phash` (pHash alone, genuinely the decision-maker — not just corroboration, per the
+      maintainer's direction) and `all` (visual+audio+phash); `--rigid-hit-threshold` and the
+      `[rigid …]` report line are **removed** (mixed-density has no rigid-corroboration path —
+      accepted deliberately, see `matcher-spec.md`'s 2026-07-24 amendment). Shared orchestration
+      (construct matcher(s), sample the clip once, compare each candidate) extracted into
+      `VBR.CLI.Commands.MatchingSession` so the growing 3-signal logic isn't duplicated between
+      `MatchCommand`/`RemoveCommand`.
+      **Re-validated live through the built CLI** (numbers now include `--clip-from` itself as a
+      candidate, per the existing "never silently exclude it" rule, so counts read N/N not
+      (N-1)/(N-1)): Daredevil end-stack (`--region end --clip-length 10s --sample-interval 0.2s`,
+      defaults for edge-boundary/sparse-interval) — **13/13 @ 99–100%** vs. 13 Doctor Who episodes
+      **0/13 @ ≤49%**; Avatar 47s intro (`--edge-boundary 20s --sparse-interval 4s
+      --sample-interval 0.5s`) — **20/20 @ 96–100%**; Caprica 5s end-card (defaults) — **19/19 @
+      93–100%**. `--detection-mode phash` alone confirmed to skip AI-component download/ONNX
+      entirely (`--verbose` shows no model-load lines) and, as expected from the earlier
+      primitive-level finding, under-performs badly as a standalone signal on the same Caprica
+      corpus (**2/19** matched). `--detection-mode all` confirmed to report all three details per
+      row with visual's verdict still winning. `--output`/`--dump-frames` confirmed working through
+      the new path. `vbr remove --file` smoke-tested end to end (non-destructively; output cleaned
+      up after).
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.

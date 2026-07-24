@@ -19,14 +19,19 @@ using System.CommandLine.Parsing;
 using System.Globalization;
 using System.Linq;
 using VBR.Core.Extraction;
+using VBR.Core.Fingerprinting;
 using VBR.Core.Matching;
 using VDF.Core.Utils;
 
 namespace VBR.CLI.Commands;
 
-/// <summary>Which signal(s) a command runs. Lowercase members — see
-/// VBR.Core.Extraction.ClipEdge for why.</summary>
-internal enum DetectionMode { visual, audio, both }
+/// <summary>Which signal(s) a command runs. Lowercase members — see VBR.Core.Extraction.ClipEdge
+/// for why. <c>both</c> (visual+audio) predates pHash and keeps its original meaning for backward
+/// compatibility; <c>all</c> adds pHash alongside both. <c>phash</c> alone makes pHash the sole
+/// decision-maker — genuinely alternate, not just corroboration, per the maintainer's direction —
+/// but be aware it has so far underperformed badly as a standalone signal in real testing (see
+/// --phash-presence-threshold's help text).</summary>
+internal enum DetectionMode { visual, audio, phash, both, all }
 
 /// <summary>
 /// Option definitions and parsing helpers shared by <c>match</c> and <c>remove</c> — per ADR
@@ -110,11 +115,36 @@ internal static class SharedOptions {
 	};
 
 	internal static readonly Option<TimeSpan> SampleInterval = new("--sample-interval") {
-		Description = "Visual: seconds between sampled frames — smaller is denser. Default 1s; " +
-			"short clips (under ~8s) need it as low as ~0.2s to have enough frames to match on " +
-			"— no floor is enforced, go as dense as needed.",
+		Description = "Visual/pHash: the dense interval — seconds between sampled frames nearest " +
+			"the true edge (see --edge-boundary) — smaller is denser. Default 1s; short clips " +
+			"(under ~8s) need it as low as ~0.2s to have enough frames to match on — no floor is " +
+			"enforced, go as dense as needed.",
 		DefaultValueFactory = _ => TimeSpan.FromSeconds(VisualBumperMatcher.DefaultSampleIntervalSeconds),
 		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VisualBumperMatcher.DefaultSampleIntervalSeconds)),
+	};
+
+	// No DefaultValueFactory for the same reason as SearchLength: the real default ("cover the
+	// whole clip/search window", i.e. always dense, today's exact single-density behavior) depends
+	// on --clip-length/--search-length, which aren't known yet when this Option is declared.
+	// TimeSpan.Zero means "unset"; resolved to TimeSpan.MaxValue in each command's action, which
+	// MixedDensitySampler.GatherFrames's own clamp (edgeBoundary > totalLength => totalLength)
+	// turns into "the entire window is dense" for whatever totalLength that particular call uses
+	// (clip-length for the reference clip, search-length for each candidate) — no separate
+	// single-density code path needed.
+	internal static readonly Option<TimeSpan> EdgeBoundary = new("--edge-boundary") {
+		Description = "Visual/pHash: how far from the true edge the dense zone extends; sampled " +
+			"sparser beyond it (see --sparse-interval). Default: the whole clip/search window is " +
+			"dense (today's single-density behavior) — set this smaller than --clip-length for a " +
+			"bumper long enough to need mixed-density sampling (e.g. a 47s intro with a 20s " +
+			"edge-boundary).",
+		CustomParser = r => r.Tokens.Count == 0 ? TimeSpan.Zero : ParseDurationArg(r, TimeSpan.Zero),
+	};
+
+	internal static readonly Option<TimeSpan> SparseInterval = new("--sparse-interval") {
+		Description = "Visual/pHash: sampling interval beyond --edge-boundary. Default: same as " +
+			"--sample-interval (irrelevant unless --edge-boundary is set smaller than " +
+			"--clip-length/--search-length, since the sparse zone never activates otherwise).",
+		CustomParser = r => r.Tokens.Count == 0 ? TimeSpan.Zero : ParseDurationArg(r, TimeSpan.Zero),
 	};
 
 	internal static readonly Option<float> PresenceThreshold = new("--presence-threshold") {
@@ -123,10 +153,14 @@ internal static class SharedOptions {
 		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultPresenceThreshold),
 	};
 
-	internal static readonly Option<float> RigidHitThreshold = new("--rigid-hit-threshold") {
-		Description = "Visual: cosine threshold for VDF's rigid corroborating matcher (report-only, never gates the decision).",
-		DefaultValueFactory = _ => VisualBumperMatcher.DefaultRigidHitThreshold,
-		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultRigidHitThreshold),
+	internal static readonly Option<float> PHashPresenceThreshold = new("--phash-presence-threshold") {
+		Description = "pHash: Hamming similarity (0-1) at or above which a clip frame counts as " +
+			"present in a candidate. Default matches VDF's own pHash duplicate gate (96%). Note: " +
+			"on real testing so far, pHash alone has a much narrower true/false-positive margin " +
+			"than visual and has missed real matches visual caught — treat --detection-mode phash " +
+			"as experimental, not a drop-in replacement for visual.",
+		DefaultValueFactory = _ => VisualBumperMatcher.DefaultPHashPresenceThreshold,
+		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultPHashPresenceThreshold),
 	};
 
 	internal static readonly Option<float> MinSimilarity = new("--min-similarity") {
@@ -136,8 +170,11 @@ internal static class SharedOptions {
 	};
 
 	internal static readonly Option<DetectionMode> Mode = new("--detection-mode") {
-		Description = "Which signal(s) to run (visual|audio|both). 'both' runs visual as the " +
-			"decision-maker and reports audio alongside as corroboration.",
+		Description = "Which signal(s) to run (visual|audio|phash|both|all). 'both' runs visual " +
+			"and audio (visual decides, audio corroborates) — the original two-signal meaning, " +
+			"kept for compatibility. 'all' adds pHash alongside both (visual still decides when " +
+			"it ran). 'phash' runs pHash alone as the sole decision-maker — see " +
+			"--phash-presence-threshold's note before relying on it.",
 		DefaultValueFactory = _ => DetectionMode.visual,
 	};
 

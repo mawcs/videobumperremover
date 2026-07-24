@@ -36,9 +36,10 @@ dotnet run --project VBR.CLI -- match --help
 ```
 
 Finds a bumper's presence across a library of videos — visual DINOv2 presence matching by
-default, audio as an opt-in accelerator (`--detection-mode visual|audio|both`). The reference
-clip is always extracted internally from a source video + a region — there is no way to pass a
-pre-cut clip file (see [`AGENTS.md`](../AGENTS.md) → "Clip extraction is the tool's job"):
+default, audio as an opt-in accelerator, pHash as an experimental alternate signal
+(`--detection-mode visual|audio|phash|both|all`). The reference clip is always sampled internally
+from a source video + a region — there is no way to pass a pre-cut clip file (see
+[`AGENTS.md`](../AGENTS.md) → "Clip extraction is the tool's job"):
 
 ```sh
 dotnet run --project VBR.CLI -- match --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 10s --sample-interval 0.2s --library "D:\Media\Show"
@@ -57,13 +58,21 @@ Key options (run `--help` for the full list):
 - `--clip-length` (required) / `--search-length` (defaults to clip length + 20s) /
   `--sample-interval` (default 1s; go as low as ~0.2s for short clips) — durations take a bare
   number of seconds or a suffix (`5.1s`, `200ms`).
+- `--edge-boundary` / `--sparse-interval` — for a bumper longer than a small dense zone (e.g. a
+  47s title sequence): `--edge-boundary` sets how far from the true edge stays dense
+  (`--sample-interval`), with everything beyond it sampled at `--sparse-interval`. Default: the
+  whole `--clip-length`/`--search-length` window is dense — today's plain single-density behavior
+  when these are left alone.
+- `--phash-presence-threshold` (default 0.96) — pHash's own presence gate, only relevant with
+  `--detection-mode phash|all`. Treat `phash` mode as experimental: on real testing it's had a
+  much narrower true/false-positive margin than visual and has missed real matches visual caught.
 - **Exactly one of `--library <folder>` or `--file <path>` is required.** `--library` is
   traversed **recursively by default**; `--no-recurse` searches only its top level (no effect
   with `--file`). Results print library-relative paths, or just the file name for `--file`.
 - `--output <file>` — also write the match report (parameter header + the same rows/summary as
   the console) to a file.
-- `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip/` + one numbered
-  folder per candidate) to inspect exactly what the visual matcher compared.
+- `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip-dense/`/`clip-sparse/`
+  plus one numbered folder per candidate) to inspect exactly what the visual/pHash matching compared.
 - `--verbose` — logs the resolved ONNX model path, per-file sampled/usable frame counts, each
   inference batch call, and the exact ffmpeg command lines run, to the console and to VDF's
   `log.txt` (next to the running executable, or the state folder if that's not writable). VDF's

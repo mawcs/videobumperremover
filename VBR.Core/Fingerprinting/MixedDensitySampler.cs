@@ -17,10 +17,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VDF.Core.AI;
+using VDF.Core.Utils;
 
 namespace VBR.Core.Fingerprinting;
 
@@ -57,7 +59,15 @@ public sealed class MixedDensitySampler : IDisposable {
 	// well under this for any bumper length this project targets.
 	const int MaxFramesPerZone = 400;
 
+	readonly bool verboseLogging;
 	OnnxEmbedder? embedder;
+
+	/// <param name="verboseLogging">Logs the resolved ONNX model path on first use (only if a
+	/// DINOv2-embedding method is actually called — <see cref="SamplePHash"/> never triggers it)
+	/// and, per file, sampled/usable frame counts and each inference batch call, via
+	/// <see cref="Logger"/> — same convention as <c>VisualBumperMatcher</c>'s <c>--verbose</c>
+	/// support.</param>
+	public MixedDensitySampler(bool verboseLogging = false) => this.verboseLogging = verboseLogging;
 
 	/// <summary>One quality-filtered sampled frame, tagged with its real position (seconds from
 	/// the start of the requested region) and not yet turned into any per-signal value.</summary>
@@ -76,7 +86,7 @@ public sealed class MixedDensitySampler : IDisposable {
 	/// just what survived. Null (the default) dumps nothing.</param>
 	internal static List<SampledFrame> GatherFrames(
 			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
-			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
+			string? dumpFramesDir = null, string? dumpLabel = null, bool verboseLogging = false, CancellationToken ct = default) {
 		if (totalLength <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(totalLength), "Total length must be positive.");
 		if (profile.DenseInterval <= TimeSpan.Zero || profile.SparseInterval <= TimeSpan.Zero)
@@ -101,32 +111,52 @@ public sealed class MixedDensitySampler : IDisposable {
 				? ClipRegion.At(TimeSpan.Zero, edgeBoundary)      // first edgeBoundary of the file
 				: ClipRegion.Tail(edgeBoundary);                  // last edgeBoundary of the file
 			AppendZone(sourcePath, denseRegion, profile.DenseInterval, denseZoneStart, frames,
-				DumpDir(dumpFramesDir, dumpLabel, "dense"), ct);
+				DumpDir(dumpFramesDir, dumpLabel, "dense"), "dense", verboseLogging, ct);
 		}
 		if (sparseLength > TimeSpan.Zero) {
 			ClipRegion sparseRegion = region == ClipEdge.begin
 				? ClipRegion.At(edgeBoundary, sparseLength)       // the sparseLength right after the dense zone
 				: ClipRegion.BeforeEnd(totalLength, sparseLength); // the sparseLength right before the dense zone
 			AppendZone(sourcePath, sparseRegion, profile.SparseInterval, sparseZoneStart, frames,
-				DumpDir(dumpFramesDir, dumpLabel, "sparse"), ct);
+				DumpDir(dumpFramesDir, dumpLabel, "sparse"), "sparse", verboseLogging, ct);
 		}
 
 		frames.Sort((a, b) => a.TimestampSeconds.CompareTo(b.TimestampSeconds));
+		if (verboseLogging)
+			Logger.Instance.Info($"[mixed-density] '{Path.GetFileName(sourcePath)}': {frames.Count} usable frame(s) total across both zones.");
 		return frames;
 	}
 
 	static string? DumpDir(string? dumpFramesDir, string? dumpLabel, string zone) =>
 		dumpFramesDir is null ? null : Path.Combine(dumpFramesDir, $"{dumpLabel}-{zone}");
 
+	// Only called by Sample/SampleWithPHash -- SamplePHash never touches AiComponents/ONNX at all,
+	// the whole point of offering pHash as a lightweight alternate mode.
+	void EnsureEmbedder() {
+		AiComponents.EnsureReady();
+		if (embedder is null) {
+			if (verboseLogging)
+				Logger.Instance.Info($"[mixed-density] Loading ONNX model: {AiComponents.ModelPath}");
+			embedder = new OnnxEmbedder(AiComponents.ModelPath);
+			if (verboseLogging)
+				Logger.Instance.Info("[mixed-density] ONNX inference session ready.");
+		}
+	}
+
 	static void AppendZone(string sourcePath, ClipRegion zone, TimeSpan interval, double zoneStartSeconds,
-			List<SampledFrame> frames, string? dumpDir, CancellationToken ct) {
+			List<SampledFrame> frames, string? dumpDir, string zoneName, bool verboseLogging, CancellationToken ct) {
 		byte[][] rgbFrames = DenseFrameSampler.SampleFrames(sourcePath, zone, interval.TotalSeconds, MaxFramesPerZone, ct);
 		if (dumpDir is not null) FrameDump.WritePngs(rgbFrames, dumpDir);
 		bool[] usable = FrameQuality.SelectUsable(rgbFrames);
+		int usableCount = 0;
 		for (int i = 0; i < rgbFrames.Length; i++) {
 			if (!usable[i]) continue;
+			usableCount++;
 			frames.Add(new SampledFrame(zoneStartSeconds + i * interval.TotalSeconds, rgbFrames[i]));
 		}
+		if (verboseLogging)
+			Logger.Instance.Info($"[mixed-density] '{Path.GetFileName(sourcePath)}' {zoneName} zone: {rgbFrames.Length} frame(s) " +
+				$"sampled @ {interval.TotalSeconds:0.###}s, {usableCount} usable after low-information filtering ({rgbFrames.Length - usableCount} dropped).");
 	}
 
 	/// <summary>
@@ -141,16 +171,18 @@ public sealed class MixedDensitySampler : IDisposable {
 	public IReadOnlyList<TimedFrame> Sample(
 			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
 			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
-		AiComponents.EnsureReady();
-		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
+		EnsureEmbedder();
 
-		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, ct);
+		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, verboseLogging, ct);
 		var result = new List<TimedFrame>(sampled.Count);
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
 		var batchTimestamps = new List<double>(OnnxEmbedder.MaxBatch);
+		int batchCount = 0;
 		void Flush() {
 			if (batch.Count == 0) return;
 			byte[][] vectors = embedder!.EmbedBatchQuantized(batch);
+			if (verboseLogging)
+				Logger.Instance.Info($"[mixed-density] ONNX inference: embedded batch #{++batchCount} ({vectors.Length} frames, {vectors[0].Length}-byte quantized vectors).");
 			for (int k = 0; k < vectors.Length; k++)
 				result.Add(new TimedFrame(batchTimestamps[k], vectors[k]));
 			batch.Clear();
@@ -182,17 +214,19 @@ public sealed class MixedDensitySampler : IDisposable {
 	public SampleResult SampleWithPHash(
 			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
 			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
-		AiComponents.EnsureReady();
-		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
+		EnsureEmbedder();
 
-		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, ct);
+		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, verboseLogging, ct);
 		var embeddings = new List<TimedFrame>(sampled.Count);
 		var hashes = new List<TimedPHash>(sampled.Count);
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
 		var batchTimestamps = new List<double>(OnnxEmbedder.MaxBatch);
+		int batchCount = 0;
 		void Flush() {
 			if (batch.Count == 0) return;
 			byte[][] vectors = embedder!.EmbedBatchQuantized(batch);
+			if (verboseLogging)
+				Logger.Instance.Info($"[mixed-density] ONNX inference: embedded batch #{++batchCount} ({vectors.Length} frames, {vectors[0].Length}-byte quantized vectors).");
 			for (int k = 0; k < vectors.Length; k++)
 				embeddings.Add(new TimedFrame(batchTimestamps[k], vectors[k]));
 			batch.Clear();
@@ -206,6 +240,20 @@ public sealed class MixedDensitySampler : IDisposable {
 		}
 		Flush();
 		return new SampleResult(embeddings, hashes);
+	}
+
+	/// <summary>
+	/// pHash only — never touches <see cref="AiComponents"/>/ONNX at all (no model download, no
+	/// inference session). This is what makes pHash a genuinely lightweight alternate mode rather
+	/// than "DINOv2 plus a bit more": a caller that only wants pHash pays no ONNX cost whatsoever.
+	/// </summary>
+	/// <param name="dumpFramesDir">See <see cref="GatherFrames"/>'s doc comment.</param>
+	/// <param name="dumpLabel">See <see cref="Sample"/>'s doc comment.</param>
+	public IReadOnlyList<TimedPHash> SamplePHash(
+			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
+			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
+		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, verboseLogging, ct);
+		return sampled.Select(f => new TimedPHash(f.TimestampSeconds, FrameHashing.ComputePHash(f.Rgb24))).ToList();
 	}
 
 	public void Dispose() => embedder?.Dispose();

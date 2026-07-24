@@ -4,6 +4,64 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Wiring pHash + mixed-density sampling into `vbr match`/`vbr remove` (2026-07-24)
+
+**Status: implemented and validated.** Follow-up to the direct-from-source decode fix below —
+both pHash and `MixedDensitySampler` existed only in `VBR.Core`/`VBR.Tests` (zero references from
+`VBR.CLI`, confirmed by grep before starting). Planned in plan mode first (scope approved by the
+maintainer, including two explicit calls: pHash is a genuinely selectable **alternate/primary**
+detection mode, not just report-only corroboration; and mixed-density wiring is bundled into this
+same pass rather than deferred).
+
+**Design, in one sentence each:**
+
+- `DetectionMode` gained `phash` (pHash alone, sole decision-maker) and `all` (visual+audio+phash,
+  visual still wins when it ran); `visual`/`audio`/`both` keep their exact original meaning.
+- `--edge-boundary`/`--sparse-interval` (new) default to "the whole clip/search window is dense" —
+  implemented as clamping to whatever `totalLength` each `MixedDensitySampler` call uses (its own
+  existing clamp, no new logic), so **not touching these flags reproduces today's single-density
+  behavior exactly** — mixed-density is additive, not a separate mode to opt into via some other switch.
+- `MixedDensitySampler.SamplePHash` (new) never touches `AiComponents`/ONNX at all — the point of
+  offering pHash as a lightweight alternate: `--detection-mode phash` doesn't download or load the
+  model.
+- `match`/`remove`'s per-file orchestration (construct matcher(s) → sample the clip once → compare
+  each candidate) was growing a third signal and a sampler lifecycle on top of code the two
+  commands already duplicated verbatim (a deliberate choice at the time — see `RemoveCommand`'s own
+  doc comment). Extracted into `VBR.CLI.Commands.MatchingSession` — both commands call it; each
+  keeps its own row type/report/removal step, which genuinely differ.
+- **Rigid-matcher corroboration (`--rigid-hit-threshold`, the `[rigid …]` report line) is removed.**
+  It was already reported as absent from the mixed-density path when that path was first built
+  (`ScanEngine.TryMatchDenseFrames` assumes one uniform interval, never adapted); switching the CLI
+  onto mixed-density surfaces that gap in real output. Never gated the decision, so no correctness
+  change — a visible line disappearing, flagged explicitly and signed off on rather than dropped
+  silently in the diff (maintainer: "I'm good with losing the rigid output").
+- Audio is untouched — still needs `ClipExtractor.ExtractToTemp` for its reference clip
+  (Chromaprint fingerprints a file, not a frame stream); `MatchingSession` only runs that
+  extraction when audio is actually requested.
+
+**Re-validated live through the built CLI** (`VBR.CLI/bin/Debug/net10.0/VBR.CLI.exe`, not just unit
+tests), reproducing/confirming every number already recorded at the primitive level:
+
+| Case | Command shape | Result |
+|---|---|---|
+| Daredevil end-stack (default edge-boundary/sparse — single-density) | `match --region end --clip-length 10s --sample-interval 0.2s --library ...` | **13/13 @ 99–100%** vs. Doctor Who **0/13 @ ≤49%** |
+| Avatar 47s intro (mixed-density) | `match --region begin --clip-length 47s --edge-boundary 20s --sample-interval 0.5s --sparse-interval 4s --library ...` | **20/20 @ 96–100%** |
+| Caprica 5s end-card (default = single-density) | `match --region end --clip-length 5s --sample-interval 0.2s --library ...` | **19/19 @ 93–100%** |
+| `--detection-mode phash` alone, Caprica corpus | same as above + `--detection-mode phash --verbose` | no ONNX/model-load lines logged; **2/19** matched (expected — matches the earlier primitive-level finding that pHash under-performs badly standalone on this bumper) |
+| `--detection-mode all`, one file | adds `--detection-mode all` | all three details (`visual: … \| audio: … \| phash: …`) printed on one row; decision follows visual |
+| `--output`/`--dump-frames` | both flags together | report header shows new fields correctly; `clip-dense/`/per-candidate PNG dumps written |
+| `vbr remove --file`, stream-copy | smoke test only | `REMOVED` row printed, sibling `.vbr.mkv` + manifest written correctly; cleaned up after (non-destructive, original untouched) |
+
+**Files:** new — `VBR.CLI/Commands/MatchingSession.cs`. Modified — `VBR.Core/Fingerprinting/MixedDensitySampler.cs`
+(`SamplePHash`, verbose logging), `VBR.CLI/Commands/SharedOptions.cs` (`DetectionMode` extended,
+`EdgeBoundary`/`SparseInterval`/`PHashPresenceThreshold` options, `RigidHitThreshold` removed),
+`VBR.CLI/Commands/MatchCommand.cs`/`RemoveCommand.cs` (rewritten onto `MatchingSession`, `MatchRow`/
+`RemoveRow` gained `PHashDetail`, report headers updated). No changes to `VisualBumperMatcher`,
+`AudioBumperMatcher`, `ClipRemover`, or `ClipExtractor` itself (beyond what the prior entry below
+already made).
+
+---
+
 ## MixedDensitySampler: direct-from-source decode, no chained extraction (2026-07-24)
 
 **Status: implemented and validated.** Follow-up to the pHash addition below — testing a real 5s

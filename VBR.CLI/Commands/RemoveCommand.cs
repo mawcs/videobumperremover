@@ -18,9 +18,8 @@ using System.CommandLine;
 using System.Globalization;
 using System.Text;
 using VBR.Core.Extraction;
-using VBR.Core.Matching;
+using VBR.Core.Fingerprinting;
 using VBR.Core.Removal;
-using VDF.Core.AI;
 using static VBR.CLI.Commands.SharedOptions;
 
 namespace VBR.CLI.Commands;
@@ -29,15 +28,16 @@ namespace VBR.CLI.Commands;
 /// plus the removal outcome — kept as its own type rather than extending <c>MatchRow</c> since
 /// the extra fields (<c>OutputPath</c>, <c>RemovalError</c>) are meaningless for <c>match</c> and
 /// would just be dead weight there.</summary>
-internal sealed record RemoveRow(string File, bool Present, string? VisualDetail, string? AudioDetail,
+internal sealed record RemoveRow(string File, bool Present, string? VisualDetail, string? AudioDetail, string? PHashDetail,
 		string? Error, string? OutputPath, string? RemovalError) {
 	internal string ToLine() {
 		if (Error is not null)
 			return $"     {File,-48}  (error: {Error})";
-		var parts = new List<string>(2);
-		if (VisualDetail is not null) parts.Add(VisualDetail);
-		if (AudioDetail is not null) parts.Add($"[{AudioDetail}]");
-		string detail = string.Join("  ", parts);
+		var parts = new List<string>(3);
+		if (VisualDetail is not null) parts.Add($"visual: {VisualDetail}");
+		if (AudioDetail is not null) parts.Add($"audio: {AudioDetail}");
+		if (PHashDetail is not null) parts.Add($"phash: {PHashDetail}");
+		string detail = string.Join("  |  ", parts);
 		if (!Present)
 			return $"     {File,-48}  {detail}";
 		if (RemovalError is not null)
@@ -84,8 +84,10 @@ internal static class RemoveCommand {
 		cmd.Options.Add(ClipLength);
 		cmd.Options.Add(SearchLength);
 		cmd.Options.Add(SampleInterval);
+		cmd.Options.Add(EdgeBoundary);
+		cmd.Options.Add(SparseInterval);
 		cmd.Options.Add(PresenceThreshold);
-		cmd.Options.Add(RigidHitThreshold);
+		cmd.Options.Add(PHashPresenceThreshold);
 		cmd.Options.Add(MinSimilarity);
 		cmd.Options.Add(Mode);
 		cmd.Options.Add(Library);
@@ -107,8 +109,15 @@ internal static class RemoveCommand {
 			if (searchLength <= TimeSpan.Zero)
 				searchLength = clipLength + TimeSpan.FromSeconds(20);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
+			TimeSpan edgeBoundary = parseResult.GetValue(EdgeBoundary);
+			if (edgeBoundary <= TimeSpan.Zero)
+				edgeBoundary = TimeSpan.MaxValue;
+			TimeSpan sparseInterval = parseResult.GetValue(SparseInterval);
+			if (sparseInterval <= TimeSpan.Zero)
+				sparseInterval = sampleInterval;
+			var profile = new EdgeDensityProfile(edgeBoundary, sampleInterval, sparseInterval);
 			float presenceThreshold = parseResult.GetValue(PresenceThreshold);
-			float rigidHitThreshold = parseResult.GetValue(RigidHitThreshold);
+			float phashPresenceThreshold = parseResult.GetValue(PHashPresenceThreshold);
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
 			DetectionMode mode = parseResult.GetValue(Mode);
 			var library = parseResult.GetValue(Library);
@@ -132,108 +141,76 @@ internal static class RemoveCommand {
 					"Note: begin-region stream-copy removal does not realign subtitle cues — " +
 					"cues will run out of sync with the removed duration. Use --re-encode true " +
 					"(the default) for correct subtitle timing.");
+			if (dumpFrames is not null && mode is DetectionMode.audio)
+				Console.Error.WriteLine("Note: --dump-frames applies to visual/pHash matching only; --detection-mode audio dumps nothing.");
 
-			VisualBumperMatcher? visual = null;
-			try {
-				if (dumpFrames is not null && mode is DetectionMode.audio)
-					Console.Error.WriteLine("Note: --dump-frames applies to visual matching only; --detection-mode audio dumps nothing.");
-				if (mode is DetectionMode.visual or DetectionMode.both) {
-					if (!AiComponents.IsReady) {
-						Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
-						await AiComponents.DownloadAsync(progress: null, ct);
-						Console.Error.WriteLine("AI components ready.");
-					}
-					visual = new VisualBumperMatcher(sampleInterval.TotalSeconds, presenceThreshold, rigidHitThreshold,
-						dumpFramesDir: dumpFrames?.FullName, verboseLogging: verbose);
-				}
-				AudioBumperMatcher? audio = mode is DetectionMode.audio or DetectionMode.both
-					? new AudioBumperMatcher(minSimilarity, verboseLogging: verbose)
-					: null;
+			(MatchingSession? session, string? prepareError) = await MatchingSession.PrepareAsync(
+				mode, clipFrom, region, clipLength, profile, presenceThreshold, phashPresenceThreshold,
+				minSimilarity, dumpFrames?.FullName, verbose, ct);
+			if (session is null) {
+				Console.Error.WriteLine(prepareError);
+				return 1;
+			}
 
-				ExtractedClip referenceClip;
-				try {
-					referenceClip = ClipExtractor.ExtractToTemp(clipFrom.FullName, ClipRegion.For(region, clipLength), verbose, ct);
-				}
-				catch (Exception ex) when (ex is FileNotFoundException or ArgumentOutOfRangeException or InvalidOperationException) {
-					Console.Error.WriteLine($"Error: {ex.Message}");
-					return 1;
-				}
+			using (session) {
+				// --clip-from is NOT excluded: it's a normal candidate that (almost
+				// certainly) also contains the bumper it was enrolled from — skipping it
+				// silently left its own copy of the bumper never removed, with no indication
+				// anywhere that it had been skipped.
+				var candidates = candidatePaths
+					// A prior run's own output ("name.vbr.ext") must never be re-matched/re-cut.
+					.Where(f => !Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", StringComparison.OrdinalIgnoreCase))
+					.ToList();
 
-				using (referenceClip) {
-					if (visual is not null) {
-						try {
-							visual.PrepareClip(referenceClip.Path, ct);
-						}
-						catch (InvalidOperationException ex) {
-							Console.Error.WriteLine($"Error: {ex.Message}");
-							return 1;
-						}
-					}
-
-					ClipRegion searchRegion = ClipRegion.For(region, searchLength);
-					// --clip-from is NOT excluded: it's a normal candidate that (almost
-					// certainly) also contains the bumper it was enrolled from — skipping it
-					// silently left its own copy of the bumper never removed, with no indication
-					// anywhere that it had been skipped.
-					var candidates = candidatePaths
-						// A prior run's own output ("name.vbr.ext") must never be re-matched/re-cut.
-						.Where(f => !Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", StringComparison.OrdinalIgnoreCase))
-						.ToList();
-
-					int matchCount = 0;
-					int removedCount = 0;
-					int comparedCount = 0;
-					var rows = new List<RemoveRow>(candidates.Count);
-					foreach (string file in candidates) {
-						ct.ThrowIfCancellationRequested();
-						string display = DisplayName(file, libraryRoot);
-						MatchResult? visualResult = null;
-						MatchResult? audioResult = null;
-						RemoveRow row;
-						try {
-							if (visual != null) visualResult = visual.Match(referenceClip.Path, file, searchRegion, ct);
-							if (audio != null) audioResult = audio.Match(referenceClip.Path, file, searchRegion, ct);
-							comparedCount++;
-							bool present = visualResult?.Present ?? audioResult?.Present ?? false;
-							string? outputPath = null;
-							string? removalError = null;
-							if (present) {
-								matchCount++;
-								try {
-									var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
-										visualResult?.Detail ?? audioResult?.Detail, verbose, ct);
-									outputPath = removed.OutputPath;
-									removedCount++;
-								}
-								catch (Exception ex) {
-									removalError = ex.Message;
-								}
+				int matchCount = 0;
+				int removedCount = 0;
+				int comparedCount = 0;
+				int dumpIndex = 0;
+				var rows = new List<RemoveRow>(candidates.Count);
+				foreach (string file in candidates) {
+					ct.ThrowIfCancellationRequested();
+					string display = DisplayName(file, libraryRoot);
+					string dumpLabel = $"{++dumpIndex:000}-{Path.GetFileNameWithoutExtension(file)}";
+					RemoveRow row;
+					try {
+						SignalResult result = session.Compare(file, searchLength, dumpLabel, ct);
+						comparedCount++;
+						string? outputPath = null;
+						string? removalError = null;
+						if (result.Present) {
+							matchCount++;
+							try {
+								var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
+									result.Visual?.Detail ?? result.Audio?.Detail ?? result.PHash?.Detail, verbose, ct);
+								outputPath = removed.OutputPath;
+								removedCount++;
 							}
-							row = new RemoveRow(display, present, visualResult?.Detail, audioResult?.Detail, null, outputPath, removalError);
+							catch (Exception ex) {
+								removalError = ex.Message;
+							}
 						}
-						catch (Exception ex) {
-							row = new RemoveRow(display, false, null, null, ex.Message, null, null);
-						}
-						rows.Add(row);
-						Console.WriteLine(row.ToLine());
+						row = new RemoveRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail,
+							null, outputPath, removalError);
 					}
-
-					string summary = $"{matchCount}/{comparedCount} file(s) matched, {removedCount} removed" +
-						(matchCount > removedCount ? $" ({matchCount - removedCount} failed)." : ".") +
-						(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors.)" : "");
-					Console.WriteLine();
-					Console.WriteLine(summary);
-
-					if (output is not null && !WriteReport(output, rows, summary,
-							clipFrom, region, clipLength, searchLength, sampleInterval, mode,
-							presenceThreshold, rigidHitThreshold, minSimilarity, library, targetFile, recurse, removalMode))
-						return 1;
+					catch (Exception ex) {
+						row = new RemoveRow(display, false, null, null, null, ex.Message, null, null);
+					}
+					rows.Add(row);
+					Console.WriteLine(row.ToLine());
 				}
-				return 0;
+
+				string summary = $"{matchCount}/{comparedCount} file(s) matched, {removedCount} removed" +
+					(matchCount > removedCount ? $" ({matchCount - removedCount} failed)." : ".") +
+					(candidates.Count > comparedCount ? $" ({candidates.Count - comparedCount} skipped with errors.)" : "");
+				Console.WriteLine();
+				Console.WriteLine(summary);
+
+				if (output is not null && !WriteReport(output, rows, summary,
+						clipFrom, region, clipLength, searchLength, sampleInterval, edgeBoundary, sparseInterval, mode,
+						presenceThreshold, phashPresenceThreshold, minSimilarity, library, targetFile, recurse, removalMode))
+					return 1;
 			}
-			finally {
-				visual?.Dispose();
-			}
+			return 0;
 		});
 
 		return cmd;
@@ -241,17 +218,19 @@ internal static class RemoveCommand {
 
 	static bool WriteReport(FileInfo output, IReadOnlyList<RemoveRow> rows, string summary,
 			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
-			TimeSpan sampleInterval, DetectionMode mode, float presenceThreshold,
-			float rigidHitThreshold, float minSimilarity, DirectoryInfo? library, FileInfo? targetFile,
-			bool recurse, RemovalMode removalMode) {
+			TimeSpan sampleInterval, TimeSpan edgeBoundary, TimeSpan sparseInterval, DetectionMode mode,
+			float presenceThreshold, float phashPresenceThreshold, float minSimilarity,
+			DirectoryInfo? library, FileInfo? targetFile, bool recurse, RemovalMode removalMode) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr remove report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine($"clip-from:      {clipFrom.FullName}");
 		report.AppendLine($"region: {region}   clip-length: {FormatSeconds(clipLength)}   " +
 			$"search-length: {FormatSeconds(searchLength)}   sample-interval: {FormatSeconds(sampleInterval)}");
+		report.AppendLine($"edge-boundary: {(edgeBoundary == TimeSpan.MaxValue ? "(whole window, single-density)" : FormatSeconds(edgeBoundary))}   " +
+			$"sparse-interval: {FormatSeconds(sparseInterval)}");
 		report.AppendLine(string.Create(CultureInfo.InvariantCulture,
 			$"detection-mode: {mode}   presence-threshold: {presenceThreshold:0.###}   " +
-			$"rigid-hit-threshold: {rigidHitThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
+			$"phash-presence-threshold: {phashPresenceThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
 		report.AppendLine(targetFile is not null
 			? $"file:           {targetFile.FullName}"
 			: $"library:        {library!.FullName}   ({(recurse ? "recursive" : "top level only")})");
