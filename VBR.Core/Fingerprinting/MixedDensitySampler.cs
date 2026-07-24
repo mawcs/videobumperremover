@@ -16,7 +16,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VDF.Core.AI;
 
@@ -54,8 +56,14 @@ public sealed class MixedDensitySampler : IDisposable {
 	/// <see cref="EdgeDensityProfile.EdgeBoundary"/> nearest the true edge, sparsely sampled the
 	/// rest of the way. Signal-agnostic — no embedding happens here (see the class doc comment).
 	/// </summary>
+	/// <param name="dumpFramesDir">Diagnostic: when set, every sampled frame is written as a PNG
+	/// under <c>{dumpFramesDir}/{dumpLabel}-dense</c> / <c>-sparse</c> via <see cref="FrameDump"/>,
+	/// same convention as <c>VisualBumperMatcher</c>'s dump — written pre-filter (before
+	/// <see cref="FrameQuality.SelectUsable"/> runs), so the dump shows the unfiltered truth, not
+	/// just what survived. Null (the default) dumps nothing.</param>
 	internal static List<SampledFrame> GatherFrames(
-			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile, CancellationToken ct = default) {
+			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
+			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
 		if (totalLength <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(totalLength), "Total length must be positive.");
 		if (profile.DenseInterval <= TimeSpan.Zero || profile.SparseInterval <= TimeSpan.Zero)
@@ -78,19 +86,25 @@ public sealed class MixedDensitySampler : IDisposable {
 
 		if (edgeBoundary > TimeSpan.Zero)
 			AppendZone(whole.Path, ClipRegion.At(TimeSpan.FromSeconds(denseZoneStart), edgeBoundary),
-				profile.DenseInterval, denseZoneStart, frames, ct);
+				profile.DenseInterval, denseZoneStart, frames,
+				DumpDir(dumpFramesDir, dumpLabel, "dense"), ct);
 		if (sparseLength > TimeSpan.Zero)
 			AppendZone(whole.Path, ClipRegion.At(TimeSpan.FromSeconds(sparseZoneStart), sparseLength),
-				profile.SparseInterval, sparseZoneStart, frames, ct);
+				profile.SparseInterval, sparseZoneStart, frames,
+				DumpDir(dumpFramesDir, dumpLabel, "sparse"), ct);
 
 		frames.Sort((a, b) => a.TimestampSeconds.CompareTo(b.TimestampSeconds));
 		return frames;
 	}
 
+	static string? DumpDir(string? dumpFramesDir, string? dumpLabel, string zone) =>
+		dumpFramesDir is null ? null : Path.Combine(dumpFramesDir, $"{dumpLabel}-{zone}");
+
 	static void AppendZone(string wholeRegionPath, ClipRegion zone, TimeSpan interval, double zoneStartSeconds,
-			List<SampledFrame> frames, CancellationToken ct) {
+			List<SampledFrame> frames, string? dumpDir, CancellationToken ct) {
 		using ExtractedClip zoneClip = ClipExtractor.ExtractToTemp(wholeRegionPath, zone, ct: ct);
 		byte[][] rgbFrames = DenseFrameSampler.SampleFrames(zoneClip.Path, interval.TotalSeconds, MaxFramesPerZone, ct);
+		if (dumpDir is not null) FrameDump.WritePngs(rgbFrames, dumpDir);
 		bool[] usable = FrameQuality.SelectUsable(rgbFrames);
 		for (int i = 0; i < rgbFrames.Length; i++) {
 			if (!usable[i]) continue;
@@ -103,12 +117,17 @@ public sealed class MixedDensitySampler : IDisposable {
 	/// batched the same way <c>VisualBumperMatcher.Embed</c> batches today. Construct one instance
 	/// and reuse it across a run — the ONNX session is owned for this instance's lifetime.
 	/// </summary>
+	/// <param name="dumpFramesDir">See <see cref="GatherFrames"/>'s doc comment.</param>
+	/// <param name="dumpLabel">Identifies this call's frames within <paramref name="dumpFramesDir"/>
+	/// (e.g. <c>"clip"</c> or <c>"003-SomeEpisode"</c>); required when <paramref name="dumpFramesDir"/>
+	/// is set.</param>
 	public IReadOnlyList<TimedFrame> Sample(
-			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile, CancellationToken ct = default) {
+			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
+			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
 		AiComponents.EnsureReady();
 		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
 
-		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, ct);
+		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, ct);
 		var result = new List<TimedFrame>(sampled.Count);
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
 		var batchTimestamps = new List<double>(OnnxEmbedder.MaxBatch);
@@ -141,12 +160,15 @@ public sealed class MixedDensitySampler : IDisposable {
 	/// docs/decisions/0006-edge-focused-fingerprinting.md's 2026-07-21 amendment). Does not change
 	/// or replace <see cref="Sample"/>.
 	/// </summary>
+	/// <param name="dumpFramesDir">See <see cref="GatherFrames"/>'s doc comment.</param>
+	/// <param name="dumpLabel">See <see cref="Sample"/>'s doc comment.</param>
 	public SampleResult SampleWithPHash(
-			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile, CancellationToken ct = default) {
+			string sourcePath, ClipEdge region, TimeSpan totalLength, EdgeDensityProfile profile,
+			string? dumpFramesDir = null, string? dumpLabel = null, CancellationToken ct = default) {
 		AiComponents.EnsureReady();
 		embedder ??= new OnnxEmbedder(AiComponents.ModelPath);
 
-		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, ct);
+		List<SampledFrame> sampled = GatherFrames(sourcePath, region, totalLength, profile, dumpFramesDir, dumpLabel, ct);
 		var embeddings = new List<TimedFrame>(sampled.Count);
 		var hashes = new List<TimedPHash>(sampled.Count);
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);

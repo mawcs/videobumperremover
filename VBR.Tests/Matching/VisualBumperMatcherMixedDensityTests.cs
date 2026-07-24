@@ -42,6 +42,11 @@
 //
 // Optional: $env:BUMPER_MIXED_NEGATIVE_DIR (a folder of unrelated content -- e.g. Doctor Who or
 // Daredevil -- asserted to produce zero matches).
+//
+// Optional: $env:BUMPER_MIXED_DUMP_FRAMES_DIR -- writes every sampled frame as a PNG (pre-filter,
+// so low-information rejects are visible too) under "<dir>/clip-dense", "<dir>/clip-sparse", and
+// per candidate "<dir>/NNN-<filename>-dense"/"-sparse" ("[negative]"-prefixed candidates get an
+// "n" suffix on the index so they don't collide with the positive corpus's numbering).
 
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
@@ -81,12 +86,18 @@ public class VisualBumperMatcherMixedDensityTests {
 		var profile = new EdgeDensityProfile(
 			TimeSpan.FromSeconds(edgeBoundarySeconds), TimeSpan.FromSeconds(denseIntervalSeconds), TimeSpan.FromSeconds(sparseIntervalSeconds));
 
+		string? dumpFramesDir = Environment.GetEnvironmentVariable("BUMPER_MIXED_DUMP_FRAMES_DIR");
+		if (!string.IsNullOrWhiteSpace(dumpFramesDir))
+			_out.WriteLine($"Dumping every sampled frame (pre-filter) under: {dumpFramesDir}");
+		else
+			dumpFramesDir = null;
+
 		using var sampler = new MixedDensitySampler();
 		// Only MatchMixedDensity is used -- it never triggers this instance's own ONNX session,
 		// so this doesn't double the AI components this test loads.
 		using var matcher = new VisualBumperMatcher();
 
-		MixedDensitySampler.SampleResult clipSample = sampler.SampleWithPHash(clipEpisode!, region, totalLength, profile);
+		MixedDensitySampler.SampleResult clipSample = sampler.SampleWithPHash(clipEpisode!, region, totalLength, profile, dumpFramesDir, "clip");
 		IReadOnlyList<TimedFrame> clipFrames = clipSample.Embeddings;
 		IReadOnlyList<TimedPHash> clipHashes = clipSample.PHashes;
 		Skip.If(clipFrames.Count == 0,
@@ -96,6 +107,24 @@ public class VisualBumperMatcherMixedDensityTests {
 			$"({profile.EdgeBoundary.TotalSeconds}s dense @ {profile.DenseInterval.TotalSeconds}s, " +
 			$"{(totalLength - profile.EdgeBoundary).TotalSeconds}s sparse @ {profile.SparseInterval.TotalSeconds}s).");
 
+		// A single unreadable/corrupted candidate (a real hazard scanning a personal library --
+		// ClipExtractor already retries stream-copy corruption once, but not every source file is
+		// salvageable) must not crash the whole comparison run. Caught per file and reported
+		// separately from real dino/phash results rather than counted as an (absent) match either
+		// way -- an extraction failure is not evidence of anything about the bumper.
+		(string File, MatchResult Dino, MatchResult PHash)? TrySample(string candidate, string dumpLabel) {
+			try {
+				MixedDensitySampler.SampleResult candidateSample = sampler.SampleWithPHash(candidate, region, totalLength, profile, dumpFramesDir, dumpLabel);
+				MatchResult dino = matcher.MatchMixedDensity(clipFrames, candidateSample.Embeddings);
+				MatchResult phash = VisualBumperMatcher.MatchMixedDensityPHash(clipHashes, candidateSample.PHashes);
+				return (candidate, dino, phash);
+			}
+			catch (Exception e) {
+				_out.WriteLine($"[extract/decode FAILED] {Path.GetFileName(candidate)}: {e.Message}");
+				return null;
+			}
+		}
+
 		var episodes = Directory.EnumerateFiles(episodesDir!)
 			.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
 			.Where(f => !string.Equals(Path.GetFullPath(f), Path.GetFullPath(clipEpisode!), StringComparison.OrdinalIgnoreCase))
@@ -103,12 +132,9 @@ public class VisualBumperMatcherMixedDensityTests {
 			.ToList();
 		Skip.If(episodes.Count == 0, "No other episode files found in BUMPER_EPISODES_DIR.");
 
-		var results = episodes.Select(ep => {
-			MixedDensitySampler.SampleResult candidateSample = sampler.SampleWithPHash(ep, region, totalLength, profile);
-			MatchResult dino = matcher.MatchMixedDensity(clipFrames, candidateSample.Embeddings);
-			MatchResult phash = VisualBumperMatcher.MatchMixedDensityPHash(clipHashes, candidateSample.PHashes);
-			return (File: ep, Dino: dino, PHash: phash);
-		}).ToList();
+		var results = episodes
+			.Select((f, i) => TrySample(f, $"{i:000}-{Path.GetFileNameWithoutExtension(f)}"))
+			.Where(r => r is not null).Select(r => r!.Value).ToList();
 		foreach (var (file, dino, phash) in results.OrderByDescending(r => r.Dino.BestScore))
 			_out.WriteLine($"{Path.GetFileName(file),-56}  dino: {dino.Detail}  |  phash: {phash.Detail}");
 
@@ -127,12 +153,9 @@ public class VisualBumperMatcherMixedDensityTests {
 				.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
 				.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
 				.ToList();
-			var negativeResults = negatives.Select(f => {
-				MixedDensitySampler.SampleResult candidateSample = sampler.SampleWithPHash(f, region, totalLength, profile);
-				MatchResult dino = matcher.MatchMixedDensity(clipFrames, candidateSample.Embeddings);
-				MatchResult phash = VisualBumperMatcher.MatchMixedDensityPHash(clipHashes, candidateSample.PHashes);
-				return (File: f, Dino: dino, PHash: phash);
-			}).ToList();
+			var negativeResults = negatives
+				.Select((f, i) => TrySample(f, $"{i:000}n-{Path.GetFileNameWithoutExtension(f)}"))
+				.Where(r => r is not null).Select(r => r!.Value).ToList();
 			foreach (var (file, dino, phash) in negativeResults.OrderByDescending(r => r.Dino.BestScore))
 				_out.WriteLine($"[negative] {Path.GetFileName(file),-46}  dino: {dino.Detail}  |  phash: {phash.Detail}");
 

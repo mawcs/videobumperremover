@@ -409,6 +409,21 @@ was flagged right after the initial scaffold and fixed before anything else was 
   floor legitimately higher than the old ≤33% keyframe-only baseline; see the 2026-07-18 "FIX
   VALIDATED" entry in `research/vdf-evaluation.md`). Presence rule and all default thresholds
   unchanged; 5 new `FrameQuality` unit tests.
+- [ ] **Static/low-detail short bumpers may produce zero usable frames (flagged 2026-07-23, no
+  repro in hand yet).** `FrameQuality`'s near-uniform guard (calibrated for the 2026-07-18
+  black-frame fix, above) can legitimately reject a genuinely static end-card: if the whole bumper
+  is one still image with no fade/motion, dense sampling collapses to effectively one distinct
+  frame, and if *that* frame is also low-detail (flat background, minimal text/logo), it can fail
+  the uniform-detail guard too — zero usable frames, the same loud `PrepareClip`/`GatherFrames`
+  failure as an all-black clip, but from real content, not extraction corruption (and unlike the
+  extraction-corruption case, no re-encode retry can fix it). Caprica's ~5s UCP end-card survives
+  today only because it has motion (rings converging, text fade-in) yielding several distinct,
+  sufficiently-detailed frames — see the frame dump in the 2026-07-23 mixed-density/pHash session.
+  A bumper that's static for its *entire* duration wouldn't have that margin. Needs a real static
+  bumper to design against before attempting a fix; candidate directions once one exists: relax
+  `MinDetail` when very few frames survive at all (today it applies the same bar whether one frame
+  is borderline or one-of-many is), or widen the sampled window so more of any fade-in/out is
+  captured.
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005 and
   **[`design/matcher-spec.md`](design/matcher-spec.md)** — the authoritative "definition of done."
   Read the spec first: the PRIMARY matcher is the visual DINOv2 presence path, audio is a secondary

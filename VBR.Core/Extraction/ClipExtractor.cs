@@ -72,7 +72,10 @@ public readonly struct ExtractedClip : IDisposable {
 /// the reference bumper clip out of a source video, and by the visual matcher to isolate each
 /// candidate's search window before the expensive decode+embed step. Stream-copy is
 /// keyframe-bound, so the actual start may land slightly earlier than requested; that's fine, we
-/// only ever need a generous rough region, per docs/design/bumper-catalog.md.
+/// only ever need a generous rough region, per docs/design/bumper-catalog.md. Stream-copy that
+/// lands on corrupted source timestamps is a different, non-cosmetic failure mode — see
+/// <see cref="Extract"/>'s doc comment for the duration-sanity-check + re-encode fallback that
+/// catches it.
 /// </summary>
 public static class ClipExtractor {
 	/// <summary>Extensions this project treats as video files.</summary>
@@ -102,11 +105,50 @@ public static class ClipExtractor {
 		return new ExtractedClip(outputPath);
 	}
 
+	// A requested-vs-actual gap this far past normal keyframe-snap slack (a fraction of a second —
+	// see the removal path's own ~0.2s/1s margins) means stream-copy didn't just round to a nearby
+	// keyframe; it silently produced a padded/corrupted result (see Extract's doc comment).
+	const double StreamCopyDurationToleranceSeconds = 2.0;
+
 	// Registers a kill-on-cancel callback independent of whatever this thread is currently
 	// blocked on (ReadToEnd/WaitForExit below don't return early on their own) — same fix, same
 	// rationale, as VBR.Core.Removal.ClipRemover.RunFfmpeg (2026-07-20): a Ctrl+C during a stuck
 	// or merely slow ffmpeg call must not leave it running as an orphan.
+	//
+	// Stream-copy (tried first, for speed) can land on a run of non-monotonic DTS in the source —
+	// observed on a real DVD-rip season where ffmpeg guesses replacement timestamps and *silently
+	// succeeds* (exit 0, non-empty file) while padding the output far past what was requested (a
+	// real case: a 5s tail request came out 14+s, mostly duplicated frames). Nothing downstream
+	// throws on that — it looks like a normal short clip until DenseFrameSampler/FrameQuality
+	// reject every sampled frame as duplicate/uniform padding. A related case: stream-copying a
+	// *second* time (MixedDensitySampler.AppendZone carving a sub-region out of an already-extracted
+	// temp file) from a source whose first extraction needed the re-encode fallback below can itself
+	// produce an outright-corrupt Matroska remux (observed: "Duplicate element" / invalid EBML —
+	// ffprobe can't read a duration back at all, not just an implausible one). So after a
+	// stream-copy "success", verify the output's actual duration and retry with a re-encode (which
+	// fixes broken timestamps as a side effect — the same workaround the original VisualTailProbe
+	// spike used by hand) whenever it's missing/non-positive (unreadable) OR implausibly long
+	// (padded). Re-encoding keeps both streams (unlike the removal path, this extractor is shared
+	// with AudioBumperMatcher, which needs the audio intact).
 	static bool Extract(string sourceVideoPath, ClipRegion region, string outputPath, bool verbose, CancellationToken ct = default) {
+		if (!RunFfmpegExtract(sourceVideoPath, region, outputPath, streamCopy: true, verbose, ct))
+			return false;
+
+		double? actualSeconds = FFProbeEngine.GetMediaInfo(outputPath, extendedLogging: verbose)?.Duration.TotalSeconds;
+		bool unreadable = actualSeconds is null or <= 0;
+		bool padded = actualSeconds > region.Duration.TotalSeconds + StreamCopyDurationToleranceSeconds;
+		if (unreadable || padded) {
+			if (verbose)
+				Logger.Instance.Warn($"[extract] stream-copy of '{Path.GetFileName(sourceVideoPath)}' produced " +
+					$"{(unreadable ? "an unreadable result" : $"{actualSeconds:0.00}s")} for a " +
+					$"{region.Duration.TotalSeconds:0.00}s request (likely non-monotonic timestamps at/near the seek " +
+					"point in the source) — retrying with a re-encode.");
+			return RunFfmpegExtract(sourceVideoPath, region, outputPath, streamCopy: false, verbose, ct);
+		}
+		return true;
+	}
+
+	static bool RunFfmpegExtract(string sourceVideoPath, ClipRegion region, string outputPath, bool streamCopy, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardError = true,
@@ -127,8 +169,14 @@ public static class ClipExtractor {
 		psi.ArgumentList.Add(sourceVideoPath);
 		psi.ArgumentList.Add("-t");
 		psi.ArgumentList.Add(region.Duration.TotalSeconds.ToString(CultureInfo.InvariantCulture));
-		psi.ArgumentList.Add("-c");
-		psi.ArgumentList.Add("copy");
+		if (streamCopy) {
+			psi.ArgumentList.Add("-c");
+			psi.ArgumentList.Add("copy");
+		}
+		else {
+			psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add("libx264");
+			psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("aac");
+		}
 		psi.ArgumentList.Add(outputPath);
 		if (verbose)
 			Logger.Instance.Info($"[extract] {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
