@@ -51,6 +51,15 @@ Target a single file instead of a folder with `--file`:
 dotnet run --project VBR.CLI -- match --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 10s --sample-interval 0.2s --file "D:\Media\Show\S01E05.mkv"
 ```
 
+> **Gotcha: PowerShell + admin elevation + an SMB target (`\\server\share\...` or a mapped drive
+> backed by one) can silently fail to resolve.** This is a general Windows/PowerShell behavior, not
+> specific to `vbr` — an elevated PowerShell session runs under a different logon session than the
+> one a network drive was mapped in (or than your normal desktop session), so SMB access that works
+> fine unelevated can just not work elevated. The non-obvious part: your **shell's working
+> directory doesn't need to be on the share** — pointing any argument at one (`--library`,
+> `--clip-from`, `--file`) is enough to hit it. If a command against a network path fails or
+> behaves oddly, try it from a non-elevated shell before assuming it's a tool bug.
+
 Key options (run `--help` for the full list):
 
 - `--region begin|end` — which edge the bumper lives at; drives both clip extraction and where
