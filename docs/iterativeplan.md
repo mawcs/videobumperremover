@@ -4,6 +4,174 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Library scan — cached fingerprint index — spike plan (2026-07-24)
+
+**Status: planned, not yet implemented.** Written up before writing any code, per the maintainer's
+request, and after resolving three scoping questions raised during planning (below) — mirrors how
+the mixed-density spike was planned before being built.
+
+### The problem, precisely
+
+`PROGRESS.md`'s open item is specifically "Edge-focused scan + a **cached** fingerprint/embedding
+index (scan once, compare cheaply)" — separate from the still-untouched "**Catalog**" item. Today,
+`vbr match`/`vbr remove` re-extract and re-sample every candidate file from scratch on every
+invocation; nothing persists across runs. This spike builds the persisted, per-file fingerprint
+cache — **not** the bumper catalog, not `vbr enroll`, not automatic bumper identification. Those
+stay separate, already-tracked, still-open items (see "Explicitly out of scope" below).
+
+### Decisions (maintainer, 2026-07-24)
+
+1. **Scope: index only.** This pass builds the cache; it does not build a catalog or teach the
+   scan to identify *which* bumper it found. A future catalog-apply pass reads this cache to avoid
+   re-decoding; that's a separate effort.
+2. **Storage: a separate VBR-side store**, not an extension of VDF's `FileEntry`/`ScannedFiles.db`.
+   ADR 0006 decision 5 originally assumed reusing `FileEntry.grayBytes`/`PHashes` for our pHash
+   data "no new structure needed" — checking the actual consumer
+   (`ScanEngine.TryBuildCompareSnapshot`/`CheckIfDuplicateClassic`) found that assumption doesn't
+   hold cleanly: those dictionaries are read by VDF's own dedup feature keyed to *VDF's own*
+   uniform `positionList`; our non-uniform edge/sparse samples would sit in the same dictionary
+   without actually feeding VDF's dedup scan (its own "incomplete data for current scan settings"
+   fallback would just still re-decode at its own positions). A separate store avoids that
+   confusion. Change detection is our own, but can and should reuse `VDF.Core.Utils.OsHashUtils`
+   (the same content-hash primitive VDF's own incremental rescan uses) rather than reinventing it.
+3. **Middle is sampled by default, not deferred to an on-demand pass.** Supersedes the standing
+   two-tier assumption in `AGENTS.md` ("fast edge path... heavier mid-video interstitial path on
+   demand") for the *scan* specifically — every scanned file gets edge (dense) + middle (sparse)
+   coverage up front, because a 4s sparse interval is dense enough to actually catch short
+   interstitials, and deferring middle coverage to a separate pass would mean interstitials are
+   never found unless someone explicitly asks. (The `vbr match`/`vbr remove` two-tier CLI flags
+   are unaffected — this only changes what the *scan* does by default.)
+4. **Sampling defaults for the scan** (distinct from `vbr match`/`vbr remove`'s existing
+   `--edge-boundary`/`--sample-interval`/`--sparse-interval`, which are relative to a *known*
+   `--clip-length` and default to "whole window dense"; the scan has no known bumper length, so its
+   defaults describe presumptive ident-length coverage instead):
+   - **Edge boundary: 20s** — how deep from the true BOF/EOF each file is sampled densely.
+     CLI-configurable.
+   - **Dense interval: 0.2s** — sampling interval within the 20s edge zones.
+   - **Sparse/middle interval: 4s** — sampling interval for everything between the two edge zones.
+5. **`.vbr.` outputs are excluded from the scan by default, with a switch to include them.**
+   `vbr remove` already excludes `.vbr.` files, but as a hard, unconditional rule ("must never be
+   re-matched/re-cut") justified by a real correctness risk — re-cutting an already-cut file with
+   the same arithmetic cut-point. Scanning carries no such risk (nothing is mutated), so this isn't
+   that kind of rule — it's a "usually wasteful" default, not a "would cause harm" one: `.vbr.`
+   files are transitional staging artifacts (ADR 0008 — a review window before `cleanup` promotes
+   or discards them) and typically near-duplicate the original minus one trimmed bumper, so indexing
+   them is often redundant work on something likely to be replaced soon. But a `.vbr.` file having
+   had *one* bumper removed doesn't mean it's bumper-free — it could still carry a different bumper
+   at the other edge, or one not yet cataloged — so blanket exclusion isn't always correct either.
+   Resolution: exclude by default, `--include-vbr-outputs` to opt back in.
+
+### Plan
+
+#### Step 1 — a whole-file sampling entry point (`VBR.Core`, extends `Fingerprinting/`)
+
+**Revised 2026-07-24, after discussion** — the first draft below planned three independently
+region-bounded fingerprint sets (`BeginEdge`/`EndEdge`/`Middle`, the middle needing its interior
+bounds computed and clamped for files shorter than 2×edge-boundary). Simpler alternative, adopted:
+sample in two passes with no region-bounds arithmetic at all, and merge into **one combined,
+timestamp-sorted per-file fingerprint set**:
+
+1. **Whole-file sparse pass** — one decode covering the *entire* file (0 → probed duration) at the
+   sparse interval (4s default), using **keyframe-only decode** (mirroring VDF's own
+   `FfmpegEngine.GetDenseAiFrames`/`-skip_frame nokey`) — **not** `DenseFrameSampler`'s full decode.
+   This is a real correction, not just a simplification: `DenseFrameSampler` fully decodes every
+   frame in its window, which is fine for a 20s edge but would full-decode a 45-minute episode's
+   entire middle just to emit ~660 sparse samples — exactly the cost ADR 0006 built edge-focused
+   sampling to avoid in the first place, and a gap in this plan's original draft (the "middle only"
+   version had the identical problem — "the middle" of a long file is still most of it). At a 4s
+   interval, keyframe-only decode is an acceptable trade-off — unlike the dense-edge case, where
+   keyframe-only decode was the *original black-frame bug* (fine content lived between keyframes
+   there; a 4s cadence has no such fine content to lose). Needs a small new primitive: keyframe-only
+   decode + the region-aware direct-from-source seek `DenseFrameSampler`'s dense overload already
+   has (VDF's `GetDenseAiFrames` doesn't take a `ClipRegion` seek the way that overload does).
+2. **Dense edge passes** — unchanged from the first draft: `BeginEdge`/`EndEdge`, each the true
+   first/last 20s, full-decoded via the existing `GatherFrames`/`DenseFrameSampler` region-aware
+   decode (no `ClipExtractor` involved, same as the match/remove path).
+3. **Merge** — every surviving (post-`FrameQuality`) frame from all three decode calls goes into one
+   combined, timestamp-sorted collection per file. No "compute the interior region, clamp for short
+   files" step: the sparse pass always covers the whole file unconditionally, so a file shorter than
+   2×edge-boundary just means the dense edges overlap each other and the sparse coverage — harmless,
+   confirmed below. Each surviving frame carries both signals (embedding + pHash) via the same
+   one-decode-both-signals pattern `SampleWithPHash` already established.
+
+**Why merging densities is safe** (the question that prompted this revision): presence matching
+(`ComparePresence`) is timestamp-tagged and never requires uniform density or alignment between the
+two sides being compared — that's the exact principle that already lets dense-near-edge and
+sparse-beyond coexist in `MixedDensitySampler` today. A merged collection with a cluster of dense
+points sitting near a sparse point changes nothing structurally. Cost, not correctness: the sparse
+pass redundantly (but cheaply, keyframe-only) re-covers the edge zones, and `FrameQuality`'s
+duplicate filter runs per decode call — it won't dedupe near-identical frames *across* the sparse
+and dense passes — so a few redundant near-duplicates near each edge can survive into the merged
+set. Minor storage/compute overhead, not a matching-correctness risk.
+
+#### Step 2 — the persisted store (`VBR.Core`, new `Fingerprinting/` or new `Index/` namespace)
+
+One entry per video file: path, `FileSize`, `DateModified`, an `OsHash` (via
+`VDF.Core.Utils.OsHashUtils`, reused not reinvented) for change detection; the merged,
+timestamp-sorted fingerprint set from Step 1 (each point carrying both an embedding and a pHash);
+a whole-file audio fingerprint (self-contained — this store
+doesn't read or write VDF's `FileEntry`, so it carries its own audio fingerprint rather than
+depending on a VDF scan having also been run over the same files); and the sampling parameters
+(edge-boundary/dense/sparse) the entry was sampled under, so a future default change can be
+recognized as making cached entries stale rather than silently comparing incompatible fingerprints.
+Serialization format not yet chosen — leaning `MemoryPack` (VDF.Core already depends on it; binary
+suits quantized embedding arrays better than JSON) but this is an implementation detail, not a
+scoping decision, and can be settled while building rather than blocking this plan.
+
+#### Step 3 — change detection / incremental rescan (`VBR.Core`)
+
+Mirrors the *logic* of VDF's own `ScanEngine.RefreshExistingEntry` without touching VDF's code or
+data: size changed → re-sample. Same size, timestamps moved → compute `OsHash`, compare to stored;
+match → keep cached fingerprints, just refresh timestamps (no re-decode); mismatch → re-sample.
+New file → sample fresh. Missing-on-disk → tombstone or drop (decide during implementation; VDF's
+own `RememberDeletedContent` precedent exists if we want the same behavior).
+
+#### Step 4 — `vbr scan` CLI command (`VBR.CLI`)
+
+New command, per `matcher-spec.md`'s "leave room for `vbr scan`" note. `--library <folder>`
+(required; recursive by default, `--no-recurse` to disable, matching `match`/`remove`'s existing
+convention), its own `--edge-boundary` (default 20s)/`--sample-interval` (default 0.2s)/
+`--sparse-interval` (default 4s) options — new `Option<TimeSpan>` instances scoped to this command,
+not reused from `match`/`remove`'s `SharedOptions` ones, since the defaults and semantics genuinely
+differ (absolute depth-from-edge vs. relative-to-`--clip-length`) even though the flag *names*
+stay consistent for muscle memory. `--include-vbr-outputs` (default off — see decision 5 above):
+without it, candidate enumeration drops any file whose name matches `*.vbr.<ext>`, the same test
+`RemoveCommand` already uses (`Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", ...)`).
+`--verbose` (reuse `SharedOptions.SubscribeVerboseLogging`).
+Progress reporting (files scanned / skipped-unchanged / failed) and a summary count. Does **not**
+take `--clip-from`, `--region`, `--detection-mode`, or any presence-threshold flag — it has nothing
+to match against yet, it only fingerprints.
+
+### Explicitly out of scope for this spike
+
+- The bumper catalog, `vbr enroll`, or teaching `vbr scan` to identify a bumper — separate,
+  already-tracked open item (`PROGRESS.md` "Catalog").
+- Wiring `vbr match`/`vbr remove` to *read* this cache instead of re-sampling every run — a natural
+  follow-up once this exists, but not required for the index itself to be complete and testable.
+- Portable path-remapping, export/import, catalog-scale ANN matching — pre-existing open items,
+  unaffected by this.
+- Reusing VDF's `FileEntry`/`ScannedFiles.db` in any way (superseded by decision 2 above).
+
+### Verification plan
+
+1. `vbr scan --library <folder>` over a real mixed corpus (e.g. the existing Avatar/Daredevil/
+   Caprica test media) visits every file and produces a cached entry with a non-empty merged
+   fingerprint set — dense clusters near both true edges, sparse coverage in between — for each.
+2. A second run with no files changed skips re-sampling entirely for every file (fast, no decode).
+3. Touching one file's mtime without changing its content (copy/restore-style) still skips
+   re-sampling, via the `OsHash` check — same behavior VDF's own rescan relies on.
+4. A genuinely modified file gets re-sampled and its cached entry updated.
+5. A file shorter than 2×edge-boundary (edges overlap each other and the whole-file sparse
+   coverage) still produces a sane merged set — the case decision 3/Step 1 above claims needs no
+   special handling.
+6. A `name.vbr.ext` file in the library is skipped (not indexed) by default, and included when
+   `--include-vbr-outputs` is passed — decision 5 above, actually enforced, not just documented.
+7. **Equivalence check**: filter a cached entry's merged set down to just its dense, edge-zone
+   points and feed those into `VisualBumperMatcher.MatchMixedDensity`/`MatchMixedDensityPHash`
+   against a live `--clip-from` sample, confirming it reproduces the same numbers a fresh
+   `vbr match` run gets on that file — proof the cache is equivalent to sampling live, not just
+   present.
+
 ## Wiring pHash + mixed-density sampling into `vbr match`/`vbr remove` (2026-07-24)
 
 **Status: implemented and validated.** Follow-up to the direct-from-source decode fix below —
