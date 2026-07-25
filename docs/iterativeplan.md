@@ -7,8 +7,8 @@ reference rather than deleted or overwritten.
 ## Library scan — cached fingerprint index — spike plan (2026-07-24)
 
 **Status: planned, not yet implemented.** Written up before writing any code, per the maintainer's
-request, and after resolving three scoping questions raised during planning (below) — mirrors how
-the mixed-density spike was planned before being built.
+request, and iterated across several rounds of open questions before implementation starts (below)
+— mirrors how the mixed-density spike was planned before being built.
 
 ### The problem, precisely
 
@@ -60,6 +60,37 @@ stay separate, already-tracked, still-open items (see "Explicitly out of scope" 
    had *one* bumper removed doesn't mean it's bumper-free — it could still carry a different bumper
    at the other edge, or one not yet cataloged — so blanket exclusion isn't always correct either.
    Resolution: exclude by default, `--include-vbr-outputs` to opt back in.
+6. **Index location: a dedicated VBR-specific folder**, not co-located with VDF's
+   `ScannedFiles.db`/state folder — a clean split matching decision 2's "fully separate store"
+   choice all the way down to where the bytes live on disk, not just the schema. Exact default path
+   (e.g. mirroring VDF's own state-folder resolution algorithm, `CoreUtils.ResolveDatabaseFolder`,
+   but rooted at a VBR-specific base) is an implementation detail, not a scoping decision.
+7. **Checkpointing: incremental saves during a scan**, mirroring VDF's own
+   `Settings.DatabaseCheckpointIntervalMinutes` — a scan over a large real library can be safely
+   interrupted (Ctrl+C, crash, or just stopped) and resumed without redoing already-completed work,
+   rather than only writing the store once at the end of a full run.
+8. **Concurrency: sequential for v1.** One file at a time, matching `match`/`remove`'s existing
+   simple per-file loop. VDF's own scan has per-drive-aware `MaxDegreeOfParallelism` for exactly
+   this kind of work, but adding equivalent concurrency here (ffmpeg process limits, thread-safe
+   ONNX inference batching) is real complexity better justified once sequential throughput is
+   actually measured against a real library, not assumed upfront.
+9. **Frame cap: adaptive per file**, computed from each file's probed duration
+   (`ceil(duration / sparseInterval) + margin`) rather than one large fixed constant. This confirms
+   Step 1's whole-file sparse pass needs the probed duration for real (not just as a "would be nice
+   to have anyway" aside) — the 400-frame-per-zone cap `MixedDensitySampler` uses elsewhere would
+   silently truncate a long movie's middle coverage (400 frames at 4s ≈ 27 minutes) if reused as-is.
+10. **`--file` single-target support: not in v1.** `--library` only; a single-file rescan is just a
+    library scan over its containing folder for now. Revisit if it turns out to matter in practice —
+    `SharedOptions.ResolveCandidates` already supports both, so adding it later is cheap.
+11. **`--rescan`/`--force`: included in v1.** Bypasses change detection entirely, forcing every
+    candidate to be re-sampled regardless of the cached `OsHash`/timestamps. Needed in practice once
+    sampling parameters change (e.g. a different default later) — without it, invalidating the whole
+    cache means deleting the index file by hand.
+12. **Progress UX: a running counter by default, per-file detail under `--verbose`.** Printing one
+    result line per file unconditionally (today's `match`/`remove` convention) would be overwhelming
+    for a multi-thousand-file library scan, where each file doesn't carry an individual "result" the
+    way a match row does. Default output is a live scanned/skipped/failed tally; `--verbose` adds
+    the same kind of per-file sampled/usable/cache-hit detail `match`/`remove` already log.
 
 ### Plan
 
@@ -74,6 +105,9 @@ timestamp-sorted per-file fingerprint set**:
 1. **Whole-file sparse pass** — one decode covering the *entire* file (0 → probed duration) at the
    sparse interval (4s default), using **keyframe-only decode** (mirroring VDF's own
    `FfmpegEngine.GetDenseAiFrames`/`-skip_frame nokey`) — **not** `DenseFrameSampler`'s full decode.
+   Duration is probed once per file (`FFProbeEngine.GetMediaInfo`) and used for two things: bounding
+   the decode itself, and sizing this pass's frame cap adaptively (decision 9) — a fixed cap sized
+   for a typical episode would silently truncate a feature-length file's middle coverage.
    This is a real correction, not just a simplification: `DenseFrameSampler` fully decodes every
    frame in its window, which is fine for a 20s edge but would full-decode a 45-minute episode's
    entire middle just to emit ~660 sparse samples — exactly the cost ADR 0006 built edge-focused
@@ -118,29 +152,49 @@ Serialization format not yet chosen — leaning `MemoryPack` (VDF.Core already d
 suits quantized embedding arrays better than JSON) but this is an implementation detail, not a
 scoping decision, and can be settled while building rather than blocking this plan.
 
+Lives in its own, VBR-specific folder (decision 6) — not beside VDF's `ScannedFiles.db`. Written
+incrementally during a scan (decision 7), not just once at the end: a checkpoint save every N files
+(or N seconds, whichever the implementation finds simpler to reason about) so an interrupted run
+loses at most the work since the last checkpoint, not the whole run.
+
 #### Step 3 — change detection / incremental rescan (`VBR.Core`)
 
 Mirrors the *logic* of VDF's own `ScanEngine.RefreshExistingEntry` without touching VDF's code or
 data: size changed → re-sample. Same size, timestamps moved → compute `OsHash`, compare to stored;
 match → keep cached fingerprints, just refresh timestamps (no re-decode); mismatch → re-sample.
 New file → sample fresh. Missing-on-disk → tombstone or drop (decide during implementation; VDF's
-own `RememberDeletedContent` precedent exists if we want the same behavior).
+own `RememberDeletedContent` precedent exists if we want the same behavior). `--rescan`/`--force`
+(decision 11) short-circuits this whole step per candidate — every file is treated as needing
+re-sample regardless of what the cache says.
+
+Files are visited and (re-)sampled one at a time (decision 8) — the candidate list itself still
+comes from a single directory enumeration up front (mirroring
+`SharedOptions.ResolveCandidates`/`ClipExtractor.VideoExtensions`, filtered per decision 5), only
+the per-file sample/compare/persist work is sequential, not the enumeration.
 
 #### Step 4 — `vbr scan` CLI command (`VBR.CLI`)
 
 New command, per `matcher-spec.md`'s "leave room for `vbr scan`" note. `--library <folder>`
-(required; recursive by default, `--no-recurse` to disable, matching `match`/`remove`'s existing
-convention), its own `--edge-boundary` (default 20s)/`--sample-interval` (default 0.2s)/
-`--sparse-interval` (default 4s) options — new `Option<TimeSpan>` instances scoped to this command,
-not reused from `match`/`remove`'s `SharedOptions` ones, since the defaults and semantics genuinely
-differ (absolute depth-from-edge vs. relative-to-`--clip-length`) even though the flag *names*
-stay consistent for muscle memory. `--include-vbr-outputs` (default off — see decision 5 above):
-without it, candidate enumeration drops any file whose name matches `*.vbr.<ext>`, the same test
-`RemoveCommand` already uses (`Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", ...)`).
-`--verbose` (reuse `SharedOptions.SubscribeVerboseLogging`).
-Progress reporting (files scanned / skipped-unchanged / failed) and a summary count. Does **not**
-take `--clip-from`, `--region`, `--detection-mode`, or any presence-threshold flag — it has nothing
-to match against yet, it only fingerprints.
+(required — no `--file` in v1, decision 10; recursive by default, `--no-recurse` to disable,
+matching `match`/`remove`'s existing convention), its own `--edge-boundary` (default 20s)/
+`--sample-interval` (default 0.2s)/`--sparse-interval` (default 4s) options — new
+`Option<TimeSpan>` instances scoped to this command, not reused from `match`/`remove`'s
+`SharedOptions` ones, since the defaults and semantics genuinely differ (absolute depth-from-edge
+vs. relative-to-`--clip-length`) even though the flag *names* stay consistent for muscle memory.
+`--include-vbr-outputs` (default off — see decision 5 above): without it, candidate enumeration
+drops any file whose name matches `*.vbr.<ext>`, the same test `RemoveCommand` already uses
+(`Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", ...)`). `--rescan`/`--force` (decision 11)
+to bypass Step 3's change detection and re-sample everything. `--verbose` (reuse
+`SharedOptions.SubscribeVerboseLogging`).
+
+Progress reporting (decision 12): a live scanned/skipped-unchanged/failed counter by default; full
+per-file detail (sampled/usable frame counts, cache hit vs. re-sample, checkpoint saves) only under
+`--verbose` — a per-file `MATCH`-style result line for every candidate, unconditionally, would be
+noise at library scale (thousands of files) in a way it isn't for `match`/`remove` (dozens of
+candidates against one known bumper, where each line *is* the point). Ends with a summary count.
+
+Does **not** take `--clip-from`, `--region`, `--detection-mode`, or any presence-threshold flag —
+it has nothing to match against yet, it only fingerprints.
 
 ### Explicitly out of scope for this spike
 
@@ -162,8 +216,8 @@ to match against yet, it only fingerprints.
    re-sampling, via the `OsHash` check — same behavior VDF's own rescan relies on.
 4. A genuinely modified file gets re-sampled and its cached entry updated.
 5. A file shorter than 2×edge-boundary (edges overlap each other and the whole-file sparse
-   coverage) still produces a sane merged set — the case decision 3/Step 1 above claims needs no
-   special handling.
+   coverage) still produces a sane merged set — the case Step 1's "Merge" step above claims needs
+   no special handling.
 6. A `name.vbr.ext` file in the library is skipped (not indexed) by default, and included when
    `--include-vbr-outputs` is passed — decision 5 above, actually enforced, not just documented.
 7. **Equivalence check**: filter a cached entry's merged set down to just its dense, edge-zone
@@ -171,6 +225,16 @@ to match against yet, it only fingerprints.
    against a live `--clip-from` sample, confirming it reproduces the same numbers a fresh
    `vbr match` run gets on that file — proof the cache is equivalent to sampling live, not just
    present.
+8. A feature-length file (well over the old 400-frame-per-zone cap's ~27-minute ceiling at 4s) gets
+   whole-file sparse coverage all the way to its real end, not silently truncated — proof the
+   adaptive cap (decision 9) actually sizes itself from probed duration rather than a stale constant.
+9. Interrupting a scan partway through a multi-file run (Ctrl+C after a checkpoint but before
+   completion) and re-running resumes correctly: already-checkpointed files are skipped, not
+   re-sampled, and the run picks up where it left off rather than restarting from scratch.
+10. `--rescan`/`--force` re-samples every candidate even when nothing changed, overriding what
+    Step 3's change detection alone would have skipped.
+11. Default output is a running counter (not one line per file); `--verbose` shows per-file detail
+    including cache hit/miss and checkpoint saves.
 
 ## Wiring pHash + mixed-density sampling into `vbr match`/`vbr remove` (2026-07-24)
 
