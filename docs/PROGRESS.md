@@ -552,6 +552,17 @@ was flagged right after the initial scaffold and fixed before anything else was 
       row with visual's verdict still winning. `--output`/`--dump-frames` confirmed working through
       the new path. `vbr remove --file` smoke-tested end to end (non-destructively; output cleaned
       up after).
+    - [ ] **The persisted index itself (`vbr scan`) — planned, not yet implemented (2026-07-24).**
+      A separate VBR-side store (not VDF's `FileEntry`/`ScannedFiles.db`), one file per named
+      library, sampling every file's edges (dense) + whole-file middle (sparse) up front so a bumper
+      can be found later without re-decoding. Full plan, including several rounds of resolved open
+      questions (storage location/naming, checkpointing, concurrency, frame caps, `.vbr.` output
+      handling): [`iterativeplan.md`](iterativeplan.md) → "Library scan — cached fingerprint index."
+      **Captured for later, not designed yet:** a way to list/view a library's indexed contents (CLI
+      now, GUI eventually) — plain console output won't scale to a real library's entry count, so a
+      human+machine-readable JSON export is the likely shape; would pair naturally with the
+      catalog's own export/import (already tracked, `bumper-catalog.md`) but is a distinct need for
+      the *index* itself, not yet designed.
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.

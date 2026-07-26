@@ -91,6 +91,24 @@ stay separate, already-tracked, still-open items (see "Explicitly out of scope" 
     for a multi-thousand-file library scan, where each file doesn't carry an individual "result" the
     way a match row does. Default output is a live scanned/skipped/failed tally; `--verbose` adds
     the same kind of per-file sampled/usable/cache-hit detail `match`/`remove` already log.
+13. **Index location and name are user-configurable — one physical file per named library (amends
+    decision 6).** Decision 6 said the index lives in "a dedicated VBR-specific folder," which read
+    alone implies one fixed, un-addressable default. Refined: `vbr scan` takes an optional
+    `--library-name <name>` (default: derived from the `--library` folder's own name, e.g.
+    `Path.GetFileName`) and `--index <path>` (default: decision 6's dedicated folder,
+    `<name>.<ext>`) — each named library gets its **own independent index file**, not one shared
+    blob covering every library a user might have. Two reasons: (a) a user with libraries on
+    different physical drives/shares may want each library's index to live wherever makes sense for
+    *that* library (e.g. beside the media itself, or on faster local storage); (b) any future
+    command that reads the index (a `vbr match`/`vbr remove` cache-read mode, a future listing/export
+    command, catalog-apply) needs the same location (and/or name) to know *which* library's index to
+    open — captured now so the addressing scheme doesn't need retrofitting once real index files
+    already exist at a hardcoded default.
+14. **File format version number, from the start.** The persisted store's serialization includes an
+    explicit format-version field even though there's nothing to migrate yet — mirrors VDF's own
+    `DatabaseUtils.cs` precedent (`VDFDB001`→`VDFDB002` format history, migrated forward on save,
+    older formats read but not written). Costs nothing to include now; costs a painful blind
+    compatibility guess to retrofit later once real index files already exist in the wild.
 
 ### Plan
 
@@ -140,22 +158,27 @@ set. Minor storage/compute overhead, not a matching-correctness risk.
 
 #### Step 2 — the persisted store (`VBR.Core`, new `Fingerprinting/` or new `Index/` namespace)
 
-One entry per video file: path, `FileSize`, `DateModified`, an `OsHash` (via
+A **header** — format version number (decision 14, unconditionally, even though nothing reads it
+yet), library name (decision 13, default derived from `--library`'s folder name), and the sampling
+parameters (edge-boundary/dense/sparse) the whole file was scanned under, so a future default change
+can be recognized as making the file stale rather than silently comparing incompatible fingerprints
+— followed by **one entry per video file**: path, `FileSize`, `DateModified`, an `OsHash` (via
 `VDF.Core.Utils.OsHashUtils`, reused not reinvented) for change detection; the merged,
 timestamp-sorted fingerprint set from Step 1 (each point carrying both an embedding and a pHash);
-a whole-file audio fingerprint (self-contained — this store
-doesn't read or write VDF's `FileEntry`, so it carries its own audio fingerprint rather than
-depending on a VDF scan having also been run over the same files); and the sampling parameters
-(edge-boundary/dense/sparse) the entry was sampled under, so a future default change can be
-recognized as making cached entries stale rather than silently comparing incompatible fingerprints.
-Serialization format not yet chosen — leaning `MemoryPack` (VDF.Core already depends on it; binary
-suits quantized embedding arrays better than JSON) but this is an implementation detail, not a
-scoping decision, and can be settled while building rather than blocking this plan.
+a whole-file audio fingerprint (self-contained — this store doesn't read or write VDF's `FileEntry`,
+so it carries its own audio fingerprint rather than depending on a VDF scan having also been run
+over the same files). Serialization format not yet chosen — leaning `MemoryPack` (VDF.Core already
+depends on it; binary suits quantized embedding arrays better than JSON) but this is an
+implementation detail, not a scoping decision, and can be settled while building rather than
+blocking this plan.
 
-Lives in its own, VBR-specific folder (decision 6) — not beside VDF's `ScannedFiles.db`. Written
-incrementally during a scan (decision 7), not just once at the end: a checkpoint save every N files
-(or N seconds, whichever the implementation finds simpler to reason about) so an interrupted run
-loses at most the work since the last checkpoint, not the whole run.
+**One file per named library** (decision 13) — a `vbr scan --library <folder>` invocation reads and
+writes exactly one index file for that library, not a shared store spanning every library a user has
+ever scanned. Lives in its own, VBR-specific folder by default (decision 6), at a location and under
+a name both overridable via `--index`/`--library-name` (Step 4). Written incrementally during a scan
+(decision 7), not just once at the end: a checkpoint save every N files (or N seconds, whichever the
+implementation finds simpler to reason about) so an interrupted run loses at most the work since the
+last checkpoint, not the whole run.
 
 #### Step 3 — change detection / incremental rescan (`VBR.Core`)
 
@@ -181,6 +204,10 @@ matching `match`/`remove`'s existing convention), its own `--edge-boundary` (def
 `Option<TimeSpan>` instances scoped to this command, not reused from `match`/`remove`'s
 `SharedOptions` ones, since the defaults and semantics genuinely differ (absolute depth-from-edge
 vs. relative-to-`--clip-length`) even though the flag *names* stay consistent for muscle memory.
+`--library-name <name>` (decision 13, default: `--library`'s own folder name) and `--index <path>`
+(decision 13, default: the dedicated VBR folder from decision 6, filed under the library name) —
+together they address exactly one library's index file; a future cache-reading `vbr match`/
+`vbr remove` or a listing/export command takes the same two flags to pick which one to open.
 `--include-vbr-outputs` (default off — see decision 5 above): without it, candidate enumeration
 drops any file whose name matches `*.vbr.<ext>`, the same test `RemoveCommand` already uses
 (`Path.GetFileNameWithoutExtension(f).EndsWith(".vbr", ...)`). `--rescan`/`--force` (decision 11)
@@ -202,9 +229,18 @@ it has nothing to match against yet, it only fingerprints.
   already-tracked open item (`PROGRESS.md` "Catalog").
 - Wiring `vbr match`/`vbr remove` to *read* this cache instead of re-sampling every run — a natural
   follow-up once this exists, but not required for the index itself to be complete and testable.
+  Would take the same `--library-name`/`--index` addressing (decision 13) to pick which library's
+  file to read.
 - Portable path-remapping, export/import, catalog-scale ANN matching — pre-existing open items,
   unaffected by this.
 - Reusing VDF's `FileEntry`/`ScannedFiles.db` in any way (superseded by decision 2 above).
+- **Listing/viewing an index's contents** (CLI now, GUI eventually) — captured for future reference
+  per the maintainer (2026-07-24), not designed or built this spike. A plain console listing is fine
+  for a small library but unwieldy at real scale (thousands of entries); a human+machine-readable
+  JSON export is the more likely right shape for a large one, and would give the index a natural
+  counterpart to the *catalog's* own already-tracked export/import (`bumper-catalog.md`) — a
+  distinct need, since this is about the fingerprint index, not the bumper catalog. No design work
+  done beyond capturing the need; tracked in `PROGRESS.md` alongside this item.
 
 ### Verification plan
 
@@ -235,6 +271,11 @@ it has nothing to match against yet, it only fingerprints.
     Step 3's change detection alone would have skipped.
 11. Default output is a running counter (not one line per file); `--verbose` shows per-file detail
     including cache hit/miss and checkpoint saves.
+12. Two different `--library` folders, scanned with distinct `--library-name`/`--index` values,
+    produce two fully independent index files — scanning one never touches or is visible from the
+    other. Omitting `--library-name`/`--index` derives a sensible default from the library folder's
+    own name and lands in decision 6's dedicated folder, without requiring the flags to be typed
+    every time for the common single-library case.
 
 ## Wiring pHash + mixed-density sampling into `vbr match`/`vbr remove` (2026-07-24)
 
