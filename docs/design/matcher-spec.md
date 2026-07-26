@@ -189,6 +189,15 @@ a catalog slot in without rework:
 > mixed-density frames; it never gated the decision, so this is a reporting loss only, accepted
 > deliberately (maintainer sign-off, 2026-07-24) rather than kept as a parallel single-density-only
 > code path.
+>
+> **Amendment (2026-07-26) — `vbr scan` built.** The "leave room for `vbr enroll`, `vbr scan`,
+> `vbr remove`" bullet below is now half stale: `vbr remove` shipped 2026-07-19/20 (ADR 0007/0008),
+> and `vbr scan` — the persisted fingerprint index, not a matcher — shipped 2026-07-26. It's a
+> deliberately separate command with its own flag surface (`--edge-boundary`/`--sample-interval`/
+> `--sparse-interval` with scan-appropriate defaults, `--library-name`/`--index`,
+> `--include-vbr-outputs`, `--rescan`), not an extension of `match`'s flags — see
+> `docs/iterativeplan.md` → "Library scan — implemented and validated" for the full design. `vbr
+> enroll` and the catalog it would populate remain the only unbuilt piece of this bullet.
 
 `vbr` is a multi-command root (it already is — `System.CommandLine`, see `VBR.CLI/Program.cs`).
 Grow it; don't fork a second tool:

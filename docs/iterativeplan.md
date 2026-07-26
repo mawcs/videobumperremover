@@ -4,11 +4,69 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
-## Library scan — cached fingerprint index — spike plan (2026-07-24)
+## Library scan — implemented and validated (2026-07-26)
 
-**Status: planned, not yet implemented.** Written up before writing any code, per the maintainer's
-request, and iterated across several rounds of open questions before implementation starts (below)
-— mirrors how the mixed-density spike was planned before being built.
+**Status: implemented and validated.** Built exactly to the plan below (all 14 decisions), then
+verified live against real media, not just unit tests. One real bug found and fixed along the way
+(details below) — otherwise built clean on the first compile pass per component.
+
+**New (`VBR.Core`):** `Fingerprinting/TimedFingerprint.cs` (the merged embedding+pHash point type),
+`Fingerprinting/WholeFileSampler.cs` (Step 1's three-pass merge), a `SampleKeyframes` overload on
+`Fingerprinting/DenseFrameSampler.cs` (keyframe-only decode, sharing that class's existing
+process-orchestration code rather than duplicating it), `Index/LibraryIndex.cs`/
+`Index/LibraryIndexEntry.cs` (MemoryPack `VersionTolerant` classes, matching VDF's own
+`FileEntry`/`MediaInfo` convention exactly), `Index/LibraryIndexStore.cs` (path resolution +
+magic-header-checked load/save with atomic temp-file-then-move), `Index/LibraryScanner.cs` (Step 3's
+orchestration), `Index/MemoryPackRegistration.cs` (AOT-safe formatter registration, mirroring VDF's
+own). **New (`VBR.CLI`):** `Commands/ScanCommand.cs`, registered in `Program.cs`.
+
+**A real bug, caught by writing the checkpoint test, not by inspection:** the first implementation
+put the checkpoint-save check textually after the per-file `try`/`catch`, but the skip-unchanged and
+file-vanished paths both `continue` from inside the `try` — which jumps straight to the next loop
+iteration, never reaching code placed after the block. Checkpointing silently never fired for
+skipped-unchanged files — the *common* case on any re-scan, exactly backwards from decision 7's
+intent (interrupt-safety matters most on long, mostly-cached re-scans). Fixed by moving the check
+into a `finally` (always runs, `continue` or not). A `LibraryScanner.Scan` unit test with
+`checkpointInterval: TimeSpan.Zero` over two cache-hit files caught this immediately (asserted 3
+checkpoint calls, got 1) — real content/AI-model-free, so it ran in milliseconds.
+
+**Tests:** 19 new, all passing — `LibraryIndexStoreTests` (round-trip serialization including
+`TimedFingerprint[]`/`AudioFingerprint`/full header, atomic-save, wrong-magic rejection, name/path
+derivation), `LibraryScannerTests` (skip-unchanged, OsHash-verified timestamp-only reuse,
+force-rescan bypass, size-change triggers resample, missing-file drop, one-failure-doesn't-stop-
+the-run, checkpoint cadence), `DenseFrameSamplerKeyframeTests` (keyframe-only decode plumbing
+against a synthetic clip — see that file's comment on why `-g 10` was needed: a solid-color lavfi
+source has no scene changes, so libx264's default GOP would otherwise place a single keyframe for
+the whole clip). Plus `LibraryScannerEquivalenceTests` (env-var-gated, real media — verification
+item 7): scans a real library, pulls the *scanned, persisted* fingerprints back out filtered to the
+edge window, and confirms they reproduce live `vbr match`-quality presence numbers.
+
+**Live-verified through the built `vbr scan` CLI** against real media (`test_materials/`):
+
+| Verification (plan item) | Result |
+|---|---|
+| 1. Real episode end to end | 49-minute Caprica episode → 738 raw sparse samples (120 usable) + 100 begin-edge (62 usable) + 100 end-edge (15 usable) = 197 merged fingerprints; duration probed correctly (00:49:14); ~21s first sample |
+| 2. Re-scan, nothing changed | 0.16s (vs. 21s) — no decode, no AI-model reload |
+| 3. Touched mtime, same content | Still 0.16s — `OsHash` correctly proves the bytes are unchanged |
+| 4. Genuine content change (1-byte append) | Re-samples in full (~21s), same as a fresh file |
+| 5. File far shorter than 2×edge-boundary | A real 5.256s clip → 35 fingerprints (1 sparse + 18 begin + 16 end), no crash from the fully-overlapping zones; a no-audio clip in the same run confirmed `ChromaprintEngine` returning null gracefully too |
+| 6. `.vbr.` exclusion | Default: 1/2 files candidates (excluded); `--include-vbr-outputs`: 2/2, with the original correctly still cache-hit and only the new `.vbr.` path freshly sampled |
+| 8. Adaptive frame cap | The 49-minute episode's 738-sample sparse pass alone proves this — the old fixed 400 cap would have silently truncated it |
+| 9. Checkpointing (unit-level; see the bug above) | `onCheckpoint` fires once per file plus a final save, confirmed via the fixed test |
+| 10. `--rescan`/`--force` | Re-sampled an already-cached, unchanged file on demand |
+| 11. Progress UX | Confirmed both: `--verbose` per-file `Logger` lines + `SAMPLED`/`SKIPPED` rows; default a single in-place `\r`-updated counter line |
+| 12. Per-library index isolation | Two libraries, default (non-explicit) `--library-name`-derived paths, resolved to `LibA.vbridx`/`LibB.vbridx` under the same dedicated folder — distinct sizes, no cross-talk |
+| 7. Equivalence (scanned fingerprints vs. live match) | **Confirmed.** Full Caprica corpus (19 files) scanned via `LibraryScanner`; the clip episode's *persisted* end-edge fingerprints (15, pulled back out of the index) fed into `VisualBumperMatcher.MatchMixedDensity`/`MatchMixedDensityPHash` against every other scanned entry's own persisted edge fingerprints — **18/18 MATCH, bestCos 92–100%** (dino), reproducing (and on the floor, slightly beating) the primitive-level `vbr match`/`MixedDensitySampler` numbers recorded earlier this session (93–100%). pHash: present=0/15 on 17/18 (bestSim 62–72%), present=10/15 on the one literal duplicate episode (E01 pt2, 100%) — consistent with pHash's already-established weak standalone performance on this exact bumper, not a new finding. 8m41s total (19 real decodes, no shortcuts) — `dotnet test VBR.Tests --filter "FullyQualifiedName~LibraryScannerEquivalenceTests"`. |
+
+**Not yet re-verified live in this pass:** true crash-and-resume (unit-tested via the `onCheckpoint`
+hook; a real multi-minute Ctrl+C-mid-scan trial is a manual follow-up, not required to trust the
+mechanism given the unit coverage).
+
+### Spike plan (2026-07-24, for reference — see above for what actually shipped)
+
+Written up before writing any code, per the maintainer's request, and iterated across several
+rounds of open questions before implementation started — mirrors how the mixed-density spike was
+planned before being built.
 
 ### The problem, precisely
 

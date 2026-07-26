@@ -552,17 +552,35 @@ was flagged right after the initial scaffold and fixed before anything else was 
       row with visual's verdict still winning. `--output`/`--dump-frames` confirmed working through
       the new path. `vbr remove --file` smoke-tested end to end (non-destructively; output cleaned
       up after).
-    - [ ] **The persisted index itself (`vbr scan`) — planned, not yet implemented (2026-07-24).**
+    - [x] **The persisted index itself (`vbr scan`) — implemented and validated (2026-07-26).**
       A separate VBR-side store (not VDF's `FileEntry`/`ScannedFiles.db`), one file per named
-      library, sampling every file's edges (dense) + whole-file middle (sparse) up front so a bumper
-      can be found later without re-decoding. Full plan, including several rounds of resolved open
-      questions (storage location/naming, checkpointing, concurrency, frame caps, `.vbr.` output
-      handling): [`iterativeplan.md`](iterativeplan.md) → "Library scan — cached fingerprint index."
+      library, sampling every file's true edges (dense) + whole-file middle (sparse) up front so a
+      bumper can be found later without re-decoding. New: `VBR.Core.Fingerprinting.WholeFileSampler`
+      (merges a keyframe-only whole-file sparse pass with the existing dense-edge decode into one
+      timestamp-sorted fingerprint set — no per-file "compute the interior region" arithmetic, see
+      the doc below for why), `VBR.Core.Index.{LibraryIndex,LibraryIndexEntry,LibraryIndexStore,
+      LibraryScanner}` (MemoryPack `VersionTolerant` persistence, matching VDF's own `FileEntry`
+      convention; change detection mirrors `ScanEngine.RefreshExistingEntry`'s logic without
+      touching VDF's data), `VBR.CLI.Commands.ScanCommand`. A real bug (checkpointing silently never
+      firing on the skip-unchanged path — exactly the common case on a re-scan) was caught by a unit
+      test before it ever ran on real data; see full write-up:
+      [`iterativeplan.md`](iterativeplan.md) → "Library scan — implemented and validated." Verified
+      live against real media: a 49-minute episode → 197 merged fingerprints (738 raw sparse
+      samples, proving the adaptive frame cap actually replaces the old fixed 400 cap that would
+      have truncated it); re-scan of an unchanged file 0.16s vs. 21s fresh; `OsHash` correctly
+      distinguishes a touched-mtime-same-content file from a genuine change; `.vbr.` outputs
+      excluded by default and included with `--include-vbr-outputs`; two independently-named
+      libraries produce two independent index files with no cross-talk. **Equivalence confirmed**
+      (full 19-file Caprica corpus): fingerprints pulled back out of the *persisted* index —
+      not sampled fresh — reproduce live match quality: **18/18 MATCH, bestCos 92–100%**, matching
+      (and on the floor, slightly beating) the primitive-level numbers recorded earlier this session.
       **Captured for later, not designed yet:** a way to list/view a library's indexed contents (CLI
       now, GUI eventually) — plain console output won't scale to a real library's entry count, so a
       human+machine-readable JSON export is the likely shape; would pair naturally with the
       catalog's own export/import (already tracked, `bumper-catalog.md`) but is a distinct need for
-      the *index* itself, not yet designed.
+      the *index* itself, not yet designed. Also still open: wiring `vbr match`/`vbr remove` to
+      *read* this cache instead of re-sampling every run, and the catalog/enroll layer that would
+      let a scan say *which* bumper it found, not just that fingerprints exist.
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.

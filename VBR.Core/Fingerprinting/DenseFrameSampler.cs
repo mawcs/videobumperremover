@@ -49,6 +49,16 @@ namespace VBR.Core.Fingerprinting;
 /// remux on one real file), not just avoidable overhead. One direct seek+decode, matching what a
 /// plain <c>ffmpeg -sseof -N -i source -vf fps=...</c> command does by hand, has one fewer hop to
 /// go wrong.
+///
+/// A third entry point, <see cref="SampleKeyframes"/>, decodes keyframes only
+/// (<c>-skip_frame nokey</c>, mirroring VDF's own <c>FfmpegEngine.GetDenseAiFrames</c>) instead of
+/// every frame — the library scan's whole-file sparse pass (<see cref="WholeFileSampler"/>) uses
+/// it: full-decoding a feature-length file's entire middle just to emit a sample every few seconds
+/// would recreate exactly the cost edge-focused sampling (ADR 0006) was built to avoid. At a
+/// multi-second interval, keyframe-only decode is a fine trade-off — unlike the short dense-edge
+/// windows above, where keyframe-only decode was the *original* black-frame false-positive bug
+/// (fine content lived between keyframes there; a multi-second cadence has no such fine content to
+/// lose).
 /// </summary>
 public static class DenseFrameSampler {
 	/// <summary>
@@ -59,7 +69,7 @@ public static class DenseFrameSampler {
 	/// </summary>
 	/// <exception cref="InvalidOperationException">ffmpeg failed or timed out.</exception>
 	public static byte[][] SampleFrames(string path, double intervalSeconds, int maxFrames, CancellationToken ct = default) =>
-		SampleFrames(path, region: null, intervalSeconds, maxFrames, ct);
+		SampleFrames(path, region: null, intervalSeconds, maxFrames, keyframeOnly: false, ct);
 
 	/// <summary>
 	/// Like the three-arg overload, but seeks directly into <paramref name="sourcePath"/> using
@@ -69,9 +79,18 @@ public static class DenseFrameSampler {
 	/// </summary>
 	/// <exception cref="InvalidOperationException">ffmpeg failed or timed out.</exception>
 	public static byte[][] SampleFrames(string sourcePath, ClipRegion region, double intervalSeconds, int maxFrames, CancellationToken ct = default) =>
-		SampleFrames(sourcePath, (ClipRegion?)region, intervalSeconds, maxFrames, ct);
+		SampleFrames(sourcePath, (ClipRegion?)region, intervalSeconds, maxFrames, keyframeOnly: false, ct);
 
-	static byte[][] SampleFrames(string path, ClipRegion? region, double intervalSeconds, int maxFrames, CancellationToken ct) {
+	/// <summary>
+	/// Samples the *entire* file (no seek — start to EOF, no <paramref name="path"/> region) at one
+	/// frame per <paramref name="intervalSeconds"/>, decoding keyframes only. See the class doc
+	/// comment for why this differs from the two overloads above.
+	/// </summary>
+	/// <exception cref="InvalidOperationException">ffmpeg failed or timed out.</exception>
+	public static byte[][] SampleKeyframes(string path, double intervalSeconds, int maxFrames, CancellationToken ct = default) =>
+		SampleFrames(path, region: null, intervalSeconds, maxFrames, keyframeOnly: true, ct);
+
+	static byte[][] SampleFrames(string path, ClipRegion? region, double intervalSeconds, int maxFrames, bool keyframeOnly, CancellationToken ct) {
 		if (intervalSeconds <= 0)
 			throw new ArgumentOutOfRangeException(nameof(intervalSeconds));
 		int frameBytes = OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3;
@@ -85,6 +104,7 @@ public static class DenseFrameSampler {
 		psi.ArgumentList.Add("-hide_banner");
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-nostdin");
+		if (keyframeOnly) { psi.ArgumentList.Add("-skip_frame"); psi.ArgumentList.Add("nokey"); }
 		psi.ArgumentList.Add("-an"); psi.ArgumentList.Add("-sn"); psi.ArgumentList.Add("-dn");
 		if (region is { } r) ClipExtractor.AppendSeekArgs(psi.ArgumentList, r);
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(path);

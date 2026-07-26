@@ -197,6 +197,51 @@ Key behavior:
 - `--verbose` — same logging hookup as `match`/`remove`: every mark/promote/delete call and
   recovery action, to the console and `log.txt`.
 
+### Run — `vbr scan`
+
+```sh
+dotnet run --project VBR.CLI -- scan --help
+```
+
+Builds/updates a **cached fingerprint index** for a library — samples every file's true edges
+(dense) and whole-file middle (sparse) up front so a bumper can be found later without re-decoding.
+Unlike `match`/`remove`/`cleanup`, it doesn't take `--clip-from`/`--region`/`--detection-mode` —
+there's nothing to match against yet, only fingerprints to gather. See
+[`iterativeplan.md`](iterativeplan.md) → "Library scan — implemented and validated" for the full
+design and validated numbers.
+
+```sh
+dotnet run --project VBR.CLI -- scan --library "D:\Media\Show" --library-name Show
+```
+
+Key options:
+
+- `--edge-boundary`/`--sample-interval`/`--sparse-interval` (defaults 20s / 0.2s / 4s) — how deep
+  from each true edge is sampled densely, and the dense/sparse intervals. These are **scan-specific
+  defaults**, not the same options on `match`/`remove` (which are relative to a *known*
+  `--clip-length`; the scan has no known bumper length, so it presumptively covers the first/last
+  20s of every file instead).
+- `--library-name <name>` / `--index <path>` — every named library gets its own independent index
+  file. Default name: `--library`'s own folder name; default location: a dedicated VBR state
+  folder (`%LOCALAPPDATA%\VideoBumperRemover\index\` on Windows), never VDF's own database folder.
+- `--include-vbr-outputs` — off by default: `name.vbr.ext` outputs from a prior `remove` are
+  transitional staging artifacts (a review window before `cleanup`), usually redundant to index.
+- `--rescan` (alias `--force`) — bypass change detection and re-sample every candidate, e.g. after
+  changing `--edge-boundary`/interval defaults.
+- Change detection mirrors VDF's own incremental-rescan logic: unchanged size+timestamps skip
+  entirely (no decode); same size but a touched timestamp is verified via a content hash before
+  trusting the cache; anything else re-samples. The index is checkpointed to disk periodically
+  during a scan (not just at the end), so an interrupted run only loses the work since the last
+  checkpoint.
+- Progress: a single updating counter by default; `--verbose` prints a result line per file plus
+  the same kind of model-load/frame-count/ffmpeg-command detail `match`/`remove --verbose` do.
+
+**Verified live (2026-07-26)** against real media: a 49-minute episode scans in ~21s and produces
+197 merged fingerprints; an unchanged re-scan takes 0.16s; a touched-mtime-but-same-content file
+still skips via the content hash; `.vbr.` exclusion and `--include-vbr-outputs` both confirmed;
+two independently-named libraries produce two independent index files. Full numbers:
+[`iterativeplan.md`](iterativeplan.md).
+
 Report rows: `CLEANED`, `BROKEN` (needs attention — original untouched), `PENDING` (cleaned, but
 couldn't remove the old original/manifest — self-heals on a future run), `SKIPPED` (`--file` only:
 no `.vbr.` output exists for the target), and `RECOVER` for anything the startup sweep reconciled.
