@@ -368,15 +368,21 @@ was flagged right after the initial scaffold and fixed before anything else was 
 
 ## Open / next steps
 
-- [ ] **Removal engine — both modes implemented; algorithm specifics still open.** See
-  [ADR 0007](decisions/0007-removal-command.md): `vbr remove`, arithmetic cut point (no per-file
-  boundary detection), non-destructive `.vbr.` sibling output, both stream-copy and re-encode
-  verified against real media. Still open (ADR 0007 "Open questions"): real codec choice
-  (currently a fixed libx264/AAC placeholder), GPU (NVENC) encode (currently CPU-only and slow
-  for full episodes), manifest schema finalization, 10-bit/HDR preservation. The "already-cut
-  `.vbr.` as `--clip-from`" risk is resolved (workflow, not code — see above); `cleanup` command
-  design is no longer open, it's proposed in [ADR 0008](decisions/0008-cleanup-command.md) and
-  awaiting the maintainer's review before implementation.
+- [ ] **Removal engine — both modes implemented; re-encode defaults decided (2026-07-27), not yet
+  built.** See [ADR 0007](decisions/0007-removal-command.md): `vbr remove`, arithmetic cut point
+  (no per-file boundary detection), non-destructive `.vbr.` sibling output, both stream-copy and
+  re-encode verified against real media. Prompted by the maintainer's own testing: the fixed
+  `libx264 CRF 18` placeholder was producing 2-3x-larger output on non-H.264 sources. Decided:
+  match output codec/bit-depth to source (`libx264`/`libx265`/`libvpx-vp9` at CRF 22/24/31 —
+  mirroring HandBrake's own per-encoder CRF scale, not one number reused across encoders), no
+  user-facing config in v1 (no flags, no config file); AV1 explicitly deferred (encoder-
+  availability and CRF-standardization risk); HDR to detect-and-preserve-what's-confident,
+  refuse/warn rather than silently strip. Full write-up: `iterativeplan.md` → "Removal re-encode
+  defaults." Still fully open: container handling, GPU (NVENC) encode, manifest schema
+  finalization, whether to bundle ffmpeg. The "already-cut `.vbr.` as `--clip-from`" risk is
+  resolved (workflow, not code — see above); `cleanup` command design is no longer open, it's
+  proposed in [ADR 0008](decisions/0008-cleanup-command.md) and awaiting the maintainer's review
+  before implementation.
 - [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file
   content→junk detection turned out to be unnecessary: bumper duration is empirically constant

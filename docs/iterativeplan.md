@@ -4,6 +4,128 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Removal re-encode defaults — codec-matched output, decided but not yet built (2026-07-27)
+
+**Status: documented design decision, not yet implemented.** The maintainer asked to discuss and
+document only — no code changes follow from this entry. Prompted by the maintainer's own manual
+`vbr remove` testing: default re-encode output was 2-3x the source file size, large enough on a
+big library to matter.
+
+**Root cause.** `VBR.Core.Removal.ClipRemover` forces every source to a fixed
+`libx264 CRF 18 preset medium`, regardless of what the source actually is — already flagged in
+that file's own doc comment as "not a considered choice," and listed verbatim as an open item in
+[ADR 0007](decisions/0007-removal-command.md)'s "Open questions" ("real codec choice... matching
+the source codec instead of a fixed one?"). This entry resolves that item. CRF 18 alone is
+"visually near-lossless" — deliberately large. But the bigger factor for this maintainer's library
+specifically: a real `ffprobe` check (this session) against files that surfaced earlier bugs
+confirmed a genuine codec mix — Daredevil is H.264 (Main profile, 8-bit, confirmed directly),
+while the maintainer's broader library skews H.265/AV1, some from 10-bit/HDR sources. Re-encoding
+an HEVC or AV1 source to H.264 at a near-lossless CRF stacks a codec-family bitrate penalty (HEVC
+needs roughly half AVC's bitrate for equivalent quality; AV1 typically needs less again) on top of
+an already-generous quality target — a fully expected, non-buggy cause of 2-3x growth.
+
+**Decision: match output codec/bit-depth to source; don't build a transcoder.** Per the
+maintainer's framing: either the library owner already tuned their rip's format carefully, or it's
+as-extracted and this project's job is not to replace HandBrake — matching what's already there is
+the sensible default either way, for both codec and bit depth.
+
+Defaults table (source codec detected via the `ffprobe` call `ClipRemover` already makes for
+duration probing):
+
+| Source codec | Output encoder | CRF | Confidence |
+|---|---|---|---|
+| H.264 | `libx264` | 22 | Solid — matches HandBrake's own default |
+| H.265/HEVC | `libx265` | 24 | Solid — matches HandBrake's own default |
+| VP9 | `libvpx-vp9` | 31 | First-class, at the maintainer's request (a friend's library is VP9-heavy from YouTube downloads) — less standardized than x264/x265 but common enough to support properly rather than fall back |
+| AV1 | *(deferred — see below)* | — | Not built this pass |
+| Anything else (MPEG-2, VC-1, XviD, etc.) | `libx264` | 22 | Universal fallback — matches today's existing default, so an old/unrecognized source doesn't break |
+
+**The CRF-scale trap, worth recording explicitly** (this cost real re-encodes before being
+caught): CRF is not a shared scale across encoders — a given CRF number means a different quality
+target in different encoders. HandBrake itself uses CRF 22 for its H.264 preset and CRF 24 for its
+HEVC preset, not the same number, for exactly this reason; the table above mirrors that precedent
+rather than inventing new numbers. The same trap applies to **presets**: x264/x265 use named
+presets (`slow`, `medium`...) where "slower" is unambiguous, but SVT-AV1 uses numeric presets
+0-13 where *lower* is slower/higher-quality — the opposite direction from what "slow" suggests.
+Any future AV1 work needs its own preset value, not a reused string or an assumed-equivalent
+number.
+
+**No user-facing configuration for any of this in v1** — no CLI flags, no config file, no named
+presets (`slow`/`fast`/`HQ` etc. were considered and explicitly rejected). The only escape hatch
+remains `--re-encode false` (existing stream-copy mode) — a different trade-off entirely
+(keyframe-bound cuts, no frame accuracy), not a size/quality knob. Accepted as a real v1 gap, not
+an oversight: revisit if it becomes a practical pain point rather than a theoretical one. A
+config file for user overrides (codec/container/CRF) was discussed and explicitly deferred for the
+same "not replacing HandBrake" reasoning — a real future direction, not designed.
+
+**Preset for the baked-in defaults — recommended, not yet a confirmed decision:** re-encode is
+already the deliberately-slow, frame-accurate path (chosen over stream-copy specifically for
+that), and with no user override, the one preset value picked matters more than a "default among
+options" normally would. Leaning toward `slow` over `medium` for the x264/x265 rows (better
+compression at the same CRF) — not yet finalized, and VP9's own preset/speed mechanism
+(`-deadline`/`-cpu-used`) still needs its own value picked separately.
+
+### AV1 — explicitly deferred, not "unsupported"
+
+The maintainer's own library is mostly AV1/H.265; 2 AV1 shows are currently held back from
+processing specifically because re-encoding is slow and AV1 hardware support isn't mature yet on
+their end. Given that, AV1 support is deferred rather than rushed:
+
+- AV1's CRF scale (0-63) is genuinely less standardized than x264/x265's — `libaom-av1` and
+  `libsvtav1` don't agree with each other at the same CRF number, unlike the well-established
+  x264/x265 relationship. Recommended when this is picked back up: empirically test 2-3 real AV1
+  samples at candidate CRF/preset values (size + eyeballed quality) rather than trust a number
+  from general lore, given how much of the maintainer's library would depend on it.
+- **Encoder availability is a real risk, not just a quality question.** `libsvtav1` (the fast,
+  modern encoder most tools now prefer) must be compiled into the user's ffmpeg build
+  (`--enable-libsvtav1`) — not guaranteed present. The maintainer believes `libaom-av1` (the
+  reference encoder) has been in default ffmpeg builds for a while, which would make it a safer
+  universal baseline; `libsvtav1` would need a runtime check (`ffmpeg -encoders`) with fallback to
+  `libaom-av1`, and if neither exists, fall back to `libx264` with a warning rather than fail deep
+  into a multi-hour encode.
+- **Until AV1 support exists, an AV1 source falls through to the generic fallback row**
+  (`libx264` CRF 22). Worth flagging plainly: re-encoding AV1 source through that fallback will
+  very likely bloat the file even more than the original H.265→H.264 problem, since AV1 is
+  typically more efficient than HEVC too. Not yet decided whether this should print an explicit
+  warning when it happens (recommended) or proceed silently like any other unmatched-codec
+  fallback — open, pending the maintainer's call whenever AV1 support is actually built.
+
+**Open question, explicitly parked (maintainer, 2026-07-27): should VBR bundle its own ffmpeg**
+(guaranteeing `libsvtav1` and known-good encoder availability) **rather than relying on whatever
+the user's system ffmpeg provides?** Not investigated or decided — noted here so it isn't lost.
+
+### HDR — more than bit depth, and the failure mode is worse than oversized files
+
+Matching `pix_fmt` (8-bit vs. 10-bit) is straightforward — same mechanism as codec-matching,
+probe and mirror. But bit depth alone doesn't preserve HDR:
+
+- **Color metadata** (`color_primaries`, `color_trc`, `colorspace`) needs to be explicitly carried
+  through as output flags — skipping this can produce a technically-10-bit output that a player
+  displays as SDR (washed out, wrong contrast), arguably worse than a clean 8-bit SDR encode, not
+  just "not as good."
+- **HDR10's mastering-display and content-light-level metadata** (`-master_display`, `-max_cll`)
+  is extractable via ffprobe's `side_data_list` and re-injectable via ffmpeg — needed for correct
+  player tone-mapping.
+- **Dolby Vision is a separate, harder case** — its RPU metadata isn't preserved by a standard
+  re-encode pipeline at all; proper handling needs external tooling (e.g. `dovi_tool`) to extract
+  and reinject it around the encode. Out of scope for this pass.
+
+**Decision (maintainer, 2026-07-27): detect what we can, preserve what we can confidently
+preserve (HDR10-style color + mastering-display metadata), and refuse or warn rather than silently
+downgrade anything we can't** (Dolby Vision specifically). The maintainer doesn't know whether
+their own 4K HDR Blu-ray rips carry this metadata correctly today, but the design goal is
+explicitly protective: don't risk a correctly-authored HDR library on an unverified assumption.
+Needs real empirical verification (encode a real HDR sample, inspect the output's metadata via
+ffprobe, confirm a player actually reads it as HDR) before it ships — not just flag-passing that
+looks right on paper.
+
+### Not built yet
+
+Everything above is a documented decision, not a code change. `ClipRemover.cs`'s existing fixed
+placeholder (`libx264 CRF 18 preset medium`, always) is unchanged for now. See also: [ADR
+0007](decisions/0007-removal-command.md)'s updated "Open questions" and
+[`removal-pipeline.md`](design/removal-pipeline.md)'s updated encoding-defaults section.
+
 ## Library scan — implemented and validated (2026-07-26)
 
 **Status: implemented and validated.** Built exactly to the plan below (all 14 decisions), then

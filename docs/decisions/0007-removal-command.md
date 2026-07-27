@@ -313,12 +313,24 @@ written, for 12+ minutes before being killed. Two separate things were found:
   `name.json` JSON sidecar next to the *original*, not the output — see "Implementation findings"
   above, 2026-07-20). Still open: whether this is the *final* schema, or a per-run/aggregate
   manifest format is also wanted alongside the per-file sidecar.
-- **Re-encode algorithm specifics — a first working, fixed placeholder shipped** (libx264 CRF 18
-  preset medium video, AAC 192kbps audio when audio must be re-encoded — see "Implementation
-  findings" above). Still open, per this ADR's Decision 5: real codec choice (HEVC/AV1?
-  matching the source codec instead of a fixed one?), container handling, CRF/bitrate
-  configurability, 10-bit/HDR preservation (currently downgraded to 8-bit — a known gap), GPU
-  (NVENC) vs. CPU encode (currently CPU-only, which is genuinely slow for full episodes).
+- **Re-encode algorithm specifics — codec/CRF defaults decided (2026-07-27), not yet
+  implemented.** A first working, fixed placeholder shipped (libx264 CRF 18 preset medium video,
+  AAC 192kbps audio when audio must be re-encoded — see "Implementation findings" above) and
+  stayed in place while the maintainer's own testing surfaced it producing 2-3x-larger output.
+  Decided (full reasoning and table: `iterativeplan.md`'s "Removal re-encode defaults" entry):
+  **match the output encoder to the source's** instead of always `libx264` — H.264→`libx264`
+  CRF 22, H.265/HEVC→`libx265` CRF 24, VP9→`libvpx-vp9` CRF 31 (CRF numbers mirror HandBrake's own
+  per-encoder defaults deliberately — CRF is not a shared scale across encoders, so one number for
+  every codec would be wrong, not just suboptimal). AV1 explicitly deferred (CRF-standardization
+  and encoder-availability risk not yet resolved, `libsvtav1` isn't guaranteed present in a given
+  ffmpeg build) — falls through to the `libx264` fallback for now, a known size regression for AV1
+  sources specifically, accepted until AV1 support is built. No user-facing configurability in v1
+  (no flags, no config file, no named presets) — the only override remains `--re-encode false`.
+  10-bit/HDR: decided to detect and preserve what can be confidently preserved (color metadata,
+  HDR10 mastering-display/CLL), refuse or warn rather than silently strip Dolby Vision — not yet
+  empirically verified. **Still fully open:** container handling, GPU (NVENC) vs. CPU encode, and
+  whether VBR should bundle its own ffmpeg (raised 2026-07-27, to guarantee encoder availability
+  like `libsvtav1`) rather than rely on the user's system install.
 - **`cleanup` command design** — now scoped in
   [ADR 0008](0008-cleanup-command.md) (2026-07-20): filename-derived pairing (not the manifest —
   judged undependable as a side-channel), pairwise mark→promote→delete per file with rollback

@@ -53,9 +53,11 @@ at one edge (begin *or* end; ADR 0007), so v1 needs no `filter_complex`/concat a
 `-ss`/`-t`-bounded re-encode per cut. Verified frame-accurate on real media (~28ms off a
 requested cut point, vs. Mode A's 1s+ safety margin) and correctly realigns subtitle cues for
 begin-region cuts (see ADR 0007's "Implementation findings — Mode B" for the ffmpeg bug that had
-to be found and fixed first). Video is CPU-encoded (libx264) with a fixed placeholder CRF —
-genuinely slow for full episodes; NVENC and multi-segment `filter_complex` support below remain
-future work, needed once multi-segment/interstitial removal exists:
+to be found and fixed first). Video is CPU-encoded (libx264, always, at a fixed placeholder CRF) —
+genuinely slow for full episodes, and produces oversized output on non-H.264 sources; codec-matched
+defaults are decided but not yet implemented, see "Output & transcode options" below. NVENC and
+multi-segment `filter_complex` support below remain future work, needed once multi-segment/
+interstitial removal exists:
 
 - One ffmpeg invocation: `filter_complex` with `trim`+`setpts` (video) and `atrim`+`asetpts`
   (audio) for each keep-segment, feeding a `concat` filter (`n=<segments>, v=1, a=1`).
@@ -101,16 +103,31 @@ important split:
 - **Codec change and quality/size optimization are re-encodes** → **Mode B only**, composed
   into the same pass as removal + enhancements at little extra cost.
 
-Encoding knobs worth exposing (kept focused, not a full transcoder — see scope note):
+**Decided (2026-07-27, not yet implemented) — intelligent defaults, no exposed knobs.** The
+"knobs worth exposing" framing below turned out to be the wrong shape: per the maintainer's
+direction, v1 does not expose codec/CRF/preset as user-facing options at all (no CLI flags, no
+config file, no named presets) — it **matches the output encoder to the source's**, at a fixed CRF
+per encoder. Full reasoning, the CRF-isn't-a-shared-scale trap that prompted this, and the AV1/HDR
+handling: `iterativeplan.md`'s "Removal re-encode defaults" entry.
 
-- **Codec:** H.264 → **H.265/HEVC** (smaller at equal quality, slower, some playback-compat
-  concerns) or **AV1** (better still, much slower; SVT-AV1 or NVENC-AV1 on newer GPUs;
-  compatibility still maturing). Preserve **10-bit/HDR** where present.
-- **Quality/size target:** **CRF** (quality-targeted, variable size) vs. **bitrate** (size-
-  targeted). Encoder **preset** trades speed for efficiency. Note the **GPU vs CPU** tradeoff:
-  NVENC is fast but lower quality-per-bitrate than CPU x265/x264 at slow presets — offer both.
-- **Audio:** passthrough (`-c:a copy`) vs. re-encode; preserve multichannel.
-- **Preserve** subtitles, chapters, and metadata across container/codec changes.
+- **Codec/CRF:** H.264 source → `libx264` CRF 22; H.265/HEVC source → `libx265` CRF 24; VP9
+  source → `libvpx-vp9` CRF 31; anything else (including AV1, deferred) → `libx264` CRF 22
+  fallback.
+- **Preset:** one fixed preset per encoder, not exposed — leaning `slow` for x264/x265 (better
+  compression than `medium` at the same CRF, and re-encode is already the deliberately-slow path)
+  but not yet a confirmed decision; VP9's own speed mechanism (`-deadline`/`-cpu-used`) needs its
+  own value picked separately.
+- **Bit depth/HDR:** match source bit depth; detect and preserve what can be confidently preserved
+  (HDR10-style color/mastering-display metadata); refuse or warn rather than silently strip
+  anything that can't be (Dolby Vision specifically) — not yet empirically verified.
+- **GPU (NVENC) vs. CPU encode** remains unaddressed/future work, unchanged by this decision.
+- **Audio/subtitles/chapters:** unchanged from the existing Mode B behavior (audio copy or
+  re-encode per the seek-bug workaround already implemented; subtitles always copied).
+
+**Explicitly not decided for v1, and not designed:** a config file for user overrides (codec/
+container/CRF), and whether VBR should bundle its own ffmpeg to guarantee encoder availability
+(e.g. `libsvtav1`) rather than rely on the user's system install — both raised during discussion,
+both open.
 
 **Scope guardrail:** we are not rebuilding HandBrake. Because we re-encode during removal
 anyway, a *focused* set of sensible output options is a low-cost, high-value add — but resist
