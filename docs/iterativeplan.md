@@ -62,6 +62,74 @@ edge window, and confirms they reproduce live `vbr match`-quality presence numbe
 hook; a real multi-minute Ctrl+C-mid-scan trial is a manual follow-up, not required to trust the
 mechanism given the unit coverage).
 
+**Post-ship fix — index-save resilience (2026-07-26):** the maintainer's own testing of per-file
+failure handling hit an unhandled `UnauthorizedAccessException` that crashed the whole scan. Root
+cause was *not* a video file — the per-file `try`/`catch` around sampling already handled that
+correctly — but `LibraryIndexStore.Save`'s atomic `File.Move`, called unprotected from both of
+`LibraryScanner.Scan`'s save sites (the `finally`-block checkpoint and the final save). A transient
+lock on the just-written index file (antivirus scanning it, or another `vbr scan` racing the same
+index path) was enough to abort the entire run — exactly backwards from decision 7's resilience
+intent. Fixed two ways: (1) `LibraryIndexStore.Save` now retries the rename itself (4 attempts,
+150ms apart) before giving up, riding out the common transient case; (2) `LibraryScanner.Scan` now
+catches a save failure that survives the retries the same way it already catches a per-file
+failure — logs it (`Logger.Warn`, unconditionally, not gated on `--verbose`) and continues. The
+index stays correct in memory regardless of a failed save, so the next successful save (a later
+checkpoint, or the final one) persists everything accumulated since. `ScanSummary` gained
+`IndexSaveError` so the *final* save's outcome specifically is never silently lost —
+`ScanCommand` reports it as a loud, distinct error (exit code 1) separate from the normal per-file
+failure tally, since "the scan ran but nothing was persisted" is a materially different problem
+than "one file couldn't be read." Two new tests:
+`LibraryIndexStoreTests.Save_RetriesThenThrows_WhenTheDestinationIsAnExistingDirectory` (Save's own
+retry-then-surface contract, using an existing directory at the destination path to force the same
+`UnauthorizedAccessException` deterministically) and
+`LibraryScannerTests.IndexSaveFailure_DoesNotStopTheScan_AndIsReportedOnTheSummary` (every
+checkpoint attempt fails, the scan still processes every file and reports `IndexSaveError`).
+
+**Post-ship fix #2 — directory-valued `--index` fails fast instead of silently never saving
+(2026-07-27):** found immediately after the fix above, on a real large scan
+(`--index "...\test_materials\"`, trailing separator). `FileInfo.FullName` preserves a trailing
+separator verbatim, so `ResolveIndexPath` passed the *directory itself* through as `path` — `Save`'s
+temp file resolved to `"{that directory}\.tmp"` (a real file with no other name, which is what
+tipped this off — not `library.vbridx.tmp`, just `.tmp`, sitting directly in the folder), and the
+final rename's destination was the directory itself. Confirmed via a standalone repro (`File.Move`
+of a temp file onto a real directory, 6 attempts back to back): **every single attempt fails**, not
+intermittently — so the retry logic added in fix #1 was working exactly as designed, it just had
+nothing transient to ride out. Net effect: a scan in this state runs to completion (doesn't crash)
+but persists *nothing*, for however long the run takes — the failure mode fix #1 was built for
+(save hiccups, keep going, catch up later) doesn't apply when the destination can never work at all.
+Fixed by rejecting this case up front: `LibraryIndexStore.IsDirectoryLikePath` (trailing separator,
+or an already-existing directory) is checked in `ScanCommand` right after resolving `indexPath` —
+before the AI-component download, before `Load`, before any candidate is touched — printing a clear
+error with a suggested corrected filename and exiting, rather than letting an entire run's sampling
+work be silently unpersisted. Deliberately a hard error, not an auto-detect-and-use-this-folder
+fallback: `--index`'s contract stays "a file path, used verbatim" (unchanged from decision 13)
+rather than growing implicit directory-vs-file inference. New tests:
+`IsDirectoryLikePath_TrailingSeparator_IsTrue`, `IsDirectoryLikePath_ExistingDirectory_NoTrailingSeparator_IsTrue`,
+`IsDirectoryLikePath_OrdinaryFilePath_IsFalse`. Live-verified against the exact reported command —
+exits in ~3s with the corrected-filename suggestion, versus running indefinitely and saving
+nothing.
+
+**Post-ship simplification #3 — `--index` → `--index-folder`, file name no longer independently
+settable (2026-07-27):** after hitting fix #2 live, the maintainer's read was that `--index` (a
+full file path) coexisting with `--library-name` (which *also* implicitly named the default file)
+was the actually-confusing part — two inputs that could each look like they controlled the file's
+name, only one of which really did. Resolved by removing the ambiguity rather than only guarding
+against it: `--index` is renamed to `--index-folder` and is unambiguously a folder now —
+`LibraryIndexStore.ResolveIndexPath` always derives the file name from `--library-name`
+(`{sanitized library name}.vbridx`); `--index-folder` only ever names the containing folder, and
+doesn't need to exist yet (created on first save, same as before). This retires fix #2's
+directory-vs-file confusion as a *class*, not just this one instance — a folder is all
+`--index-folder` can mean, so there is no longer a "did the user mean a file or a folder" question
+to get wrong. Considered and rejected: keeping one flag and auto-detecting file-vs-folder from
+what's already on disk — that just trades one implicit-inference bug for another. The one new
+failure mode — `--index-folder` pointing at a path where a *file* already sits — is checked up
+front the same way fix #2's was (before any scanning starts), and reported clearly rather than
+attempted; `IsDirectoryLikePath` (fix #2's validator) is removed as dead code, since nothing needs
+it once `--index-folder` can no longer be misread as a file path. Tests updated:
+`ResolveIndexPath_ExplicitFolder_FileNameAlwaysDerivedFromLibraryName` (three separator variants —
+`Path.Combine` avoids doubling a trailing separator but doesn't normalize *which* character it is,
+so a trailing `/` legitimately survives into the result) replaces the old `..._UsedVerbatim` test.
+
 ### Spike plan (2026-07-24, for reference — see above for what actually shipped)
 
 Written up before writing any code, per the maintainer's request, and iterated across several

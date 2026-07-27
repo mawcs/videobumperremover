@@ -17,6 +17,7 @@
 using System;
 using System.IO;
 using System.Runtime.InteropServices;
+using System.Threading;
 using MemoryPack;
 
 namespace VBR.Core.Index;
@@ -46,13 +47,17 @@ public static class LibraryIndexStore {
 		return string.IsNullOrEmpty(name) ? trimmed : name;
 	}
 
-	/// <summary>Resolves the index file path for a named library: <paramref name="explicitPath"/>
-	/// verbatim when given (decision 13's <c>--index</c> override), else
-	/// <c>{default VBR index folder}/{sanitized library name}.vbridx</c>.</summary>
-	public static string ResolveIndexPath(string? explicitPath, string libraryName) {
-		if (!string.IsNullOrWhiteSpace(explicitPath))
-			return explicitPath;
-		return Path.Combine(GetDefaultIndexFolder(), SanitizeFileName(libraryName) + IndexFileExtension);
+	/// <summary>Resolves the index file's full path: always <c>{folder}/{sanitized library
+	/// name}.vbridx</c> — the file's name is derived from <paramref name="libraryName"/> alone and
+	/// is never independently specified, so there is exactly one thing to keep in sync between a
+	/// library and its index. <paramref name="explicitFolder"/> is the containing folder when given
+	/// (decision 13's <c>--index-folder</c> override, itself not required to exist yet — same as any
+	/// other output folder, it's created on first save), else <see cref="GetDefaultIndexFolder"/>.
+	/// <c>Path.Combine</c> handles a trailing separator on <paramref name="explicitFolder"/> either
+	/// way, so callers don't need to normalize it first.</summary>
+	public static string ResolveIndexPath(string? explicitFolder, string libraryName) {
+		string folder = string.IsNullOrWhiteSpace(explicitFolder) ? GetDefaultIndexFolder() : explicitFolder;
+		return Path.Combine(folder, SanitizeFileName(libraryName) + IndexFileExtension);
 	}
 
 	/// <summary>The dedicated VBR-specific folder decision 6 calls for — mirrors
@@ -100,6 +105,10 @@ public static class LibraryIndexStore {
 	/// <summary>Writes <paramref name="index"/> to <paramref name="path"/> via a temp-file-then-move
 	/// swap, so a crash mid-save leaves either the old file or the new one intact, never a
 	/// half-written one — same rationale as VDF's own <c>ScannedFiles_new.db</c> pattern.</summary>
+	/// <exception cref="IOException">The rename still fails after retrying (see
+	/// <see cref="MoveIntoPlace"/>) — a genuine, non-transient problem with <paramref name="path"/>'s
+	/// destination. Callers that scan many files (<see cref="LibraryScanner"/>) must treat this as
+	/// recoverable: log it and keep going rather than letting it crash the whole run.</exception>
 	public static void Save(LibraryIndex index, string path) {
 		string? dir = Path.GetDirectoryName(path);
 		if (dir is { Length: > 0 })
@@ -110,6 +119,27 @@ public static class LibraryIndexStore {
 			file.Write(FormatMagic);
 			file.Write(payload);
 		}
-		File.Move(tempPath, path, overwrite: true);
+		MoveIntoPlace(tempPath, path);
+	}
+
+	const int MoveRetryAttempts = 4;
+	static readonly TimeSpan MoveRetryDelay = TimeSpan.FromMilliseconds(150);
+
+	/// <summary>A file that was just closed is occasionally still briefly held by something else on
+	/// Windows — real-time antivirus scanning a freshly-written file is the common real-world case —
+	/// so the rename can fail with <see cref="IOException"/>/<see cref="UnauthorizedAccessException"/>
+	/// even though nothing is actually wrong. A handful of short retries rides out that window; if
+	/// the problem isn't transient, the last attempt's exception propagates so the caller can decide
+	/// what a genuine, persistent save failure means for the run.</summary>
+	static void MoveIntoPlace(string tempPath, string path) {
+		for (int attempt = 1; ; attempt++) {
+			try {
+				File.Move(tempPath, path, overwrite: true);
+				return;
+			}
+			catch (Exception ex) when ((ex is IOException || ex is UnauthorizedAccessException) && attempt < MoveRetryAttempts) {
+				Thread.Sleep(MoveRetryDelay);
+			}
+		}
 	}
 }

@@ -45,7 +45,12 @@ public sealed class LibraryScanner : IDisposable {
 
 	public readonly record struct FileScanResult(string Path, ScanOutcome Outcome, string? Detail, string? Error);
 
-	public readonly record struct ScanSummary(int Scanned, int SkippedUnchanged, int Failed, int Total);
+	/// <param name="IndexSaveError">Null if the index's final save succeeded. Non-null means the
+	/// scan itself completed (every candidate was sampled/skipped/failed as reported above) but the
+	/// *last* attempt to persist the index to <c>indexPath</c> failed — distinct from a per-file
+	/// failure because it means some or all of this run's results may not actually be on disk, not
+	/// just that one candidate couldn't be read.</param>
+	public readonly record struct ScanSummary(int Scanned, int SkippedUnchanged, int Failed, int Total, string? IndexSaveError = null);
 
 	static readonly TimeSpan DefaultCheckpointInterval = TimeSpan.FromSeconds(30);
 
@@ -67,9 +72,13 @@ public sealed class LibraryScanner : IDisposable {
 	/// saving to <paramref name="indexPath"/> at each checkpoint and once more at the end.
 	/// <paramref name="onFileScanned"/> fires after every candidate (sampled, skipped, or failed) —
 	/// the CLI uses it to drive both the default running counter and <c>--verbose</c> per-file
-	/// detail from one callback. <paramref name="onCheckpoint"/> fires after every save (each
-	/// mid-scan checkpoint plus the final save), reporting the entry count at that point — mainly
-	/// so tests can verify checkpointing actually happens without needing a real long-running scan.
+	/// detail from one callback. <paramref name="onCheckpoint"/> fires after every *successful* save
+	/// (each mid-scan checkpoint plus the final save), reporting the entry count at that point —
+	/// mainly so tests can verify checkpointing actually happens without needing a real long-running
+	/// scan. Neither a per-file failure nor a save failure ever throws out of this method (besides
+	/// <see cref="OperationCanceledException"/> from <paramref name="ct"/>, which is intentionally
+	/// left to propagate) — both are logged and the scan continues; see
+	/// <see cref="ScanSummary.IndexSaveError"/> for how a save failure is reported back.
 	/// </summary>
 	public ScanSummary Scan(
 			IReadOnlyList<string> candidatePaths,
@@ -128,18 +137,40 @@ public sealed class LibraryScanner : IDisposable {
 				// the *common* case on a re-scan, so gating checkpoints on "something was actually
 				// sampled" would checkpoint far less often than decision 7 intends.
 				if (DateTime.UtcNow - lastCheckpoint >= checkpointInterval) {
-					LibraryIndexStore.Save(index, indexPath);
+					if (TrySave(index, indexPath) is null) {
+						onCheckpoint?.Invoke(index.Entries.Count);
+						if (verboseLogging)
+							Logger.Instance.Info($"[scan] checkpoint saved ({index.Entries.Count} entries).");
+					}
 					lastCheckpoint = DateTime.UtcNow;
-					onCheckpoint?.Invoke(index.Entries.Count);
-					if (verboseLogging)
-						Logger.Instance.Info($"[scan] checkpoint saved ({index.Entries.Count} entries).");
 				}
 			}
 		}
 
-		LibraryIndexStore.Save(index, indexPath);
-		onCheckpoint?.Invoke(index.Entries.Count);
-		return new ScanSummary(scanned, skipped, failed, candidatePaths.Count);
+		string? indexSaveError = TrySave(index, indexPath);
+		if (indexSaveError is null)
+			onCheckpoint?.Invoke(index.Entries.Count);
+		return new ScanSummary(scanned, skipped, failed, candidatePaths.Count, indexSaveError);
+	}
+
+	/// <summary>Saves the index, catching and logging (never crashing the scan on) any failure —
+	/// most commonly a transient antivirus/other-process lock on the index file that
+	/// <see cref="LibraryIndexStore.Save"/>'s own retries didn't clear, or a genuinely bad
+	/// destination path. <paramref name="index"/> keeps every sampled entry in memory regardless, so
+	/// a failed save here costs nothing beyond this attempt: the next checkpoint (or the final save)
+	/// tries again and, once one succeeds, persists everything accumulated up to that point — the
+	/// same "log it, keep going" contract as a per-file sampling failure, just for the save step
+	/// instead of the read step. Returns null on success, else the exception's message (for
+	/// <see cref="ScanSummary.IndexSaveError"/>).</summary>
+	static string? TrySave(LibraryIndex index, string indexPath) {
+		try {
+			LibraryIndexStore.Save(index, indexPath);
+			return null;
+		}
+		catch (Exception ex) when (ex is not OperationCanceledException) {
+			Logger.Instance.Warn($"[scan] Failed to save index to '{indexPath}': {ex.Message}");
+			return ex.Message;
+		}
 	}
 
 	// Same shape as VDF's ScanEngine.RefreshExistingEntry: size mismatch never survives; a

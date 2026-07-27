@@ -58,9 +58,11 @@ internal static class ScanCommand {
 			"Default: --library's own folder name.",
 	};
 
-	static readonly Option<FileInfo> IndexPath = new("--index") {
-		Description = "Where this library's index file lives. Default: a dedicated per-library " +
-			"file under VBR's own state folder, named after --library-name.",
+	static readonly Option<DirectoryInfo> IndexFolder = new("--index-folder") {
+		Description = "Folder to hold this library's index file. The file itself is always named " +
+			"after --library-name (with a .vbridx extension) -- there's no separate way to set the " +
+			"file name. Doesn't need to exist yet; created on first save. Default: a dedicated " +
+			"per-library folder under VBR's own state folder.",
 	};
 
 	static readonly Option<bool> IncludeVbrOutputs = new("--include-vbr-outputs") {
@@ -86,7 +88,7 @@ internal static class ScanCommand {
 		cmd.Options.Add(SampleInterval);
 		cmd.Options.Add(SparseInterval);
 		cmd.Options.Add(LibraryNameOption);
-		cmd.Options.Add(IndexPath);
+		cmd.Options.Add(IndexFolder);
 		cmd.Options.Add(IncludeVbrOutputs);
 		cmd.Options.Add(Rescan);
 		cmd.Options.Add(Verbose);
@@ -98,7 +100,7 @@ internal static class ScanCommand {
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
 			TimeSpan sparseInterval = parseResult.GetValue(SparseInterval);
 			string? libraryNameArg = parseResult.GetValue(LibraryNameOption);
-			FileInfo? indexPathArg = parseResult.GetValue(IndexPath);
+			DirectoryInfo? indexFolderArg = parseResult.GetValue(IndexFolder);
 			bool includeVbrOutputs = parseResult.GetValue(IncludeVbrOutputs);
 			bool rescan = parseResult.GetValue(Rescan);
 			bool verbose = parseResult.GetValue(Verbose);
@@ -128,7 +130,17 @@ internal static class ScanCommand {
 			string libraryName = string.IsNullOrWhiteSpace(libraryNameArg)
 				? LibraryIndexStore.DeriveLibraryName(library.FullName)
 				: libraryNameArg;
-			string indexPath = LibraryIndexStore.ResolveIndexPath(indexPathArg?.FullName, libraryName);
+			// Checked here, before any scanning (or even the AI-component download) starts, not left
+			// for LibraryIndexStore.Save to discover: a file already sitting at --index-folder's path
+			// can never work as a folder to hold the index, and it's not worth wasting an entire run's
+			// sampling work to find that out only once a save is attempted.
+			if (indexFolderArg is not null && File.Exists(indexFolderArg.FullName)) {
+				Console.Error.WriteLine(
+					$"Error: --index-folder must be a folder, but a file already exists there: '{indexFolderArg.FullName}'.");
+				return 1;
+			}
+
+			string indexPath = LibraryIndexStore.ResolveIndexPath(indexFolderArg?.FullName, libraryName);
 
 			if (!AiComponents.IsReady) {
 				Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
@@ -190,6 +202,14 @@ internal static class ScanCommand {
 			Console.WriteLine($"{summary.Scanned} sampled, {summary.SkippedUnchanged} unchanged (skipped), " +
 				$"{summary.Failed} failed, {summary.Total} total.");
 			Console.WriteLine($"Index: {indexPath}");
+
+			if (summary.IndexSaveError is not null) {
+				Console.Error.WriteLine($"Error: could not save the index: {summary.IndexSaveError}");
+				Console.Error.WriteLine("This run's results were not persisted -- re-run 'vbr scan' once the " +
+					"underlying issue clears (a common cause is antivirus or another process briefly locking " +
+					"the index file). Files already written by an earlier checkpoint this run are unaffected.");
+				return 1;
+			}
 			return 0;
 		});
 

@@ -107,6 +107,26 @@ public class LibraryIndexStoreTests {
 	}
 
 	[Fact]
+	public void Save_RetriesThenThrows_WhenTheDestinationIsAnExistingDirectory() {
+		string dir = CreateTempDir();
+		try {
+			// `path` itself being an existing directory (not a file) makes the final File.Move fail
+			// every attempt -- exercises Save's retry-then-give-up path deterministically, instead of
+			// depending on a real transient antivirus/other-process lock. LibraryScanner is what
+			// catches this in the real product (LibraryScannerTests.IndexSaveFailure_...); this proves
+			// Save itself still surfaces a genuine, non-transient failure rather than hanging or
+			// swallowing it.
+			string path = Path.Combine(dir, "library.vbridx");
+			Directory.CreateDirectory(path);
+
+			Exception ex = Assert.ThrowsAny<Exception>(() => LibraryIndexStore.Save(BuildSampleIndex(), path));
+			Assert.True(ex is IOException or UnauthorizedAccessException,
+				$"Expected IOException or UnauthorizedAccessException, got {ex.GetType()}: {ex.Message}");
+		}
+		finally { DeleteTempDir(dir); }
+	}
+
+	[Fact]
 	public void Load_NonexistentFile_ReturnsFreshEmptyIndex() {
 		string dir = CreateTempDir();
 		try {
@@ -136,10 +156,16 @@ public class LibraryIndexStoreTests {
 		Assert.Equal(expected, LibraryIndexStore.DeriveLibraryName(folder));
 	}
 
-	[Fact]
-	public void ResolveIndexPath_ExplicitPath_UsedVerbatim() {
-		string explicitPath = Path.Combine(Path.GetTempPath(), "my-custom-index.vbridx");
-		Assert.Equal(explicitPath, LibraryIndexStore.ResolveIndexPath(explicitPath, "Whatever"));
+	// Path.Combine never *doubles* a separator explicitFolder already ends with, but it doesn't
+	// normalize which kind either -- a trailing '/' stays a '/' in the result. Every case here is
+	// still a valid Windows path either way; the point of the test is the file name (always derived
+	// from libraryName), not which separator character precedes it.
+	[Theory]
+	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Library.vbridx")]
+	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Library.vbridx")]
+	[InlineData(@"C:\some\custom-folder/", @"C:\some\custom-folder/My Library.vbridx")]
+	public void ResolveIndexPath_ExplicitFolder_FileNameAlwaysDerivedFromLibraryName(string explicitFolder, string expected) {
+		Assert.Equal(expected, LibraryIndexStore.ResolveIndexPath(explicitFolder, "My Library"));
 	}
 
 	[Fact]

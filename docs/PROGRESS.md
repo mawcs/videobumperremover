@@ -581,6 +581,25 @@ was flagged right after the initial scaffold and fixed before anything else was 
       the *index* itself, not yet designed. Also still open: wiring `vbr match`/`vbr remove` to
       *read* this cache instead of re-sampling every run, and the catalog/enroll layer that would
       let a scan say *which* bumper it found, not just that fingerprints exist.
+      **Post-ship fix (2026-07-26):** the maintainer's own failure-condition testing hit a real
+      `UnauthorizedAccessException` crashing the whole scan — traced to `LibraryIndexStore.Save`'s
+      `File.Move` (an index-file save race/lock, not a video file — the per-file read path was
+      already resilient), called unprotected from both of `LibraryScanner.Scan`'s save sites. Fixed
+      with a retry-with-backoff in `Save` itself plus catch-log-continue around both call sites in
+      `Scan`; a save failure now surfaces as `ScanSummary.IndexSaveError` instead of an unhandled
+      exception. Full write-up: [`iterativeplan.md`](iterativeplan.md) → "Post-ship fix — index-save
+      resilience." **Second post-ship fix (2026-07-27):** a directory-valued `--index` (trailing
+      separator) silently resolved to a `.tmp` file with no real name and could never save — every
+      attempt failed deterministically, not intermittently, so a whole scan's work could run to
+      completion and persist nothing. Now rejected up front (`LibraryIndexStore.IsDirectoryLikePath`,
+      checked in `ScanCommand` before any scanning starts) with a clear error and a suggested
+      corrected path. See `iterativeplan.md` → "Post-ship fix #2." **Third post-ship change
+      (2026-07-27):** maintainer feedback that `--index` (a file path) coexisting with
+      `--library-name` (which *also* implicitly named the file) was the actually-confusing part
+      behind fix #2. `--index` renamed to `--index-folder` — unambiguously a folder now; the index
+      file itself is always `{library-name}.vbridx`, never independently named. Retires fix #2's
+      whole directory-vs-file confusion as a class, not just that one instance; `IsDirectoryLikePath`
+      removed as dead code. See `iterativeplan.md` → "Post-ship simplification #3."
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.

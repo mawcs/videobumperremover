@@ -215,4 +215,44 @@ public class LibraryScannerTests {
 		}
 		finally { DeleteTempDir(dir); }
 	}
+
+	[Fact]
+	public void IndexSaveFailure_DoesNotStopTheScan_AndIsReportedOnTheSummary() {
+		string dir = CreateTempDir();
+		try {
+			string fileA = WriteFile(dir, "a.mkv", 1024);
+			string fileB = WriteFile(dir, "b.mkv", 1024);
+			var index = new LibraryIndex();
+			index.Entries[LibraryIndexKey.Normalize(fileA)] = CacheEntryMatching(fileA);
+			index.Entries[LibraryIndexKey.Normalize(fileB)] = CacheEntryMatching(fileB);
+
+			// A regular file standing in for the index's own directory makes every
+			// Directory.CreateDirectory(...) inside LibraryIndexStore.Save throw -- a simple, portable
+			// way to make every save attempt (checkpoint and final) fail deterministically, without
+			// needing real ACL manipulation.
+			string blockingFile = WriteFile(dir, "blocking-file", 1);
+			string indexPath = Path.Combine(blockingFile, "lib.vbridx");
+
+			// Zero interval means "try to checkpoint after every file" -- proves a failed *mid-scan*
+			// checkpoint doesn't abort the loop either, not just the final save.
+			using var scanner = new LibraryScanner(checkpointInterval: TimeSpan.Zero);
+			var results = new List<LibraryScanner.FileScanResult>();
+			int checkpointCalls = 0;
+			LibraryScanner.ScanSummary summary = scanner.Scan(
+				new[] { fileA, fileB }, index, indexPath, Profile, forceRescan: false,
+				onFileScanned: results.Add,
+				onCheckpoint: _ => checkpointCalls++);
+
+			// The failures are all in *saving* the index, not in reading the two (cache-hit) files --
+			// per-file outcomes are unaffected.
+			Assert.Equal(2, summary.SkippedUnchanged);
+			Assert.Equal(2, results.Count);
+			Assert.All(results, r => Assert.Equal(LibraryScanner.ScanOutcome.SkippedUnchanged, r.Outcome));
+
+			Assert.NotNull(summary.IndexSaveError);
+			Assert.Equal(0, checkpointCalls); // every save attempt failed, so none should report success
+			Assert.False(File.Exists(indexPath));
+		}
+		finally { DeleteTempDir(dir); }
+	}
 }
