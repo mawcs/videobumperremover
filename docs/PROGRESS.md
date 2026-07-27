@@ -604,7 +604,17 @@ was flagged right after the initial scaffold and fixed before anything else was 
       (`quiet|info|debug|verbose|trace`) — independently leveled console and log-file output
       (`--verbose` stays as shorthand for `--console-info verbose`), log file defaulting to sibling-
       of-index-with-`.log` at `verbose` detail. See `iterativeplan.md` → "Post-ship feature —
-      `--console-info`/`--log-file`/`--log-level`."
+      `--console-info`/`--log-file`/`--log-level`." **Renamed (2026-07-27):** `--index-folder` →
+      `--library-db-folder`, no functional change. See `iterativeplan.md` → "Post-ship rename #4."
+      **Manual verification pass (2026-07-27):** maintainer hand-tested file moves, non-video files,
+      `.vbr.` inclusion/exclusion, corrupt files, subtree traversal, and permission failures against
+      real conditions — all confirmed working as designed. One gap found: moving the *library root*
+      itself (not just a file within it) invalidates every cached entry at once, forcing a full
+      re-scan of unchanged content. A content-hash relink (`FileSize`+`OsHash`, mirroring VDF's own
+      deferred `TryRelinkMovedFile`) was proposed and weighed against two alternatives; **maintainer
+      decided to defer** — today's full-re-sample-after-a-root-move behavior stands as an accepted
+      v1 limitation. See `iterativeplan.md` → "Manual verification pass" / "Open: library-root moves
+      invalidate the whole cache."
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.

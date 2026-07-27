@@ -221,12 +221,12 @@ Key options:
   defaults**, not the same options on `match`/`remove` (which are relative to a *known*
   `--clip-length`; the scan has no known bumper length, so it presumptively covers the first/last
   20s of every file instead).
-- `--library-name <name>` / `--index-folder <folder>` — every named library gets its own
+- `--library-name <name>` / `--library-db-folder <folder>` — every named library gets its own
   independent index file, always named `{library-name}.vbridx` (the file name is only ever derived
-  from `--library-name`; `--index-folder` names the *containing folder*, not the file, and doesn't
-  need to exist yet). Default name: `--library`'s own folder name; default location: a dedicated
-  VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\index\` on Windows), never VDF's own
-  database folder.
+  from `--library-name`; `--library-db-folder` names the *containing folder*, not the file, and
+  doesn't need to exist yet). Default name: `--library`'s own folder name; default location: a
+  dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\index\` on Windows), never VDF's
+  own database folder.
 - `--include-vbr-outputs` — off by default: `name.vbr.ext` outputs from a prior `remove` are
   transitional staging artifacts (a review window before `cleanup`), usually redundant to index.
 - `--rescan` (alias `--force`) — bypass change detection and re-sample every candidate, e.g. after

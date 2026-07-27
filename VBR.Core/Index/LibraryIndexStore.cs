@@ -51,7 +51,7 @@ public static class LibraryIndexStore {
 	/// name}.vbridx</c> — the file's name is derived from <paramref name="libraryName"/> alone and
 	/// is never independently specified, so there is exactly one thing to keep in sync between a
 	/// library and its index. <paramref name="explicitFolder"/> is the containing folder when given
-	/// (decision 13's <c>--index-folder</c> override, itself not required to exist yet — same as any
+	/// (decision 13's <c>--library-db-folder</c> override, itself not required to exist yet — same as any
 	/// other output folder, it's created on first save), else <see cref="GetDefaultIndexFolder"/>.
 	/// <c>Path.Combine</c> handles a trailing separator on <paramref name="explicitFolder"/> either
 	/// way, so callers don't need to normalize it first.</summary>

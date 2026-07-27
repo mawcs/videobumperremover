@@ -174,6 +174,65 @@ independent — the file captured full `Logger` detail the console never showed.
 were needed — this is entirely a `VBR.CLI` reporting change, so no new unit tests (consistent with
 this project's existing CLI-command-wiring coverage, which is verified live rather than unit tested).
 
+**Post-ship rename #4 — `--index-folder` → `--library-db-folder` (2026-07-27):** maintainer
+request, no functional change — `ScanCommand`'s `IndexFolder`/`indexFolderArg` identifiers renamed
+to `LibraryDbFolder`/`libraryDbFolderArg` to match. `LibraryIndexStore.ResolveIndexPath`'s own
+parameter/doc-comment naming (`explicitFolder`, "decision 13") is unchanged — that's `VBR.Core`
+describing the general concept, not the CLI's specific spelling of it, and the two are allowed to
+differ. Live reference docs (`running_and_building.md`, `matcher-spec.md`) and the `LibraryIndexStore`
+doc comment updated to the new name; the *historical* narrative entries above ("Post-ship
+simplification #3" and its `PROGRESS.md` counterpart) describing the original `--index` →
+`--index-folder` rename are left as written, since they accurately record what the flag was called
+at the time each entry was made — not revised into a name that didn't exist yet when that decision
+happened.
+
+**Manual verification pass (2026-07-27):** maintainer ran `vbr scan` by hand against real conditions
+beyond the automated suite's coverage. All seven confirm existing behavior works as designed or
+land on an explicit, recorded decision (see below) — nothing outstanding from this pass.
+
+- **A file moves within an unchanged library root** — handled correctly.
+  `LibraryIndexKey.Normalize` keys entries by absolute path; a moved file's old key is dropped by
+  `Scan`'s stale-entry cleanup (`!File.Exists(kv.Value.Path)`), and the new path has no cache hit,
+  so it's sampled fresh. This is the documented v1 design (`LibraryScanner`'s own class doc comment:
+  "a moved file just re-samples as if new, a conscious v1 simplification, not an oversight") —
+  confirmed against a real move, not just reasoned about.
+- **The library root itself also moves** — every video is treated as new (full re-sample), since
+  every file's absolute path changes at once instead of just one file's. Same mechanism as above,
+  just triggered library-wide simultaneously. **Deferred, by maintainer decision** — see "Open:
+  library-root moves
+  invalidate the whole cache" below.
+- **Non-video files in the library path** (text/JSON/audio/images) — correctly ignored.
+  `SharedOptions.ResolveCandidates` filters every candidate through `ClipExtractor.VideoExtensions`
+  before anything else ever sees it.
+- **`.vbr.` outputs** — correctly excluded by default and correctly included with
+  `--include-vbr-outputs`, confirming both directions of the `.vbr.`-exclusion design (added
+  mid-planning at the maintainer's request) against real `.vbr.` files, not just synthetic ones.
+- **Corrupt files** — logged as a per-file error, scan continues. The per-file `try`/`catch` in
+  `LibraryScanner.Scan` (already unit-tested against synthetic non-video content) holds up against a
+  real corrupt file too.
+- **Subtree traversal** — works. `ResolveCandidates`'s `EnumerationOptions { RecurseSubdirectories =
+  recurse }` (on by default; `--no-recurse` opts out).
+- **File permission failures** — confirms the fix from earlier this session holds, and reveals it's
+  actually two layers deep: `IgnoreInaccessible = true` on `ResolveCandidates`'s own enumeration (a
+  file/folder that can't even be *listed* is silently skipped, never an error) sits in front of the
+  per-file `try`/`catch` plus index-save resilience (`ScanSummary.IndexSaveError`) fixed after the
+  maintainer's original `UnauthorizedAccessException` report.
+
+**Open: library-root moves invalidate the whole cache — deferred (maintainer decision, 2026-07-27).**
+The gap: `LibraryIndexKey`/`LibraryIndexEntry.Path` are absolute paths with no move/rename relinking
+(by original v1 design, see above) — fine for a single file, but a library-root move (new drive
+letter, reorganizing a folder tree) invalidates *every* entry at once, forcing a full re-scan of a
+library whose content hasn't actually changed at all.
+
+Three options were weighed: (1) a content-hash relink — when a scan finds an unresolved candidate,
+match it against orphaned entries by `FileSize`+`OsHash` (already stored per entry, no new fields
+needed) and relink instead of re-sampling, mirroring VDF's own deferred `TryRelinkMovedFile`; (2)
+store paths relative to `--library` instead of absolute, so a root move is a non-event as long as
+internal structure is unchanged, at the cost of a bigger change to the persisted key/format
+semantics; (3) defer — keep today's full-re-sample behavior, document it as an accepted v1
+limitation. **Decision: (3), defer.** Full re-sample after a library-root move remains today's
+behavior; revisit if it becomes a real practical pain point rather than a theoretical one.
+
 Written up before writing any code, per the maintainer's request, and iterated across several
 rounds of open questions before implementation started — mirrors how the mixed-density spike was
 planned before being built.

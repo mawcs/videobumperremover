@@ -65,7 +65,7 @@ internal static class ScanCommand {
 			"Default: --library's own folder name.",
 	};
 
-	static readonly Option<DirectoryInfo> IndexFolder = new("--index-folder") {
+	static readonly Option<DirectoryInfo> LibraryDbFolder = new("--library-db-folder") {
 		Description = "Folder to hold this library's index file. The file itself is always named " +
 			"after --library-name (with a .vbridx extension) -- there's no separate way to set the " +
 			"file name. Doesn't need to exist yet; created on first save. Default: a dedicated " +
@@ -117,7 +117,7 @@ internal static class ScanCommand {
 		cmd.Options.Add(SampleInterval);
 		cmd.Options.Add(SparseInterval);
 		cmd.Options.Add(LibraryNameOption);
-		cmd.Options.Add(IndexFolder);
+		cmd.Options.Add(LibraryDbFolder);
 		cmd.Options.Add(IncludeVbrOutputs);
 		cmd.Options.Add(Rescan);
 		cmd.Options.Add(Verbose);
@@ -132,7 +132,7 @@ internal static class ScanCommand {
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
 			TimeSpan sparseInterval = parseResult.GetValue(SparseInterval);
 			string? libraryNameArg = parseResult.GetValue(LibraryNameOption);
-			DirectoryInfo? indexFolderArg = parseResult.GetValue(IndexFolder);
+			DirectoryInfo? libraryDbFolderArg = parseResult.GetValue(LibraryDbFolder);
 			bool includeVbrOutputs = parseResult.GetValue(IncludeVbrOutputs);
 			bool rescan = parseResult.GetValue(Rescan);
 			bool verboseFlag = parseResult.GetValue(Verbose);
@@ -171,17 +171,17 @@ internal static class ScanCommand {
 				: libraryNameArg;
 
 			// Checked here, before any scanning (or even the AI-component download) starts, not left
-			// for LibraryIndexStore.Save to discover: a file already sitting at --index-folder's path
-			// can never work as a folder to hold the index, and it's not worth wasting an entire run's
-			// sampling work to find that out only once a save is attempted.
-			if (indexFolderArg is not null && File.Exists(indexFolderArg.FullName)) {
+			// for LibraryIndexStore.Save to discover: a file already sitting at --library-db-folder's
+			// path can never work as a folder to hold the index, and it's not worth wasting an entire
+			// run's sampling work to find that out only once a save is attempted.
+			if (libraryDbFolderArg is not null && File.Exists(libraryDbFolderArg.FullName)) {
 				Console.Error.WriteLine(
-					$"Error: --index-folder must be a folder, but a file already exists there: '{indexFolderArg.FullName}'.");
+					$"Error: --library-db-folder must be a folder, but a file already exists there: '{libraryDbFolderArg.FullName}'.");
 				return 1;
 			}
-			// Same class of mistake --index-folder used to be exposed to before it became folder-only
-			// (docs/iterativeplan.md, "Post-ship fix #2") -- --log-file is a *file* path, so a
-			// trailing separator or an existing directory there is just as much a guaranteed,
+			// Same class of mistake --library-db-folder used to be exposed to before it became
+			// folder-only (docs/iterativeplan.md, "Post-ship fix #2") -- --log-file is a *file* path,
+			// so a trailing separator or an existing directory there is just as much a guaranteed,
 			// never-going-to-work destination, worth catching up front rather than discovering only
 			// once the first log write silently no-ops.
 			if (logFileArg is not null && (
@@ -192,7 +192,7 @@ internal static class ScanCommand {
 				return 1;
 			}
 
-			string indexPath = LibraryIndexStore.ResolveIndexPath(indexFolderArg?.FullName, libraryName);
+			string indexPath = LibraryIndexStore.ResolveIndexPath(libraryDbFolderArg?.FullName, libraryName);
 			string logPath = logFileArg?.FullName ??
 				Path.Combine(Path.GetDirectoryName(indexPath)!, Path.GetFileNameWithoutExtension(indexPath) + ".log");
 
