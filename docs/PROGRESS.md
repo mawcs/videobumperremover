@@ -599,7 +599,12 @@ was flagged right after the initial scaffold and fixed before anything else was 
       behind fix #2. `--index` renamed to `--index-folder` — unambiguously a folder now; the index
       file itself is always `{library-name}.vbridx`, never independently named. Retires fix #2's
       whole directory-vs-file confusion as a class, not just that one instance; `IsDirectoryLikePath`
-      removed as dead code. See `iterativeplan.md` → "Post-ship simplification #3."
+      removed as dead code. See `iterativeplan.md` → "Post-ship simplification #3." **Reporting
+      levels added (2026-07-27):** `--console-info`/`--log-file`/`--log-level`
+      (`quiet|info|debug|verbose|trace`) — independently leveled console and log-file output
+      (`--verbose` stays as shorthand for `--console-info verbose`), log file defaulting to sibling-
+      of-index-with-`.log` at `verbose` detail. See `iterativeplan.md` → "Post-ship feature —
+      `--console-info`/`--log-file`/`--log-level`."
   - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.

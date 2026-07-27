@@ -195,7 +195,8 @@ a catalog slot in without rework:
 > and `vbr scan` — the persisted fingerprint index, not a matcher — shipped 2026-07-26. It's a
 > deliberately separate command with its own flag surface (`--edge-boundary`/`--sample-interval`/
 > `--sparse-interval` with scan-appropriate defaults, `--library-name`/`--index-folder`,
-> `--include-vbr-outputs`, `--rescan`), not an extension of `match`'s flags — see
+> `--include-vbr-outputs`, `--rescan`, `--console-info`/`--log-file`/`--log-level`), not an
+> extension of `match`'s flags — see
 > `docs/iterativeplan.md` → "Library scan — implemented and validated" for the full design. `vbr
 > enroll` and the catalog it would populate remain the only unbuilt piece of this bullet.
 

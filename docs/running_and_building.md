@@ -236,8 +236,17 @@ Key options:
   trusting the cache; anything else re-samples. The index is checkpointed to disk periodically
   during a scan (not just at the end), so an interrupted run only loses the work since the last
   checkpoint.
-- Progress: a single updating counter by default; `--verbose` prints a result line per file plus
-  the same kind of model-load/frame-count/ffmpeg-command detail `match`/`remove --verbose` do.
+- `--console-info quiet|info|debug|verbose|trace` — how much progress detail hits the console.
+  `info` (default) is a single updating `x/total` counter. `quiet` is nothing but the final
+  summary/errors, which always print regardless of this setting. `debug` prints each file's
+  name+result plus an `x/total` progress line, one pair per file. `verbose` adds the underlying
+  model-load/frame-count/checkpoint log detail on top of `debug`'s lines (`--verbose` is shorthand
+  for `--console-info verbose`; an explicit `--console-info` wins if both are given). `trace` is
+  reserved for finer-grained detail than anything logs today — same as `verbose` for now.
+- `--log-file <path>` / `--log-level` — an independently leveled, appended-to log file (same five
+  levels as `--console-info`, applied separately). Default level `verbose`, default location
+  sibling to the index file with the same library name and a `.log` extension — so a quiet console
+  plus a fully-detailed log file is the out-of-the-box default, not something you have to ask for.
 
 **Verified live (2026-07-26)** against real media: a 49-minute episode scans in ~21s and produces
 197 merged fingerprints; an unchanged re-scan takes 0.16s; a touched-mtime-but-same-content file

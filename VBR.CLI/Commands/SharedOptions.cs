@@ -272,8 +272,14 @@ internal static class SharedOptions {
 	/// an <see cref="IDisposable"/> that unsubscribes; dispose it when the command finishes so a
 	/// stale handler doesn't outlive the process (matters most for the CLI's own test runs).
 	/// </summary>
-	internal static IDisposable? SubscribeVerboseLogging(bool verbose) {
-		if (!verbose) return null;
+	internal static IDisposable? SubscribeVerboseLogging(bool verbose) =>
+		SubscribeLogging(verbose, line => Console.Error.WriteLine(line));
+
+	/// <summary>Same mechanism as <see cref="SubscribeVerboseLogging"/>, generalized to any
+	/// destination (e.g. <c>vbr scan</c>'s <c>--log-file</c>, which needs its own independently
+	/// leveled echo of the same <see cref="Logger"/> events, separate from the console's).</summary>
+	internal static IDisposable? SubscribeLogging(bool active, Action<string> writeLine) {
+		if (!active) return null;
 		Logger.LogEventHandler handler = entry => {
 			if (entry.IsSessionStart) return;
 			string tag = entry.Severity switch {
@@ -281,7 +287,7 @@ internal static class SharedOptions {
 				LogSeverity.Error => "ERROR",
 				_ => "INFO ",
 			};
-			Console.Error.WriteLine($"[{entry.Timestamp:HH:mm:ss} {tag}] {entry.Message}");
+			writeLine($"[{entry.Timestamp:HH:mm:ss} {tag}] {entry.Message}");
 		};
 		Logger.Instance.LogEntryAdded += handler;
 		return new Unsubscriber(() => Logger.Instance.LogEntryAdded -= handler);

@@ -130,7 +130,49 @@ it once `--index-folder` can no longer be misread as a file path. Tests updated:
 `Path.Combine` avoids doubling a trailing separator but doesn't normalize *which* character it is,
 so a trailing `/` legitimately survives into the result) replaces the old `..._UsedVerbatim` test.
 
-### Spike plan (2026-07-24, for reference — see above for what actually shipped)
+**Post-ship feature — `--console-info`/`--log-file`/`--log-level` (2026-07-27):** maintainer
+request, made while running a real large scan and finding the existing plain/`--verbose` split too
+coarse. New `ScanReportLevel` enum (`quiet < info < debug < verbose < trace`), independently applied
+to two destinations: `--console-info` (console; default `info`, `--verbose` remains as shorthand for
+`--console-info verbose`, an explicit `--console-info` wins if both are given) and `--log-file`/
+`--log-level` (an appended-to file; default level `verbose`, default path sibling to the index file,
+same library name with a `.log` extension). `quiet` is nothing; `info` is today's single updating
+`x/total` counter (console only — a file can't usefully self-overwrite, so at `info` the file just
+carries the start/end lines); `debug` is a name+result line and an `x/total` line per file, no
+`Logger`-sourced detail; `verbose` is `debug`'s lines plus the underlying model-load/frame-count/
+checkpoint-save(-failure) detail that `Logger` raises; `trace` is reserved — no statement in the
+codebase logs at that granularity yet, so it behaves identically to `verbose` today, called out
+explicitly rather than invented for the occasion. The final summary and any error always print
+(and get mirrored into the log file) regardless of level, on the reasoning that "quiet" should mean
+no *progress* noise, not "might hide a real error."
+
+Two things had to be correct for the independence to actually work, not just look like it: (1)
+`Logger`-sourced detail (model load, checkpoint saves/failures) is only *raised* as an event at all
+when `LibraryScanner`/`WholeFileSampler` are constructed with logging enabled — so `ScanCommand` now
+passes `consoleLevel >= verbose || fileLevel >= verbose`, not the console level alone, or a verbose
+file level with a quiet console would silently lose everything `Logger` would have carried into the
+file. (2) the file's own `Logger` echo needed its own independent subscription rather than reusing
+the console's — `SharedOptions.SubscribeVerboseLogging` was generalized into a
+`SubscribeLogging(bool, Action<string>)` it now wraps, so both destinations share the same
+event-formatting logic without duplicating it.
+
+`--log-file` gets the same up-front directory-shape validation `--index-folder` had before fix #3
+retired the need for it there (trailing separator or an existing directory at that path) — the same
+class of mistake, just on a new option, so worth guarding proactively rather than waiting to
+rediscover it. Log-file writes mirror `Logger.Add`'s own resilience pattern exactly: open-append-
+write-close per line (not one held-open handle for the whole run) with `IOException`/
+`UnauthorizedAccessException` swallowed — a log write must never be allowed to crash the scan, given
+the whole point of the last two fixes was making saves resilient in the first place.
+
+Live-verified (Release build, isolated scratch library — the maintainer's own real scan was running
+against `test_materials` at the time under the old Debug build, so verification deliberately avoided
+both that data and that binary): default/`quiet`/`debug`/`verbose` console output all match spec
+exactly; `--log-level quiet` produces no file; an explicit `--log-file` is honored over the default
+path; `--log-file` pointed at an existing directory fails fast with a clear error; a `debug`-level
+console run alongside the (default) `verbose`-level file confirmed the two destinations really are
+independent — the file captured full `Logger` detail the console never showed. No `VBR.Core` changes
+were needed — this is entirely a `VBR.CLI` reporting change, so no new unit tests (consistent with
+this project's existing CLI-command-wiring coverage, which is verified live rather than unit tested).
 
 Written up before writing any code, per the maintainer's request, and iterated across several
 rounds of open questions before implementation started — mirrors how the mixed-density spike was
