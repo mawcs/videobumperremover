@@ -4,6 +4,294 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Bumper catalog — plan only, nothing implemented (2026-07-27, revised same day)
+
+**Status: plan for discussion, not yet approved or built.** Per the maintainer's request: put
+together a plan for creating the bumper catalog, document it here, implement nothing. This is
+[ROADMAP.md](ROADMAP.md) Phase 3's remaining half — the fingerprinting/matching/removal side of
+Phase 3 is done (`vbr scan`/`match`/`remove`); the catalog itself, named in that same phase, hasn't
+started. Design groundwork already exists — [ADR 0004](decisions/0004-bumper-catalog.md) and
+[`design/bumper-catalog.md`](design/bumper-catalog.md) — written 2026-07-15, before almost
+everything that now exists to build on. This plan doesn't replace that design, it grounds it in
+what's actually been built since and proposes a concrete, narrow v1. **Revised same day** after a
+first round of maintainer feedback — see "Revision log" at the end for what changed and why.
+
+### What's changed since the catalog was designed
+
+The original design (bumper-catalog.md) treated several things as open implementation questions
+that are now effectively pre-answered by precedent, because `vbr scan`'s `LibraryIndex` solved the
+*same class* of problem for per-file fingerprints:
+
+- **Storage format:** the design doc speculated "likely a dedicated SQLite DB." What actually got
+  built for the library index is MemoryPack (`[MemoryPackable(GenerateType.VersionTolerant)]`,
+  magic-header-checked, atomic temp-file-then-move save, per-OS default state folder) — no SQLite
+  anywhere in this codebase. The catalog should follow the same pattern for consistency, not
+  introduce a second persistence technology for a structurally similar problem.
+- **Fingerprint representation:** `bumper-catalog.md` calls for "audio_fingerprint,
+  visual_embedding, phash_sequence, duration" per entry — this is *exactly*
+  `VBR.Core.Fingerprinting.TimedFingerprint[]` (embedding + pHash, timestamp-tagged) plus
+  `AudioFingerprint`/`Duration`, the same types `LibraryIndexEntry` already carries. A catalog
+  entry can reuse `TimedFingerprint` directly rather than inventing a parallel shape — which also
+  means catalog-vs-index comparison later is just `VisualBumperMatcher.MatchMixedDensity`/
+  `MatchMixedDensityPHash`, already built and validated, not new matching code.
+- **Sampling mechanism:** adding a bumper needs to fingerprint one short clip (seconds to under a
+  minute), not a whole episode — this is exactly what `MixedDensitySampler`/`EdgeDensityProfile`
+  already do for `vbr match`/`vbr remove` today (an edge-boundary at or beyond the clip's own
+  length makes the whole clip dense, no sparse-middle needed). No new sampling code.
+- **Interface contract already exists and is already enforced elsewhere:** "every enrollment/
+  matching entry point accepts a source video path + a time range, never a pre-cut clip file" is
+  bumper-catalog.md's own rule, and it's exactly `--clip-from`/`--region`/`--clip-length`'s shape,
+  already required on `match`/`remove`. Adding a bumper should take the identical three parameters.
+
+None of the *open* questions in ADR 0004/bumper-catalog.md (variants vs. sub-bumpers, auto-queue
+confidence threshold, community sharing) are resolved by any of this — those are still open, see
+below. What's resolved is the *storage/sampling mechanism* question, by precedent rather than by
+new decision.
+
+### Proposed v1 scope: the catalog store + `vbr add-bumper` only
+
+Mirroring how `vbr scan` shipped (the index/write side first; "wire `match`/`remove` to *read* the
+cache" stayed a separate, later step) — propose the same split here:
+
+- **In scope:** a persisted, per-library catalog store, and a new `vbr add-bumper` command that
+  adds one entry to it from a source video + region + length, exactly like `match`/`remove` extract
+  a reference clip today — plus a thumbnail (maintainer request, this revision).
+- **Explicitly out of scope for this pass, deferred to a later plan:**
+  - **Apply / catalog-aware scanning** — matching a video or library against *every* catalog
+    entry (bumper-catalog.md's "video → catalog" direction). This is the actual payoff, but it's a
+    second, separable piece of work once entries exist to match against.
+  - **Curation** (rename, edit boundaries, merge/split, retire) — no catalog contents exist yet to
+    curate; premature before `add-bumper` ships.
+  - **Duplicate/variant detection at add time** (maintainer decision, this revision): deferred to a
+    future version. If a user adds the same bumper twice, or two near-identical variants, the
+    consequences are catalog size and disk space only — not a correctness problem worth guarding
+    against in v1.
+  - **Sub-bumper parent/child relationships and variant grouping** — real per bumper-catalog.md,
+    but adding unused schema fields now (before any code exercises them) is exactly the kind of
+    speculative design this project avoids elsewhere. MemoryPack's `VersionTolerant` mode exists
+    specifically so these can be added later without a migration; v1 stores each entry
+    independently, full extent, no relationships.
+  - **Auto-discovery, on-ingest automation, export/import (either mode), community sharing** — all
+    explicitly later-phase per ROADMAP.md (Phase 7) already; nothing here changes that.
+
+### Proposed data model
+
+New `VBR.Core.Catalog` namespace, mirroring `VBR.Core.Index`'s existing shape (`LibraryIndex`/
+`LibraryIndexEntry`/`LibraryIndexStore`) closely enough to reuse the same patterns wholesale —
+MemoryPack `VersionTolerant`, `FormatVersion` carried from entry one, magic-header-checked
+load, atomic save:
+
+```csharp
+[MemoryPackable(GenerateType.VersionTolerant)]
+public sealed partial class BumperCatalog {
+    public int FormatVersion { get; set; }
+    public string LibraryName { get; set; }          // mirrors LibraryIndex.LibraryName -- catalogs are per-library now
+    public Dictionary<string, BumperCatalogEntry> Entries { get; set; } = new();  // keyed by Id
+}
+
+[MemoryPackable(GenerateType.VersionTolerant)]
+public sealed partial class BumperCatalogEntry {
+    public string Id { get; set; }                  // stable identifier -- a GUID; not meant to be typed by a human, see Label
+    public string Label { get; set; }                // required, short, human-facing lookup key -- e.g. "Disney FBI warning 2003"; length-limited, see open questions
+    public string? Description { get; set; }         // optional, longer free text for curation context; length-limited, see open questions
+    public string[] Tags { get; set; }
+    public ClipEdge Region { get; set; }             // reuses VBR.Core.Extraction.ClipEdge (begin|end) directly -- see note below
+    public string Status { get; set; }               // "active" | "retired"
+    public TimeSpan Duration { get; set; }           // precisely-measured bumper length (ADR 0007's arithmetic-cut assumption)
+    public TimedFingerprint[] Fingerprints { get; set; }   // same type LibraryIndexEntry already uses
+    public uint[]? AudioFingerprint { get; set; }
+    public string ReferenceClipPath { get; set; }    // relative to the catalog's own folder, see Storage
+    public byte[] Thumbnail { get; set; }             // embedded directly in the catalog, unlike the clip -- see Thumbnail capture
+    public string SourceVideoPath { get; set; }      // provenance
+    public DateTime DateAdded { get; set; }
+    public int OccurrenceCount { get; set; }         // 0 until "apply"/removal integration exists to update it
+}
+```
+
+Changes from the first draft, per maintainer feedback:
+
+- **`Category` renamed to `Region`**, and per the maintainer's own reasoning for the rename (it
+  should mirror the existing `--region` CLI concept), it's proposed as a direct reuse of
+  `VBR.Core.Extraction.ClipEdge` rather than a free string — the stored value *is* whatever
+  `--region` was passed as, no separate inference or mapping step needed, which is simpler than
+  the first draft's "category defaults to inferring from region." Consequence, raised and
+  confirmed acceptable: `ClipEdge` today is only `{ begin, end }` — no way to represent an
+  interstitial (mid-video) bumper without extending `ClipEdge` itself later (a broader,
+  cross-cutting change — `match`/`remove`/`scan` all use it — beyond just this catalog's schema),
+  deferred until interstitial removal itself is built (ROADMAP Phase 5, still later work). **The
+  maintainer's caveat on deferring this, resolved, not a gap:** deferring the catalog's
+  interstitial *category* must not imply the underlying *library index* only covers edges — it
+  doesn't, already. `WholeFileSampler` (built for `vbr scan`, shipped) already merges a
+  keyframe-only *whole-file sparse* pass with the dense-edge pass into one fingerprint set per
+  file — every `vbr scan`'d library already has sparse coverage of its middles today, independent
+  of and unaffected by the catalog's current edge-only `Region`. So when interstitial support is
+  eventually built, existing scanned libraries already carry the data it would need — no rescan/
+  rebuild required. Nothing to change here; confirming this was already true, not new work.
+- **`Notes` replaced with `Description`** — confirmed as a straight replacement (the maintainer
+  had missed the earlier `Notes` field in the first draft; `Description` covers the same purpose).
+- **`Thumbnail` added, embedded as bytes** (maintainer request) — see "Thumbnail capture" below.
+- **`Id` stays a GUID, not a slug** — the maintainer's own reasoning ("if Id is a GUID, then label
+  is the only user-friendly way of specifying which bumper") settles the first draft's open
+  question: `Id` is internal/stable, `Label` is the human-facing handle a future lookup command
+  (e.g. an eventual `--retire <label>`) would key off — which is *why* `Label` needs a sane length
+  limit and `Id` doesn't.
+
+### Thumbnail capture
+
+Extract one representative still frame from the reference clip. Proposed mechanism: reuse
+`VBR.Core.Fingerprinting.FrameQuality`'s existing "most detailed" heuristic (already built and
+used to filter low-information frames out of matching, so it already knows how to avoid picking a
+near-black or blank frame) to pick which frame, rather than a fixed offset like the clip's
+midpoint, which could land on a fade or a blank moment depending on the bumper. Low-stakes
+mechanism choice, easy to change later if it doesn't work well in practice.
+
+**Stored as embedded bytes in the catalog entry (`Thumbnail`, `byte[]`), not a separate file**
+(maintainer request) — asymmetric with the reference clip, which stays a separate file on disk.
+The asymmetry is deliberate, not an inconsistency: a single still frame is small (tens of KB as a
+JPEG) where a video clip is not, so embedding the thumbnail buys single-file portability and no
+orphan-file bookkeeping (delete an entry, its thumbnail is gone automatically) at negligible cost,
+while doing the same for the clip would make every catalog save rewrite megabytes of video through
+`LibraryIndexStore`-style atomic saves' whole-file-rewrite pattern for no real benefit.
+
+**Stored at original/native decoded dimensions, no resize (maintainer decision) — resizing before
+storage explicitly deferred**, not rejected: revisit later if catalog size in practice makes it
+worth doing.
+
+### Should `add-bumper` reuse fingerprints from an already-`vbr scan`'d file? — analysis, not adopted for v1
+
+Raised by the maintainer: if the source video is already in a library's `LibraryIndex` (a prior
+`vbr scan` ran over it), can/should `add-bumper` read its cached fingerprints instead of
+re-sampling from scratch?
+
+It's a real idea with a real gap, not a clear win:
+
+- **The speed advantage is smaller than it looks.** A `LibraryIndexEntry`'s dense-edge fingerprints
+  would often already cover a short edge bumper — but `add-bumper` still needs to extract an actual
+  playable reference clip and a thumbnail image, neither of which the index stores (it's
+  fingerprints only, no media). So reusing cached fingerprints would skip the embedding/decode
+  step but *not* the ffmpeg extraction step — the more expensive of the two is the one that still
+  has to happen either way.
+- **Density mismatch risk.** The scan's `--edge-boundary`/`--sample-interval` were chosen for
+  whole-library scanning, not tuned per bumper — if a scan's edge-boundary is shorter than this
+  specific bumper (Avatar's 47s intro against a 20s default boundary is exactly this case,
+  encountered earlier this session), only part of the cached fingerprints would be dense; the rest
+  would only have sparse coverage, a lower-quality reference than dedicated fresh sampling.
+- **Adds real complexity for a rarely-hot path.** Adding a bumper is a deliberate, infrequent,
+  curated action — not a batch operation where shaving decode time matters the way it does for
+  scanning hundreds of files.
+
+**Recommendation: always sample fresh in v1**, same as `match`/`remove` do today — simple,
+guaranteed-consistent quality, no dependency on whether a scan happened to run first or with
+compatible settings. Worth revisiting as a real optimization if a future workflow needs to
+*batch*-add many bumpers from an already-scanned library, where the calculus would be different.
+Flagged for the maintainer's agreement, not silently decided.
+
+### Proposed storage
+
+- **Per-library, not global** (maintainer correction) — "independent of any particular video"
+  (bumper-catalog.md's own framing) means a bumper isn't tied to one *file*, not that the catalog
+  should be global across every library a user has. Each library gets its own catalog, mirroring
+  `vbr scan`'s own per-library index.
+- **Dedicated `--catalog-db-folder`, not shared with `vbr scan`'s `--library-db-folder`**
+  (resolved, maintainer decision): `add-bumper` mirrors `vbr scan`'s *pattern* (a name + a folder
+  override, sensible defaults if omitted) rather than reusing its exact storage location. Default
+  location mirrors `LibraryIndexStore.GetDefaultIndexFolder`'s per-OS pattern at its own dedicated
+  path (e.g. `%LOCALAPPDATA%\VideoBumperRemover\catalog\` on Windows, a sibling to `index\`, not
+  inside it), filename `{library-name}.vbrcat` — same mechanism as the index, different folder.
+- Reference clips live in a `clips/` subfolder next to the catalog file, named by `Id` (e.g.
+  `clips/{id}.mkv`) — thumbnails are embedded in the catalog file itself, not stored here (see
+  Thumbnail capture above).
+- Extraction of the reference clip reuses `ClipExtractor`'s existing seek+extract mechanism,
+  writing to the catalog's `clips/` folder instead of a temp path.
+
+### Proposed CLI: `vbr add-bumper`
+
+Renamed from the first draft's `vbr enroll` (maintainer preference). Dropping `--category`
+entirely versus the first draft — `Region` is now set directly from `--region`, so there's nothing
+left to separately specify or infer.
+
+```sh
+vbr add-bumper --clip-from <file> --region begin|end --clip-length <duration> --label <text>
+               --library <folder> [--library-name <name>]
+               [--description <text>] [--tags <text>]
+               [--catalog-db-folder <folder>] [--verbose]
+```
+
+- `--clip-from`/`--region`/`--clip-length` — identical meaning and requiredness to `match`/
+  `remove`'s existing options (reused, not reinvented).
+- `--label` — **required, no auto-suggestion** (maintainer decision, after working through and
+  rejecting inferring one from the source filename/folder structure — too many edge cases:
+  parent-folder-vs-grandparent show naming, episode codes to strip, no clean general rule). Length
+  limit **30 characters, confirmed** (the maintainer's own number, "fine for now").
+- `--description` — optional, length limit **255 characters, confirmed**.
+- **Both limits enforced at the CLI layer, not the data model** (maintainer decision) —
+  `BumperCatalogEntry.Label`/`Description` stay plain, unconstrained strings in `VBR.Core`;
+  `VBR.CLI`'s `add-bumper` command validates length and rejects with a clear error before ever
+  constructing an entry, the same layering `--index-folder`/`--log-file`'s existing shape checks
+  already use (validate in the CLI command, keep the Core model trusting/simple). Rejected, not
+  silently truncated, either way.
+- `--library`/`--library-name` — identifies which library's catalog to add to, mirroring `vbr
+  scan`'s exact option pair and default-derivation behavior (`--library-name` defaults from
+  `--library`'s own folder name if omitted). `--library` is not otherwise used by `add-bumper` (no
+  enumeration/scanning happens) — it's accepted purely so the name-derivation convenience matches
+  `vbr scan`'s, rather than forcing `--library-name` to always be typed explicitly.
+- Samples the clip via the existing `MixedDensitySampler` (all-dense, same mechanism `match`/
+  `remove` already use), extracts and stores the reference clip and a thumbnail (see above),
+  measures `Duration` from the same `ffprobe` call already used elsewhere, generates an `Id`,
+  writes the entry.
+- **Reporting: plain `--verbose` bool, confirmed** (maintainer decision, this revision) — not
+  `vbr scan`'s five-tier `--console-info`/`--log-file`/`--log-level` scheme. Reasoning (maintainer):
+  that scheme exists specifically because a library scan can produce enough console output to
+  overflow a terminal's scrollback (hit directly this session, 102 files), and `add-bumper` — one
+  entry per invocation — will never approach that.
+- **No confirmation step, confirmed** (maintainer decision, this revision) — capture and add
+  directly, report the result afterward, matching `vbr scan`'s own "just do it, report" style.
+
+### Open questions
+
+None outstanding — every question raised across both feedback rounds is resolved (storage
+location, `Region`/`ClipEdge`/interstitial handling, `Notes`→`Description`, the 30/255 length
+numbers and where they're enforced, reuse-scanned-fingerprints, the `--library`/`--library-name`
+pairing, and the thumbnail's storage shape/dimensions — see "Revision log" for the full history).
+Nothing here currently blocks moving from plan to implementation, when that's wanted.
+
+### Explicitly not decided by this plan
+
+Everything under "Explicitly out of scope for this pass" above, plus: the exact shape of "apply"
+(catalog-aware `vbr scan`/`match`/`remove`), the removal manifest's catalog-entry link (ADR 0007
+already reserves a `MatchDetail` field but no `CatalogEntryId` yet), and how `OccurrenceCount` gets
+updated (presumably by a future "apply" pass, not `add-bumper` itself, since adding a bumper
+doesn't remove anything).
+
+### Revision log
+
+**2026-07-27, same day, first maintainer feedback round.** Renamed `vbr enroll` → `vbr add-bumper`;
+`Category` → `Region` (now a direct `ClipEdge` reuse, dropping the `--category` CLI flag entirely);
+catalog changed from one-global-by-default to per-library (a correction, not a refinement — the
+first draft misread "independent of any particular video" as "independent of any particular
+library"); added a thumbnail field + a proposed capture mechanism; resolved four of the first
+draft's six open questions (label auto-suggestion → rejected, explicit required field; `Id` shape
+→ GUID, settled; duplicate/variant detection → deferred to a future version; reporting scheme →
+plain `--verbose`; confirmation step → none) — leaving two carried forward in modified form and
+introducing three new ones (storage-location sharing, `Notes`/`Description` split, the
+length-limit numbers) from decisions made this round.
+
+**2026-07-27, same day, second maintainer feedback round.** All six open questions from the first
+round resolved: catalog storage gets its own dedicated `--catalog-db-folder` (not shared with
+`vbr scan`'s `--library-db-folder`); `--library`/`--library-name` pairing confirmed as proposed;
+deferring the `Region` interstitial value confirmed acceptable, with the caveat that `vbr scan`'s
+existing whole-file sparse-middle sampling already covers the groundwork independently — no future
+library rebuild needed when interstitial support is eventually built; `Notes`→`Description`
+confirmed as a straight replacement; 30/255 length limits confirmed, with enforcement explicitly
+placed at the CLI layer, not the `VBR.Core` data model; sample-fresh (not reusing scanned
+fingerprints) confirmed. New this round: the thumbnail is stored as embedded bytes (`Thumbnail`,
+`byte[]`) directly in the catalog entry rather than a sibling file like the reference clip — which
+introduces the one new open question (bounding the thumbnail's size before embedding).
+
+**2026-07-27, same day, third maintainer feedback round.** Last open question resolved: the
+embedded thumbnail is stored at original/native decoded dimensions, no resize — deferred, not
+rejected; revisit if catalog size becomes a real problem in practice. No open questions remain.
+
 ## Removal re-encode defaults — codec-matched output, decided but not yet built (2026-07-27)
 
 **Status: documented design decision, not yet implemented.** The maintainer asked to discuss and
