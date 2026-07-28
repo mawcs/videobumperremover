@@ -258,6 +258,50 @@ Report rows: `CLEANED`, `BROKEN` (needs attention — original untouched), `PEND
 couldn't remove the old original/manifest — self-heals on a future run), `SKIPPED` (`--file` only:
 no `.vbr.` output exists for the target), and `RECOVER` for anything the startup sweep reconciled.
 
+### Run — `vbr add-bumper`
+
+```sh
+dotnet run --project VBR.CLI -- add-bumper --help
+```
+
+Adds one bumper to a library's persistent **catalog** — samples `--clip-from`'s requested region
+directly from source, extracts a reference clip and a native-resolution thumbnail, measures precise
+duration, and writes a new entry. Like `match`/`remove`, it never accepts a pre-cut clip file
+(`--clip-from`/`--region`/`--clip-length`, identical meaning); like `scan`, it's per-library
+(`--library`/`--library-name`) with its own dedicated storage folder. Doesn't match or remove
+anything, and doesn't read the catalog back yet. See [`iterativeplan.md`](iterativeplan.md) →
+"Bumper catalog" for the full design and what's still unbuilt (catalog-aware matching/"apply",
+curation, sub-bumper relationships, export/import).
+
+```sh
+dotnet run --project VBR.CLI -- add-bumper --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s --label "Studio ident" --library "D:\Media\Show"
+```
+
+Key options:
+
+- `--label` (required, max 30 characters) — the one field you must supply yourself; no
+  auto-suggestion from the filename/folder (considered and rejected during planning — too many
+  edge cases to guess reliably, e.g. show name living in a grandparent folder, episode codes to
+  strip). 
+- `--description` (optional, max 255 characters) and `--tags` (optional, comma-separated)
+  add curation context. All three are enforced at the CLI, not the underlying data model.
+- `--library`/`--library-name` — identifies which library's catalog to add to; same option pair
+  and default-derivation behavior (`--library-name` defaults from `--library`'s own folder name)
+  as `vbr scan`. `--library` itself isn't otherwise used — nothing is enumerated or scanned.
+- `--catalog-db-folder` — where this library's catalog file lives; doesn't need to exist yet.
+  Default: a dedicated per-library folder under VBR's own state folder
+  (`%LOCALAPPDATA%\VideoBumperRemover\catalog\` on Windows) — a sibling of, not shared with, `vbr
+  scan`'s own index folder.
+- `--verbose` — same logging convention as every other command: model path, sampled/usable frame
+  counts, and exact ffmpeg commands run, to the console and `log.txt`.
+
+**Verified live (2026-07-28)** against a real Daredevil episode's Netflix end-card (`--region end
+--clip-length 8s`, the same length ADR 0007 independently measured for it): 17 usable fingerprints,
+a real reference clip and native-resolution thumbnail, a real audio fingerprint, duration measured
+at exactly 8s from the extracted clip. A second bumper added to the same library correctly
+accumulated as a second catalog entry without touching the first. Full numbers:
+[`iterativeplan.md`](iterativeplan.md).
+
 ### Test
 
 ```sh
