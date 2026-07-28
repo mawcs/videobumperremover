@@ -194,6 +194,15 @@ internal static class SharedOptions {
 		Description = "With --library: search only its top level instead of traversing subfolders. No effect with --file.",
 	};
 
+	// Shared by `scan` and `add-bumper` — both name a per-library file (an index, a catalog) after
+	// this, defaulting from --library's own folder name. Promoted here (was scan-only originally)
+	// once add-bumper needed the identical option, per this file's own stated purpose: one shared
+	// definition rather than two copies drifting apart.
+	internal static readonly Option<string> LibraryName = new("--library-name") {
+		Description = "Label for this library — also names its default per-library file (index, " +
+			"catalog, etc.). Default: --library's own folder name.",
+	};
+
 	internal static readonly Option<DirectoryInfo> DumpFrames = new("--dump-frames") {
 		Description = "Diagnostic (visual only): write every sampled frame as a PNG under this " +
 			"folder — the reference clip's frames under clip/, each candidate's search window " +

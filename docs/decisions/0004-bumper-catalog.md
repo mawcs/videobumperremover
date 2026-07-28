@@ -2,6 +2,11 @@
 
 - **Status:** accepted
 - **Date:** 2026-07-15
+- **Implementation status (2026-07-28):** write side built — `vbr add-bumper` (`VBR.Core.Catalog`),
+  planned in detail across three maintainer feedback rounds then implemented and live-verified the
+  next day. **Video → catalog (Apply), the direction this ADR actually motivates, is not built
+  yet** — `add-bumper` only ever adds one entry, nothing reads the catalog back. See
+  `../iterativeplan.md` → "Bumper catalog" for the full plan and implementation write-up.
 - **Related:** [`../design/bumper-catalog.md`](../design/bumper-catalog.md) (data model &
   workflows), [ROADMAP](../ROADMAP.md)
 

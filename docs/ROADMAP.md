@@ -30,6 +30,11 @@ done and verified against real media (`vbr match` / `vbr remove` / `vbr cleanup`
 or mid-video handling. Parts 3 (catalog) and 4 (verification UX) haven't started. Full writeup:
 [`PROGRESS.md`](PROGRESS.md).
 
+**Update (2026-07-28): Part 3's write side started** — `vbr add-bumper` persists one bumper into a
+per-library catalog (`VBR.Core.Catalog`). The direction that makes the catalog actually pay off
+(video → catalog, "apply") is still not built — see [`iterativeplan.md`](iterativeplan.md) →
+"Bumper catalog" for the implementation. Part 4 (verification UX) still hasn't started.
+
 ## What we inherit from VDF vs. what's net-new
 
 This project is a fork of Video Duplicate Finder (see

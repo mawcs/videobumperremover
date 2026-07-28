@@ -4,17 +4,17 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
-## Bumper catalog — plan only, nothing implemented (2026-07-27, revised same day)
+## Bumper catalog — implemented and validated (2026-07-27, planned; 2026-07-28, built)
 
-**Status: plan for discussion, not yet approved or built.** Per the maintainer's request: put
-together a plan for creating the bumper catalog, document it here, implement nothing. This is
-[ROADMAP.md](ROADMAP.md) Phase 3's remaining half — the fingerprinting/matching/removal side of
-Phase 3 is done (`vbr scan`/`match`/`remove`); the catalog itself, named in that same phase, hasn't
-started. Design groundwork already exists — [ADR 0004](decisions/0004-bumper-catalog.md) and
-[`design/bumper-catalog.md`](design/bumper-catalog.md) — written 2026-07-15, before almost
-everything that now exists to build on. This plan doesn't replace that design, it grounds it in
-what's actually been built since and proposes a concrete, narrow v1. **Revised same day** after a
-first round of maintainer feedback — see "Revision log" at the end for what changed and why.
+**Status: implemented and validated.** Built to the plan below (three maintainer feedback rounds,
+all open questions resolved) the day after it was written. See "Implementation (2026-07-28)" at the
+end for what shipped, real numbers from a live run, and how it differs in small ways from the plan.
+This is [ROADMAP.md](ROADMAP.md) Phase 3's remaining half — the fingerprinting/matching/removal side
+of Phase 3 was already done (`vbr scan`/`match`/`remove`); the catalog's write side (`vbr
+add-bumper`) now exists too. Design groundwork already existed — [ADR 0004](decisions/0004-bumper-catalog.md)
+and [`design/bumper-catalog.md`](design/bumper-catalog.md), written 2026-07-15, before almost
+everything that now exists to build on. The plan below doesn't replace that design, it grounds it in
+what had been built since and proposes (and, as of 2026-07-28, delivers) a concrete, narrow v1.
 
 ### What's changed since the catalog was designed
 
@@ -291,6 +291,54 @@ introduces the one new open question (bounding the thumbnail's size before embed
 **2026-07-27, same day, third maintainer feedback round.** Last open question resolved: the
 embedded thumbnail is stored at original/native decoded dimensions, no resize — deferred, not
 rejected; revisit if catalog size becomes a real problem in practice. No open questions remain.
+
+### Implementation (2026-07-28)
+
+Built exactly to the plan above — `VBR.Core.Catalog` (`BumperCatalog`/`BumperCatalogEntry`/
+`BumperCatalogStore`/`BumperCatalogBuilder`, mirroring `VBR.Core.Index`'s shape precisely: same
+MemoryPack `VersionTolerant` convention, same magic-header-checked atomic-save-with-retry, own
+dedicated `VBRCAT01` magic and `.vbrcat` extension so an index file can never load as a catalog or
+vice versa) and `VBR.CLI.Commands.AddBumperCommand` (`vbr add-bumper`), registered in `Program.cs`.
+`--library-name` was promoted from `ScanCommand`-local into `SharedOptions` rather than duplicated
+a second time — a direct, mechanical consequence of the plan's own "mirror `vbr scan`'s pair"
+decision, not a deviation from it.
+
+**One real refinement the plan didn't spell out:** "reuse `FrameQuality`'s most-detailed heuristic"
+for the thumbnail turned out to need two decode passes, not one. The AI-pipeline frames that
+heuristic scores are already downscaled to the ONNX model's fixed 224×224 input size — fine for
+*picking which timestamp* is most detailed, wrong resolution for the actual stored thumbnail (the
+plan's "original/native dimensions" decision). `BumperCatalogBuilder.CaptureThumbnail` scores the
+AI-pipeline frames to find the best timestamp, then re-extracts *that* frame from the original
+source at native resolution as a single-frame JPEG (`ffmpeg -frames:v 1 -f image2pipe -c:v mjpeg`)
+— a second, cheap, best-effort decode, consistent with the plan's "never blocks adding the bumper"
+framing for thumbnail failures. The audio fingerprint (Chromaprint) is computed from the
+*extracted reference clip*, not the source region directly — simpler than region-aware chromaprint
+extraction would have been, and the clip is already being created for the reference-clip field
+regardless.
+
+**Live-verified** against a real Daredevil episode's Netflix end-card (`--region end --clip-length
+8s`, the exact length ADR 0007 independently measured for this same card): 27 frames sampled dense
+@ 0.2s, 17 usable after low-information filtering, real reference clip extracted (369,882 bytes),
+real audio fingerprint (9 Chromaprint blocks), real thumbnail (30,266 bytes, native resolution, via
+the two-pass mechanism above), duration measured at exactly 8s from the extracted clip. A second
+`add-bumper` call against the same library (a different episode's card) correctly accumulated as a
+second entry — catalog file grew from 37,773 to 74,976 bytes, both reference clips intact, nothing
+overwritten. Both CLI-layer validations (label over 30 chars, `--catalog-db-folder` pointing at an
+existing file) fail fast with clear errors, mirroring `--library-db-folder`/`--log-file`'s
+established shape.
+
+**Tests:** 14 new (67 total, up from 53), all passing — `BumperCatalogStoreTests` (round-trip
+serialization including `Thumbnail`/`AudioFingerprint`/full header, atomic-save, wrong-magic
+rejection including cross-store confusion, retry-then-throw, path derivation, default-folder
+sibling-not-inside-the-index-folder check) and `BumperCatalogBuilderTests` (the three validation
+paths that throw before ever touching the ONNX model — nonexistent source, non-positive clip
+length, clip length exceeding a real probed source duration — kept AI-model-free and fast, same
+philosophy as the rest of this project's unit suite; full pipeline correctness is the live
+verification above, same division as `LibraryScannerEquivalenceTests`).
+
+**Unchanged from the plan, still explicitly out of scope:** apply/catalog-aware scanning,
+curation, sub-bumper relationships, auto-discovery, on-ingest automation, export/import, community
+sharing. `vbr add-bumper` only ever writes one new entry; nothing reads the catalog back yet.
 
 ## Removal re-encode defaults — codec-matched output, decided but not yet built (2026-07-27)
 

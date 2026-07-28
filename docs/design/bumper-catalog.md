@@ -5,6 +5,16 @@ Detailed design for the persistent bumper catalog decided in
 living design sketch, not a final schema — it captures the shape of the data and the
 workflows so we build for them from the start.
 
+**2026-07-28 — Enroll (below) is built, as `vbr add-bumper`.** The concrete schema and storage
+mechanics ended up somewhat different from this sketch (MemoryPack, not SQLite; per-library, not a
+single combined store; a fixed catalog-entry shape without the sub-bumper/variant relationship
+fields sketched below, deferred to stay unspeculative until something actually needs them) — see
+[`../iterativeplan.md`](../iterativeplan.md) → "Bumper catalog" for the actual shipped design and
+why it diverged. The conceptual shape below (what the catalog *is*, the two matching directions,
+the workflows) is still accurate; treat the "Catalog entry"/"Storage" sections specifically as
+superseded by the implementation write-up. **Apply (below) is not built** — `add-bumper` only ever
+writes one entry; nothing reads the catalog back yet.
+
 ## What the catalog is
 
 A curated, persistent store of **known bumpers**, independent of any particular video.

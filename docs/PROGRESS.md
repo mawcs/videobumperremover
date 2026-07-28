@@ -621,7 +621,18 @@ was flagged right after the initial scaffold and fixed before anything else was 
       decided to defer** — today's full-re-sample-after-a-root-move behavior stands as an accepted
       v1 limitation. See `iterativeplan.md` → "Manual verification pass" / "Open: library-root moves
       invalidate the whole cache."
-  - [ ] **Catalog** — enroll a bumper once, apply forever; personal export/import.
+  - [x] **Catalog — write side implemented and validated (2026-07-28).** `vbr add-bumper` adds one
+    bumper to a per-library catalog (`VBR.Core.Catalog`, mirroring the library index's exact
+    MemoryPack/atomic-save pattern at its own `.vbrcat` extension and dedicated
+    `--catalog-db-folder`) — samples the source directly (never the extracted clip, same
+    direct-source-decode lesson `MixedDensitySampler` already learned), extracts a reference clip
+    and a native-resolution thumbnail (two-pass: score AI-pipeline frames for detail, re-extract
+    the winner at full resolution), measures precise duration, computes an audio fingerprint.
+    Planned across three maintainer feedback rounds (`iterativeplan.md` → "Bumper catalog"), then
+    built and live-verified the next day against a real Daredevil Netflix card. 14 new tests (67
+    total). **Still not built, unchanged from the plan:** apply/catalog-aware matching (reading the
+    catalog back — the actual "remove forever" payoff), curation, sub-bumper relationships,
+    auto-discovery, export/import.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.
   - [ ] **Verification UI** (Avalonia) — preview/confirm cuts; fix the VDF UX traps in `ux-issues.md`.

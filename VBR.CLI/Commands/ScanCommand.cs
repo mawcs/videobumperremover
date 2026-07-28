@@ -60,11 +60,6 @@ internal static class ScanCommand {
 		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(4)),
 	};
 
-	static readonly Option<string> LibraryNameOption = new("--library-name") {
-		Description = "Label for this library's index — also names its default index file. " +
-			"Default: --library's own folder name.",
-	};
-
 	static readonly Option<DirectoryInfo> LibraryDbFolder = new("--library-db-folder") {
 		Description = "Folder to hold this library's index file. The file itself is always named " +
 			"after --library-name (with a .vbridx extension) -- there's no separate way to set the " +
@@ -116,7 +111,7 @@ internal static class ScanCommand {
 		cmd.Options.Add(EdgeBoundary);
 		cmd.Options.Add(SampleInterval);
 		cmd.Options.Add(SparseInterval);
-		cmd.Options.Add(LibraryNameOption);
+		cmd.Options.Add(LibraryName);
 		cmd.Options.Add(LibraryDbFolder);
 		cmd.Options.Add(IncludeVbrOutputs);
 		cmd.Options.Add(Rescan);
@@ -131,7 +126,7 @@ internal static class ScanCommand {
 			TimeSpan edgeBoundary = parseResult.GetValue(EdgeBoundary);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
 			TimeSpan sparseInterval = parseResult.GetValue(SparseInterval);
-			string? libraryNameArg = parseResult.GetValue(LibraryNameOption);
+			string? libraryNameArg = parseResult.GetValue(LibraryName);
 			DirectoryInfo? libraryDbFolderArg = parseResult.GetValue(LibraryDbFolder);
 			bool includeVbrOutputs = parseResult.GetValue(IncludeVbrOutputs);
 			bool rescan = parseResult.GetValue(Rescan);
