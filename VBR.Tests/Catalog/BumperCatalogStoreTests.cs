@@ -36,7 +36,7 @@ public class BumperCatalogStoreTests {
 	}
 
 	static BumperCatalog BuildSampleCatalog() {
-		var catalog = new BumperCatalog { LibraryName = "Sample Library" };
+		var catalog = new BumperCatalog { CatalogName = "Sample Catalog" };
 		var entry = new BumperCatalogEntry {
 			Id = Guid.NewGuid().ToString("N"),
 			Label = "Disney FBI warning 2003",
@@ -71,7 +71,7 @@ public class BumperCatalogStoreTests {
 			BumperCatalog loaded = BumperCatalogStore.Load(path);
 
 			Assert.Equal(BumperCatalog.CurrentFormatVersion, loaded.FormatVersion);
-			Assert.Equal(original.LibraryName, loaded.LibraryName);
+			Assert.Equal(original.CatalogName, loaded.CatalogName);
 			Assert.Single(loaded.Entries);
 
 			BumperCatalogEntry originalEntry = Assert.Single(original.Entries.Values);
@@ -164,21 +164,21 @@ public class BumperCatalogStoreTests {
 	}
 
 	[Theory]
-	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Library.vbrcat")]
-	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Library.vbrcat")]
-	public void ResolveCatalogPath_ExplicitFolder_FileNameAlwaysDerivedFromLibraryName(string explicitFolder, string expected) {
-		Assert.Equal(expected, BumperCatalogStore.ResolveCatalogPath(explicitFolder, "My Library"));
+	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Catalog.vbrcat")]
+	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Catalog.vbrcat")]
+	public void ResolveCatalogPath_ExplicitFolder_FileNameAlwaysDerivedFromCatalogName(string explicitFolder, string expected) {
+		Assert.Equal(expected, BumperCatalogStore.ResolveCatalogPath(explicitFolder, "My Catalog"));
 	}
 
 	[Fact]
-	public void ResolveCatalogPath_NoExplicitPath_DefaultsUnderDedicatedFolder_NamedAfterLibrary() {
-		string resolved = BumperCatalogStore.ResolveCatalogPath(null, "My Library");
+	public void ResolveCatalogPath_NoExplicitPath_DefaultsUnderDedicatedFolder_NamedAfterCatalogName() {
+		string resolved = BumperCatalogStore.ResolveCatalogPath(null, "My Catalog");
 		string folder = BumperCatalogStore.GetDefaultCatalogFolder();
-		Assert.Equal(Path.Combine(folder, "My Library.vbrcat"), resolved);
+		Assert.Equal(Path.Combine(folder, "My Catalog.vbrcat"), resolved);
 	}
 
 	[Fact]
-	public void ResolveCatalogPath_SanitizesInvalidFileNameCharactersInLibraryName() {
+	public void ResolveCatalogPath_SanitizesInvalidFileNameCharactersInCatalogName() {
 		string resolved = BumperCatalogStore.ResolveCatalogPath(null, "Colon: Test");
 		Assert.DoesNotContain(":", Path.GetFileName(resolved));
 	}

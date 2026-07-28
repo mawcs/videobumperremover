@@ -20,11 +20,15 @@ using MemoryPack;
 namespace VBR.Core.Catalog;
 
 /// <summary>
-/// One named library's persisted, curated store of known bumpers (docs/iterativeplan.md, "Bumper
-/// catalog"). Per-library, not global (maintainer correction during planning) — mirrors
-/// <see cref="Index.LibraryIndex"/>'s shape closely (same MemoryPack `VersionTolerant` convention,
-/// same magic-header-checked atomic store) but is a wholly separate file/format: a catalog is keyed
-/// by bumper identity, not by file, and has no per-file change-detection concept at all.
+/// One independently-named, persisted, curated store of known bumpers (docs/iterativeplan.md,
+/// "Bumper catalog"). Named by the user (<c>--catalog-name</c>), not derived from or tied to any
+/// media folder — a catalog identified from one collection of videos can be applied to a different
+/// one later (post-ship simplification, 2026-07-28: an earlier version reused <c>vbr scan</c>'s
+/// <c>--library</c>/<c>--library-name</c> pair, which wrongly implied a catalog belongs to one
+/// scanned library). Mirrors <see cref="Index.LibraryIndex"/>'s shape closely (same MemoryPack
+/// `VersionTolerant` convention, same magic-header-checked atomic store) but is a wholly separate
+/// file/format: a catalog is keyed by bumper identity, not by file, and has no per-file
+/// change-detection concept at all.
 /// </summary>
 [MemoryPackable(GenerateType.VersionTolerant)]
 public sealed partial class BumperCatalog {
@@ -34,7 +38,7 @@ public sealed partial class BumperCatalog {
 	public int FormatVersion { get; set; } = CurrentFormatVersion;
 
 	[MemoryPackOrder(1)]
-	public string LibraryName { get; set; } = string.Empty;
+	public string CatalogName { get; set; } = string.Empty;
 
 	/// <summary>Keyed by <see cref="BumperCatalogEntry.Id"/> — a GUID, so (unlike
 	/// <see cref="Index.LibraryIndex.Entries"/>) no normalization step is needed for the key

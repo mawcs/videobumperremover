@@ -16,21 +16,26 @@
 
 using System.CommandLine;
 using VBR.Core.Catalog;
-using VBR.Core.Index;
 using VDF.Core.AI;
 using static VBR.CLI.Commands.SharedOptions;
 
 namespace VBR.CLI.Commands;
 
 /// <summary>
-/// <c>vbr add-bumper</c> — adds one bumper to a named library's catalog
-/// (docs/iterativeplan.md, "Bumper catalog"). Samples the requested region of <c>--clip-from</c>,
-/// extracts a reference clip and a thumbnail, and writes a new entry — mirrors <c>match</c>/
-/// <c>remove</c>'s "never accept a pre-cut clip" contract (<c>--clip-from</c>/<c>--region</c>/
-/// <c>--clip-length</c>, identical meaning) and <c>vbr scan</c>'s per-library storage shape
-/// (<c>--library</c>/<c>--library-name</c>, its own dedicated <c>--catalog-db-folder</c>). Does not
-/// match or remove anything, and does not read the catalog back — "apply" (catalog-aware scanning)
-/// is separate, later work.
+/// <c>vbr add-bumper</c> — adds one bumper to a named catalog (docs/iterativeplan.md, "Bumper
+/// catalog"). Samples the requested region of <c>--clip-from</c>, extracts a reference clip and a
+/// thumbnail, and writes a new entry — mirrors <c>match</c>/<c>remove</c>'s "never accept a
+/// pre-cut clip" contract (<c>--clip-from</c>/<c>--region</c>/<c>--clip-length</c>, identical
+/// meaning). Does not match or remove anything, and does not read the catalog back — "apply"
+/// (catalog-aware scanning) is separate, later work.
+///
+/// <c>--catalog-name</c> is independent of any media folder — deliberately no
+/// <c>--library</c>/folder argument anywhere (post-ship simplification, 2026-07-28). An earlier
+/// version mirrored <c>vbr scan</c>'s <c>--library</c>/<c>--library-name</c> pair, which wrongly
+/// implied a catalog belongs to one scanned library; tracing the code showed <c>--library</c> was
+/// only ever read to derive a name, never used for anything a folder is actually needed for, and
+/// the maintainer's own review concluded a catalog should be nameable and reusable independent of
+/// any specific media collection. See <see cref="BumperCatalog"/>'s doc comment.
 /// </summary>
 internal static class AddBumperCommand {
 	const int MaxLabelLength = 30;
@@ -50,14 +55,21 @@ internal static class AddBumperCommand {
 		Description = "Optional comma-separated tags, e.g. \"disney,fbi-warning,2003\".",
 	};
 
+	static readonly Option<string> CatalogNameOption = new("--catalog-name") {
+		Description = "Name for this catalog -- also names its file (a .vbrcat under " +
+			"--catalog-db-folder). Independent of any media folder, so the same catalog can be used " +
+			"across different libraries.",
+		Required = true,
+	};
+
 	static readonly Option<DirectoryInfo> CatalogDbFolder = new("--catalog-db-folder") {
-		Description = "Folder to hold this library's bumper catalog file. Doesn't need to exist yet; " +
-			"created on first save. Default: a dedicated per-library folder under VBR's own state folder.",
+		Description = "Folder to hold this catalog's file. Doesn't need to exist yet; created on " +
+			"first save. Default: a dedicated folder under VBR's own state folder.",
 	};
 
 	internal static Command Build() {
 		var cmd = new Command("add-bumper",
-			"Add one bumper to a library's catalog -- samples --clip-from's requested region, extracts " +
+			"Add one bumper to a named catalog -- samples --clip-from's requested region, extracts " +
 			"a reference clip and thumbnail, and writes a new catalog entry. Does not match or remove " +
 			"anything; see 'vbr match'/'vbr remove' for that.");
 		cmd.Options.Add(ClipFrom);
@@ -66,8 +78,7 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(LabelOption);
 		cmd.Options.Add(DescriptionOption);
 		cmd.Options.Add(TagsOption);
-		cmd.Options.Add(Library);
-		cmd.Options.Add(LibraryName);
+		cmd.Options.Add(CatalogNameOption);
 		cmd.Options.Add(CatalogDbFolder);
 		cmd.Options.Add(Verbose);
 
@@ -78,8 +89,7 @@ internal static class AddBumperCommand {
 			string label = parseResult.GetValue(LabelOption) ?? string.Empty;
 			string? description = parseResult.GetValue(DescriptionOption);
 			string? tagsArg = parseResult.GetValue(TagsOption);
-			var library = parseResult.GetValue(Library);
-			string? libraryNameArg = parseResult.GetValue(LibraryName);
+			string catalogName = parseResult.GetValue(CatalogNameOption) ?? string.Empty;
 			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
 			bool verbose = parseResult.GetValue(Verbose);
 
@@ -89,8 +99,8 @@ internal static class AddBumperCommand {
 				Console.Error.WriteLine("Error: --clip-from is required.");
 				return 1;
 			}
-			if (library is null) {
-				Console.Error.WriteLine("Error: --library is required.");
+			if (string.IsNullOrWhiteSpace(catalogName)) {
+				Console.Error.WriteLine("Error: --catalog-name is required.");
 				return 1;
 			}
 			if (string.IsNullOrWhiteSpace(label)) {
@@ -118,10 +128,7 @@ internal static class AddBumperCommand {
 				? Array.Empty<string>()
 				: tagsArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-			string libraryName = string.IsNullOrWhiteSpace(libraryNameArg)
-				? LibraryIndexStore.DeriveLibraryName(library.FullName)
-				: libraryNameArg;
-			string catalogPath = BumperCatalogStore.ResolveCatalogPath(catalogDbFolderArg?.FullName, libraryName);
+			string catalogPath = BumperCatalogStore.ResolveCatalogPath(catalogDbFolderArg?.FullName, catalogName);
 			string clipsFolder = Path.Combine(Path.GetDirectoryName(catalogPath)!, "clips");
 
 			if (!AiComponents.IsReady) {
@@ -138,7 +145,7 @@ internal static class AddBumperCommand {
 				Console.Error.WriteLine($"Error: {ex.Message}");
 				return 1;
 			}
-			catalog.LibraryName = libraryName;
+			catalog.CatalogName = catalogName;
 
 			BumperCatalogEntry entry;
 			try {
@@ -163,7 +170,7 @@ internal static class AddBumperCommand {
 				return 1;
 			}
 
-			Console.WriteLine($"Added bumper '{entry.Label}' (id {entry.Id}) to catalog '{libraryName}'.");
+			Console.WriteLine($"Added bumper '{entry.Label}' (id {entry.Id}) to catalog '{catalogName}'.");
 			Console.WriteLine($"  Region: {entry.Region}, Duration: {entry.Duration.TotalSeconds:0.###}s, " +
 				$"Fingerprints: {entry.Fingerprints.Length}, Thumbnail: {(entry.Thumbnail.Length > 0 ? $"{entry.Thumbnail.Length:N0} bytes" : "none")}");
 			Console.WriteLine($"  Reference clip: {Path.Combine(clipsFolder, entry.Id + ".mkv")}");

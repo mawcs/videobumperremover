@@ -23,12 +23,13 @@ using MemoryPack;
 namespace VBR.Core.Catalog;
 
 /// <summary>
-/// Resolves where a named library's bumper catalog lives and loads/saves it. Deliberately mirrors
+/// Resolves where a named bumper catalog lives and loads/saves it. Deliberately mirrors
 /// <c>VBR.Core.Index.LibraryIndexStore</c>'s exact mechanics (same MemoryPack `VersionTolerant`
 /// convention, same magic-header-checked load, same atomic temp-file-then-move save with retry) —
-/// but is its own dedicated store at its own dedicated default folder, not shared with the index
-/// (maintainer decision during planning: "mirrors the scan functionality... but defaults in a
-/// similar manner", not "reuses the exact same folder").
+/// but is its own dedicated store at its own dedicated default folder, not shared with the index.
+/// A catalog is named independently of any media folder (post-ship simplification, 2026-07-28 —
+/// see <see cref="BumperCatalog"/>'s doc comment), so unlike the index there is no folder argument
+/// anywhere in this type at all, only a name.
 /// </summary>
 public static class BumperCatalogStore {
 	static BumperCatalogStore() => CatalogMemoryPackRegistration.Register();
@@ -36,14 +37,13 @@ public static class BumperCatalogStore {
 	const string CatalogFileExtension = ".vbrcat";
 	static ReadOnlySpan<byte> FormatMagic => "VBRCAT01"u8;
 
-	/// <summary>Resolves the catalog file's full path: always <c>{folder}/{sanitized library
-	/// name}.vbrcat</c> — same "file name is always derived from the library name" rule
-	/// <c>LibraryIndexStore.ResolveIndexPath</c> uses. <paramref name="explicitFolder"/> is the
-	/// containing folder when given (<c>--catalog-db-folder</c>, itself not required to exist yet —
-	/// created on first save), else <see cref="GetDefaultCatalogFolder"/>.</summary>
-	public static string ResolveCatalogPath(string? explicitFolder, string libraryName) {
+	/// <summary>Resolves the catalog file's full path: always <c>{folder}/{sanitized catalog
+	/// name}.vbrcat</c>. <paramref name="explicitFolder"/> is the containing folder when given
+	/// (<c>--catalog-db-folder</c>, itself not required to exist yet — created on first save), else
+	/// <see cref="GetDefaultCatalogFolder"/>.</summary>
+	public static string ResolveCatalogPath(string? explicitFolder, string catalogName) {
 		string folder = string.IsNullOrWhiteSpace(explicitFolder) ? GetDefaultCatalogFolder() : explicitFolder;
-		return Path.Combine(folder, SanitizeFileName(libraryName) + CatalogFileExtension);
+		return Path.Combine(folder, SanitizeFileName(catalogName) + CatalogFileExtension);
 	}
 
 	/// <summary>A dedicated VBR-specific folder, sibling to (not inside) the library index's own —

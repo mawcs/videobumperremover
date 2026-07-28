@@ -622,7 +622,7 @@ was flagged right after the initial scaffold and fixed before anything else was 
       v1 limitation. See `iterativeplan.md` → "Manual verification pass" / "Open: library-root moves
       invalidate the whole cache."
   - [x] **Catalog — write side implemented and validated (2026-07-28).** `vbr add-bumper` adds one
-    bumper to a per-library catalog (`VBR.Core.Catalog`, mirroring the library index's exact
+    bumper to a named catalog (`VBR.Core.Catalog`, mirroring the library index's exact
     MemoryPack/atomic-save pattern at its own `.vbrcat` extension and dedicated
     `--catalog-db-folder`) — samples the source directly (never the extracted clip, same
     direct-source-decode lesson `MixedDensitySampler` already learned), extracts a reference clip
@@ -632,7 +632,13 @@ was flagged right after the initial scaffold and fixed before anything else was 
     built and live-verified the next day against a real Daredevil Netflix card. 14 new tests (67
     total). **Still not built, unchanged from the plan:** apply/catalog-aware matching (reading the
     catalog back — the actual "remove forever" payoff), curation, sub-bumper relationships,
-    auto-discovery, export/import.
+    auto-discovery, export/import. **Post-ship simplification, same day:** `--library`/
+    `--library-name` replaced with a single required `--catalog-name` — a catalog turned out not to
+    need a media folder for anything (traced: `--library`'s value was read in exactly one place and
+    otherwise unused), and tying its identity to "one library" was wrong anyway per the maintainer's
+    own three-concept breakdown (media library vs. scanned library vs. catalog — see
+    `iterativeplan.md`). A comprehensive terminology pass across the rest of the CLI (`scan`
+    included) is being planned separately, not done here.
   - [ ] **Removal engine** — trim (mode A stream-copy vs. mode B re-encode) + manifest + verify;
     never mutate originals until confirmed.
   - [ ] **Verification UI** (Avalonia) — preview/confirm cuts; fix the VDF UX traps in `ux-issues.md`.

@@ -340,6 +340,54 @@ verification above, same division as `LibraryScannerEquivalenceTests`).
 curation, sub-bumper relationships, auto-discovery, on-ingest automation, export/import, community
 sharing. `vbr add-bumper` only ever writes one new entry; nothing reads the catalog back yet.
 
+### Post-ship simplification — `--library`/`--library-name` → `--catalog-name` (2026-07-28)
+
+Found by the maintainer re-reading the shipped `running_and_building.md` doc, as both maintainer
+*and* co-author of the original plan: the option names were confusing even with full context.
+Tracing the actual code confirmed why. This project now has (at least) three different things that
+"library" could mean:
+
+1. **A media library** — a user's mental model of their own video collection, potentially spanning
+   multiple parent folders, potentially several distinct collections kept deliberately separate
+   (e.g. "ripped discs" vs. "downloaded clips"). `match`/`remove`/`cleanup`'s ad-hoc `--library
+   <folder>` is a thin, single-folder approximation of this.
+2. **A `vbr scan`-persisted library** — one named, cached fingerprint index tied to exactly one
+   folder tree, via `--library`/`--library-name`.
+3. **A bumper catalog** — tied to concept 1 in the sense that a bumper is *found* within some
+   media collection, but not necessarily to concept 2 (nothing requires scanning first), and not
+   even durably to concept 1 either: a catalog built from one collection can legitimately be
+   applied to a different one later.
+
+`add-bumper` originally reused concept 2's exact `--library`/`--library-name` option pair — which
+implied a catalog belongs to one scanned library (concept 2), collapsing it into a narrower box
+than concept 3 actually needs. Tracing the code confirmed the implementation had already drifted
+past what that pairing even bought: `--library`'s value was read in exactly one place (as a
+fallback source for deriving a name when `--library-name` was omitted) and used for nothing
+else — never enumerated, never validated to contain `--clip-from`, not read at all once
+`--library-name` was given. It was `Required = true` for no functional reason.
+
+**Fix:** removed `--library` from `add-bumper` entirely; `--library-name` renamed to
+`--catalog-name` and made unconditionally required (no folder left to derive a default from, and a
+catalog's name should be as deliberately chosen as `--label` already is — no auto-suggestion
+there either). `BumperCatalog.LibraryName` renamed to `CatalogName` for the same reason internally,
+not just at the CLI surface. Net effect: `add-bumper` drops from three storage-identity flags to
+two (`--catalog-name`, `--catalog-db-folder`), and a catalog's identity is now fully independent of
+any media folder — matching concept 3 above, not concept 2.
+
+**Not done here, explicitly deferred to a separate, larger effort:** whether `vbr scan`'s own
+`--library`/`--library-name` naming deserves the same reconsideration (concept 1 vs. concept 2 is
+blurry there too, by the maintainer's own read of that section's docs), and whether "a scanned
+library" should eventually support multiple parent folders rather than one tree (raised by the
+maintainer, not designed). The maintainer is assembling a comprehensive cross-command terminology
+plan separately; this fix is scoped to `add-bumper` only, per explicit instruction not to touch
+`scan` in the meantime.
+
+**Live-verified**: `--help` no longer shows `--library`/`--library-name`; a full run with
+`--catalog-name` reproduces the same real numbers as the original implementation (17 fingerprints,
+real clip/thumbnail/audio-fingerprint); omitting `--catalog-name` fails with `System.CommandLine`'s
+own clear "Option '--catalog-name' is required" error. Tests updated for the field rename (67
+still passing, no count change — this was a rename, not new coverage).
+
 ## Removal re-encode defaults — codec-matched output, decided but not yet built (2026-07-27)
 
 **Status: documented design decision, not yet implemented.** The maintainer asked to discuss and
