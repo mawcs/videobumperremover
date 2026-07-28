@@ -9,15 +9,8 @@
         "docs/chathistory/**",
         ".github/copilot-instructions.md",
         "tools/ingest/tonal-gen/node_modules/**",
-        "legacy/**",
-        "windows/**",
-        "linux/**",
-        "macos/**",
         "_scratch*",
-        "tools/mingw64/**",
-        "tools/zig/**",
         "build/**",
-        "**/flutter/ephemeral/**",
         "**/.plugin_symlinks/**",
         "memory/**"
     ]

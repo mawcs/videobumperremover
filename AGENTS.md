@@ -260,6 +260,7 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 ## Repo conventions
 
 - Documentation lives in `docs/`. Research/exploration notes go in `docs/research/`.
+- **Markdown is not hard-wrapped at a fixed line length.** `MD013` (the markdownlint line-length rule) is intentionally disabled in `.markdownlint.json` — write paragraphs as natural, unwrapped lines and let the reader's editor soft-wrap; don't introduce a line break just because a line got long. Applies to new files and edits alike; no need to reformat already-written markdown just to comply.
 - Keep `CLAUDE.md` as a one-line pointer to this file; put actual instructions here.
 - Prefer small, focused commits with clear messages (made by the maintainer — see above).
 - **License header (required on every source file *we* create).** Put the AGPLv3 header block at
