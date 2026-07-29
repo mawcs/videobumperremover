@@ -16,6 +16,7 @@
 
 using System.CommandLine;
 using VBR.Core.Catalog;
+using VBR.Core.Extraction;
 using VDF.Core.AI;
 using static VBR.CLI.Commands.SharedOptions;
 
@@ -86,7 +87,7 @@ internal static class AddBumperCommand {
 
 		cmd.SetAction(async (parseResult, ct) => {
 			FileInfo? clipFrom = parseResult.GetValue(ClipFrom);
-			var region = parseResult.GetValue(Region);
+			ClipEdge? regionArg = parseResult.GetValue(Region);
 			TimeSpan clipLength = parseResult.GetValue(ClipLength);
 			string label = parseResult.GetValue(LabelOption) ?? string.Empty;
 			string? description = parseResult.GetValue(DescriptionOption);
@@ -101,6 +102,19 @@ internal static class AddBumperCommand {
 				Console.Error.WriteLine("Error: --clip-from is required.");
 				return 1;
 			}
+			// --region/--clip-length lost their declarative Required=true (they're shared Option
+			// instances, and remove now needs them optional for --bumper-label — see
+			// docs/iterativeplan.md, "Utilizing Databases" entry) -- add-bumper still requires both,
+			// just checked here instead of by the parser.
+			if (regionArg is null) {
+				Console.Error.WriteLine("Error: --region is required.");
+				return 1;
+			}
+			if (clipLength <= TimeSpan.Zero) {
+				Console.Error.WriteLine("Error: --clip-length is required.");
+				return 1;
+			}
+			ClipEdge region = regionArg.Value;
 			if (string.IsNullOrWhiteSpace(catalogName)) {
 				Console.Error.WriteLine("Error: --catalog-name is required.");
 				return 1;

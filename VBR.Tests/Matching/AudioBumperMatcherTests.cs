@@ -79,4 +79,52 @@ public class AudioBumperMatcherTests {
 		Assert.True(results.Any(r => r.Result.Present),
 			$"Expected at least one episode to match the bumper clip at >= {AudioBumperMatcher.DefaultMinSimilarity:P0}.");
 	}
+
+	// Synthetic, real-media-free coverage for MatchFingerprints (docs/iterativeplan.md, "Utilizing
+	// Databases" entry) -- unlike Match_FindsBumperAcrossEpisodes above, this needs no ffmpeg/
+	// Chromaprint extraction at all: it operates directly on plain uint[] block arrays, exactly the
+	// shape LibraryDatabaseEntry.AudioFingerprint/BumperCatalogEntry.AudioFingerprint persist, so it
+	// runs unconditionally (no environment variables, no Skip.If).
+
+	[Fact]
+	public void MatchFingerprints_FindsClipEmbeddedInLongerFile() {
+		uint[] clip = { 111, 222, 333, 444, 555 };
+		// 30 "blocks" (~seconds) total; the clip sits at blocks [20, 25) -- squarely inside the
+		// tail region ClipRegion.Tail(10) resolves to (the last 10 blocks, [20, 30)).
+		uint[] file = new uint[30];
+		for (int i = 0; i < file.Length; i++) file[i] = (uint)(1000 + i);
+		Array.Copy(clip, 0, file, 20, clip.Length);
+
+		var result = AudioBumperMatcher.MatchFingerprints(clip, file, ClipRegion.Tail(TimeSpan.FromSeconds(10)), AudioBumperMatcher.DefaultMinSimilarity);
+
+		Assert.True(result.Present, $"Expected an exact-block match to be present; got {result.Detail}.");
+		Assert.True(result.BestScore > 0.99f, $"Expected near-100% similarity for identical blocks; got {result.BestScore:P1}.");
+	}
+
+	[Fact]
+	public void MatchFingerprints_NoMatch_WhenBlocksDiffer() {
+		// Small integers like {111, 222, ...} share most of their leading zero bits regardless of
+		// value, which would make Hamming similarity misleadingly high -- bitwise-complementing
+		// gives file blocks that genuinely differ from the clip's across most bits.
+		uint[] clip = { 111, 222, 333, 444, 555 };
+		uint[] file = new uint[30];
+		for (int i = 0; i < file.Length; i++) file[i] = ~(uint)(1000 + i);
+
+		var result = AudioBumperMatcher.MatchFingerprints(clip, file, ClipRegion.Tail(TimeSpan.FromSeconds(10)), AudioBumperMatcher.DefaultMinSimilarity);
+
+		Assert.False(result.Present, $"Expected no match for entirely dissimilar blocks; got {result.Detail}.");
+	}
+
+	[Fact]
+	public void MatchFingerprints_NullOrTooShortFingerprints_ReportSoftFailure() {
+		uint[] file = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 };
+
+		var noClip = AudioBumperMatcher.MatchFingerprints(null, file, ClipRegion.Tail(TimeSpan.FromSeconds(5)), AudioBumperMatcher.DefaultMinSimilarity);
+		Assert.False(noClip.Present);
+		Assert.Contains("reference clip", noClip.Detail);
+
+		var noFile = AudioBumperMatcher.MatchFingerprints(new uint[] { 1, 2 }, null, ClipRegion.Tail(TimeSpan.FromSeconds(5)), AudioBumperMatcher.DefaultMinSimilarity);
+		Assert.False(noFile.Present);
+		Assert.Contains("no usable audio track", noFile.Detail);
+	}
 }

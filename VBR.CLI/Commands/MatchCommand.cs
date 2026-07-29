@@ -72,9 +72,27 @@ internal static class MatchCommand {
 		cmd.Options.Add(Verbose);
 
 		cmd.SetAction(async (parseResult, ct) => {
-			var clipFrom = parseResult.GetValue(ClipFrom)!;
-			ClipEdge region = parseResult.GetValue(Region);
+			var clipFrom = parseResult.GetValue(ClipFrom);
+			ClipEdge? regionArg = parseResult.GetValue(Region);
 			TimeSpan clipLength = parseResult.GetValue(ClipLength);
+
+			// --clip-from/--region/--clip-length lost their declarative Required=true (they're
+			// shared Option instances, and remove now needs them optional for --bumper-label — see
+			// docs/iterativeplan.md, "Utilizing Databases" entry) -- match still requires all three,
+			// just checked here instead of by the parser.
+			if (clipFrom is null) {
+				Console.Error.WriteLine("Error: --clip-from is required.");
+				return 1;
+			}
+			if (regionArg is null) {
+				Console.Error.WriteLine("Error: --region is required.");
+				return 1;
+			}
+			if (clipLength <= TimeSpan.Zero) {
+				Console.Error.WriteLine("Error: --clip-length is required.");
+				return 1;
+			}
+			ClipEdge region = regionArg.Value;
 			TimeSpan searchLength = parseResult.GetValue(SearchLength);
 			if (searchLength <= TimeSpan.Zero)
 				searchLength = clipLength + TimeSpan.FromSeconds(20);

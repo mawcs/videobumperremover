@@ -60,13 +60,6 @@ internal static class ScanCommand {
 		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(4)),
 	};
 
-	static readonly Option<DirectoryInfo> LibraryDbFolder = new("--library-db-folder") {
-		Description = "Folder to hold this library's database file. The file itself is always named " +
-			"after --library-name (with a .vbrdb extension) -- there's no separate way to set the " +
-			"file name. Doesn't need to exist yet; created on first save. Default: a dedicated " +
-			"per-library folder under VBR's own state folder.",
-	};
-
 	static readonly Option<bool> IncludeVbrOutputs = new("--include-vbr-outputs") {
 		Description = "Also include 'name.vbr.ext' outputs from a prior 'vbr remove' run — excluded " +
 			"by default since they're transitional staging artifacts (a review window before " +

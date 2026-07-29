@@ -82,6 +82,43 @@ public sealed class AudioBumperMatcher : IBumperMatcher {
 		return new MatchResult(similarity >= minSimilarity, similarity, offset, $"audio={similarity:P0}@{offset}s");
 	}
 
+	/// <summary>
+	/// Thin public wrapper around VDF.Core's <c>internal</c> <see cref="ChromaprintEngine.ExtractFingerprint"/>
+	/// — <c>VBR.CLI</c> has no <c>InternalsVisibleTo</c> grant from VDF.Core (only <c>VBR.Core</c>
+	/// does, see ADR 0005), so a caller in <c>VBR.CLI</c> (<c>MatchingSession</c>, computing a
+	/// reference/candidate fingerprint once up front — see <see cref="MatchFingerprints"/>'s doc
+	/// comment) needs a public entry point into the exact same extraction <see cref="Match"/> uses
+	/// internally, rather than a second, divergent implementation.
+	/// </summary>
+	public static uint[]? ExtractFingerprint(string path, bool verboseLogging = false, CancellationToken ct = default) =>
+		ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
+
+	/// <summary>
+	/// Same comparison as <see cref="Match"/>, but takes two already-computed whole-file
+	/// Chromaprint fingerprints instead of extracting them from files itself — the entry point for
+	/// a scanned library database's cached <c>LibraryDatabaseEntry.AudioFingerprint</c> and/or a
+	/// bumper catalog entry's own <c>BumperCatalogEntry.AudioFingerprint</c>
+	/// (docs/iterativeplan.md, "Utilizing Databases" entry): both are computed by the exact same
+	/// <see cref="ChromaprintEngine.ExtractFingerprint"/> call <see cref="Match"/> makes, so reusing
+	/// them here is equivalent to (but far cheaper than) re-extracting. Static and state-free, same
+	/// reasoning as <see cref="VisualBumperMatcher.MatchMixedDensity"/>.
+	/// </summary>
+	public static MatchResult MatchFingerprints(uint[]? clipFingerprint, uint[]? fileFingerprint, ClipRegion searchRegion, float minSimilarity) {
+		if (clipFingerprint is not { Length: >= 2 })
+			return new MatchResult(false, 0f, null, "no usable audio fingerprint on the reference clip");
+		if (fileFingerprint is not { Length: >= 2 })
+			return new MatchResult(false, 0f, null, "no usable audio track");
+
+		(int start, int count) = ResolveWindow(fileFingerprint.Length, searchRegion);
+		if (count < clipFingerprint.Length)
+			return new MatchResult(false, 0f, null, "search window too short to hold the clip");
+
+		var (similarity, offsetBlocks) = ScanEngine.SlidingWindowCompare(
+			clipFingerprint, fileFingerprint[start..(start + count)], minSim: 0f);
+		int offset = start + offsetBlocks;
+		return new MatchResult(similarity >= minSimilarity, similarity, offset, $"audio={similarity:P0}@{offset}s");
+	}
+
 	// Chroma fingerprint blocks are ~1s each, so seconds ≈ block index.
 	static (int start, int count) ResolveWindow(int fileLengthBlocks, ClipRegion region) {
 		int durationBlocks = Math.Max(1, (int)Math.Round(region.Duration.TotalSeconds));

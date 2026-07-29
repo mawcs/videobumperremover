@@ -118,6 +118,34 @@ Or a single file, exactly as with `match`:
 dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --file "D:\Media\Show\S01E05.mkv"
 ```
 
+**Both the bumper and the library can each independently be ad hoc or persisted** (docs/iterativeplan.md,
+"Utilizing Databases") — four combinations, freely mixable:
+
+```sh
+# ad hoc library + a named bumper from a catalog -- no re-extraction of the bumper
+dotnet run --project VBR.CLI -- remove --library "D:\Media\Show" --bumper-label "Netflix ident" --catalog-name "my-bumpers"
+
+# a vbr scan'd library database + an ad hoc bumper clip -- no re-scan of any candidate
+dotnet run --project VBR.CLI -- remove --library-name "my-show" --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s
+
+# both persisted -- the fastest combination: zero ffmpeg/ONNX work for matching, only the final cut decodes
+dotnet run --project VBR.CLI -- remove --library-name "my-show" --bumper-label "Netflix ident" --catalog-name "my-bumpers"
+```
+
+- `--bumper-label` — look up a named bumper instead of an ad hoc `--clip-from` clip (case-insensitive,
+  looked up in `--catalog-name`, defaulting to the `default` catalog if that's omitted).
+  `--clip-from`/`--region`/`--clip-length` are invalid together with this — the catalog entry's own
+  region and precisely-measured duration are used instead. `--catalog-db-folder` mirrors
+  `add-bumper`'s own option and must be accompanied by both `--bumper-label` and `--catalog-name`.
+- `--library-name` — search a `vbr scan`'d database's files instead of walking `--library`'s folder(s)
+  live; invalid together with `--library`. `--library-db-folder` mirrors `vbr scan`'s own option and
+  must be accompanied by `--library-name`. Tombstoned/missing database entries are silently skipped
+  (nothing on disk to remove a bumper from); `--exclude-folders` and the existing `.vbr.`-output
+  filter still apply. `--no-recurse` has no effect in this mode.
+- When both `--bumper-label` and `--library-name` are given, matching touches no ffmpeg/ONNX at all —
+  every fingerprint on both sides is already persisted; only files that actually match get decoded,
+  for the removal cut itself.
+
 **`--re-encode` defaults to `true` (Mode B — re-encode)**, and both modes are implemented and
 verified against real media:
 
@@ -137,6 +165,14 @@ still be shorter than the *whole* stack, and removal cuts exactly what you tell 
 (`abc studios`/`MARVEL` cards) in the "cleaned" output; the corrected 20.5s length cut cleanly.
 There's no per-file check to catch an under-measured length (by design — see ADR 0007) — get the
 length right at clip-selection time.
+
+**Verified live (2026-07-29)**, all four bumper/library source combinations, against a real
+Daredevil Netflix end-card (`--region end --clip-length 8s`) plus a real distractor file: the ad
+hoc/ad hoc combination reproduced its pre-existing behavior unchanged; the catalog-bumper
+combination reused the catalog's 29 stored fingerprints with no re-extraction; the database-library
+combination reused the database's cached fingerprints (126, dense+sparse merged) with no re-scan;
+the fully-cached combination logged zero ONNX/ffmpeg activity for matching at all. Full numbers:
+[`iterativeplan.md`](iterativeplan.md).
 
 **Stream-copy cut points aren't exact**: end-region cuts land at a keyframe **at least 1s before**
 the arithmetic cut point (ffmpeg's `-t`/`-to` overshoots by ~0.2s past any requested boundary, so

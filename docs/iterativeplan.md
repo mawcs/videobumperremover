@@ -4,6 +4,139 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Utilizing Databases — implemented (2026-07-29)
+
+**Status: implemented and live-verified against real media, all four combinations.**
+
+Modify the `remove` command to take a scanned library as an argument in addition to an ad-hoc library. Also, modify the `remove` command to take a bumper label and catalog for the bumper to be removed in addition to ad-hoc bumpers. These can be mixed-and-matched: an ad-hoc library with a bumper catalog; a library db with an ad-hoc bumper clip; ad-hoc libraries and bumper (current state); library database and catalog bumper.
+
+New parameters for the `remove` CLI:
+
+- `--bumper-label <label>` Uses the "default" catalog if catalog information is not supplied. Use of `--clip-from`, `-region`, and `--clip-length` with this is invalid.
+- `--catalog-name <name>` to specify a bumper catalog. This must be accompanied by `--bumper-label`. Use of `--clip-from`, `-region`, and `--clip-length` with this is invalid.
+- `--catalog-db-folder <folder>` to specify the folder of the bumper catalog. This must be accompanied by `--bumper-label` and `--catalog-name`. Use of `--clip-from`, `-region`, and `--clip-length` with this is invalid.
+- `--library-name <name>` to specify a scanned library. Use of this with `--library` is invalid.
+- `--library-db-folder <folder>` to specify the folder for the library. This must be accompanied by `--library-name`. Use of this with `--library` is invalid.
+
+When a library database is provided, the `remove` will find any videos that already exist in the database to find any that may contain the bumper. For videos with the bumper, it will remove the bumper in the same fashion as the current ad-hoc removal. It must leverage the sampling/fingerprint data already in the database and not re-scan the video.
+
+When a catalog database and bumper label is provided, the `remove` will use the metadata in the catalog for the named bumper, as well as the fingerprint data, to find the bumper in videos within the specified library. It must not attempt to re-extract the bumper from the source. The `remove` should be consistent with existing behavior.
+
+### Implementation (2026-07-29)
+
+**`--clip-from`/`--region`/`--clip-length` lost their declarative `Required = true`.** These are
+`SharedOptions` instances also used by `match`/`add-bumper`, and `Option.Required` is a property of
+the shared instance, not something a single command can toggle — so making them optional for
+`remove`'s `--bumper-label` case would have silently made them optional for `match`/`add-bumper`
+too. Fixed by dropping `Required` from all three and adding an explicit check in each of the three
+commands' own actions instead (`match`/`add-bumper` unconditionally require them, matching prior
+behavior exactly; `remove` requires them only when `--bumper-label` isn't given). One real type
+change fell out of this: `--region` became `Option<ClipEdge?>` (was `Option<ClipEdge>`) specifically
+so "omitted" is observable as `null` rather than silently defaulting to `ClipEdge.begin` — a
+non-nullable enum option with no explicit default otherwise returns `default(ClipEdge)` when absent,
+which would have been a silent wrong-answer bug, not a missing-required-option error. `--library-db-folder`
+was promoted from `ScanCommand`-local into `SharedOptions` (mirroring how `--library-name` was
+promoted earlier once `add-bumper` needed it too) since `remove` now needs the identical option.
+
+**`MatchingSession` gained two axes, not one.** The reference (bumper) side and the candidate
+(library) side were already independent in the code's shape (`PrepareAsync`/`Compare` were already
+separate steps); this entry just gave each side a second possible source: `PrepareFromCatalogEntry`
+(reference from a `BumperCatalogEntry`, no sampling) alongside the existing `PrepareAsync` (reference
+from `--clip-from`, sampled fresh), and `CompareUsingDatabase` (candidate from a
+`LibraryDatabaseEntry`, no sampling) alongside the existing `Compare` (candidate sampled fresh). The
+four combinations in the plan above are exactly the 2×2 of "which `Prepare` method was called" ×
+"which `Compare` method is called per candidate" — nothing in `RemoveCommand`'s per-file loop needs to know which
+combo is active beyond that one branch.
+
+**A real timestamp-origin mismatch, worth recording.** `BumperCatalogEntry.Fingerprints`
+(`TimedFingerprint[]`, populated via `MixedDensitySampler.SampleWithPHash`) are **window-relative**
+timestamps (seconds from the start of the sampled region) — same convention as the ad hoc
+`TimedFrame`/`TimedPHash` path. `LibraryDatabaseEntry.Fingerprints` (populated via `WholeFileSampler`)
+are **absolute** timestamps (seconds from the true start of the file) — that sampler always knows
+the file's real probed duration, so it uses real absolute time throughout, per its own doc comment.
+This is not a bug to reconcile: `VisualBumperMatcher.MatchMixedDensity`/`MatchMixedDensityPHash`
+never require temporal alignment between the two sides being compared (presence matching only asks
+"does this clip position appear *somewhere* in the candidate," never "at a corresponding time"), so
+mixing an absolute-origin side against a window-relative one is exactly as valid as any other
+pairing. It matters for exactly one thing: filtering a database entry's fingerprints down to "the
+requested search window" (`MatchingSession.SearchWindowSeconds`) has to reason in the entry's own
+absolute-from-BOF terms (using its already-probed `Duration` — no ffprobe call needed either),
+whereas a freshly sampled candidate's window is implicitly "everything just sampled." Catalog
+fingerprints need no such filtering at all (they already *are* the reference clip's own captured
+extent, nothing to narrow down further) — this is why `PrepareFromCatalogEntry` maps
+`entry.Fingerprints` straight into `TimedFrame`/`TimedPHash` with no windowing step, while
+`CompareUsingDatabase` filters first.
+
+**Audio got a real efficiency fix, not just a database-reuse path.** The old `AudioBumperMatcher.Match`
+re-extracted the reference clip's own Chromaprint fingerprint via `ChromaprintEngine.ExtractFingerprint`
+on *every candidate call* — harmless waste at ad hoc-vs-ad hoc scale, but exactly the kind of
+per-candidate re-work this entire entry is about eliminating. Added
+`AudioBumperMatcher.MatchFingerprints(uint[]? clip, uint[]? file, ClipRegion, float minSimilarity)` —
+a static, state-free counterpart to `Match` that takes two already-computed whole-file fingerprints
+instead of extracting them itself (same relationship `VisualBumperMatcher.MatchMixedDensity` already
+has to the instance `Match` method). `MatchingSession` now computes/reuses the reference's fingerprint
+exactly once per run (`referenceAudioFingerprint`) — ad hoc via one `ChromaprintEngine.ExtractFingerprint`
+call right after extracting the reference clip, catalog via direct reuse of
+`BumperCatalogEntry.AudioFingerprint` — and always compares through `MatchFingerprints` from then on,
+for both ad hoc and database candidates alike. The original `AudioBumperMatcher.Match` instance method
+is untouched (still exercised directly by `AudioBumperMatcherTests`'s real-media test) — this was
+additive, not a rewrite of existing, working, tested code. One accessibility wrinkle: `ChromaprintEngine`
+is `internal` in `VDF.Core`, and only `VBR.Core` (not `VBR.CLI`) has an `InternalsVisibleTo` grant from
+it (ADR 0005) — so `MatchingSession` (in `VBR.CLI`) needed a public entry point, added as
+`AudioBumperMatcher.ExtractFingerprint`, a thin wrapper rather than a second implementation.
+
+**Candidate resolution for `--library-name` mode** enumerates `LibraryDatabase.Entries.Values`
+directly (not a folder walk): skips tombstoned entries (`TombstonedUtc is not null` — the file no
+longer exists on disk, nothing to remove a bumper from) and anything that's since vanished without
+being tombstoned yet as a defensive extra; applies the same `.vbr.`-output filename filter and
+`--exclude-folders` path filter the ad hoc path already applies, for consistent behavior regardless
+of candidate source; sorted by path for deterministic output, same convention as `ResolveCandidates`'s
+own sort. `--no-recurse` has no effect in this mode (a database's file list is what it is) and prints
+a one-time note, same style as the existing `--dump-frames`-with-`--detection-mode audio` note.
+
+**AI-component (ONNX) download is now conditional, not unconditional.** The old code always checked
+`AiComponents.IsReady`/downloaded inside `MatchingSession.PrepareAsync` whenever visual matching was
+requested. That check moved to `RemoveCommand` itself and is now skipped entirely when *both* sides
+are already cached (catalog bumper + database candidates) — genuinely zero ONNX/ffmpeg work for
+matching in that combination, live-confirmed (see below): no `[mixed-density]` log lines at all,
+only the final removal cut's own decode for files that actually matched.
+
+**Deliberately conservative candidate-source scoping, one gap left unfilled on purpose:** the plan's
+own wording only says `--library-name` is "invalid with `--library`," not with `--file`. A
+`--file`-plus-`--library-name` combination (look up one specific file's cached database entry rather
+than enumerating the whole database) would be a reasonable future extension, but it's a distinct
+feature (single-entry lookup by path, a different code path from "enumerate all entries") that
+nothing in this entry's request actually asked for — implemented instead as a plain three-way
+mutually exclusive choice (`--library` / `--library-name` / `--file`), matching this project's
+standing "don't build speculative surface" preference. Revisit if a real workflow needs it.
+
+**Live-verified** against a real Daredevil episode (`daredevil-end20.mkv`, the same Netflix end-card
+used throughout this project's verification, `--region end --clip-length 8s`) plus a real distractor
+(`caprica-end5.mkv`) in a scratch two-file library, across all four combinations:
+
+| Combo | Candidate present/matched | Notable |
+| --- | --- | --- |
+| ad hoc library + ad hoc bumper (regression check) | 5/6 frames, bestCos=98% | Unchanged from pre-existing behavior |
+| ad hoc library + catalog bumper | 24/29 frames, bestCos=99% | Reference fingerprints (29) came from the catalog, zero re-extraction |
+| library database + ad hoc bumper | 6/6 frames, bestCos=100%, win=126 | Candidate window (126 fingerprints, dense+sparse merged) came entirely from the database; log shows only the reference clip's own embedding, nothing for the candidates |
+| library database + catalog bumper (fully cached) | 29/29 frames, bestCos=100%, win=126 | **Zero** `[mixed-density]`/ONNX log lines at all — confirmed no AI components were touched; only the final removal cut (for the one file that matched) did any decoding |
+
+Every combo correctly left the distractor file unmatched and untouched. All seven validation-error
+paths (`--bumper-label`+`--clip-from`, `--library-name`+`--library`, `--catalog-db-folder` without
+`--catalog-name`, `--library-db-folder` without `--library-name`, no bumper source given, no
+candidate source given, an unknown `--bumper-label`) produced the expected clear error and a nonzero
+exit. `match`/`add-bumper` regression-checked after the shared-option changes: both still correctly
+require `--clip-from`/`--region`/`--clip-length` and both still function normally when given.
+
+**Tests:** 3 new, synthetic and real-media-free (`AudioBumperMatcherTests.MatchFingerprints_*`) —
+covering an exact-block match embedded in a larger array, a genuine non-match (bit-complemented
+blocks, chosen because naively "different" small integers share enough leading-zero bits to
+misleadingly inflate Hamming similarity), and the two null/too-short soft-failure paths. 72 tests
+total (up from 69), all passing. No `VBR.Tests` coverage of `RemoveCommand`/`MatchingSession`
+themselves — `VBR.Tests` doesn't reference `VBR.CLI` (the same pre-existing, already-documented gap
+`add-bumper`/`list-bumpers` note), so verification of the CLI wiring itself follows this project's
+established live-smoke-test convention instead.
+
 ## Bumper CRUD Part 1 — implemented (2026-07-29)
 
 **Status: implemented and live-verified.** Built exactly to the plan below.
