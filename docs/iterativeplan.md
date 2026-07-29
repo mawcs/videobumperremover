@@ -4,6 +4,88 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## CLI terminology & multi-folder libraries — sequencing plan (2026-07-28)
+
+**Status: plan for discussion, not yet approved or built.** Grounded in [`docs/design/clarification-terms-cli.md`](design/clarification-terms-cli.md) (maintainer's UX terminology analysis, three rounds of review) plus a set of concrete decisions and open questions resolved in discussion afterward. This entry sequences the resulting work; it doesn't restate the terminology analysis itself — read that doc first.
+
+### Definitions this plan builds on (recap, not a repeat of the source doc)
+
+- **Library** — a user's conceptual media collection. Purely mental until named; a user may have several, and any one library may span multiple parent folders. Not itself a stored artifact — nothing persists "a library" independent of a database or of what the user retypes ad hoc.
+- **Named Library** — internal-team term only, never shown to users. What you get once a user supplies a library name that correlates to a folder set. Exists so *we* can talk precisely about "the thing a database corresponds to" without confusing it with the nebulous, unnamed conceptual library from the paragraph above. Never appears in CLI/GUI copy.
+- **Library Database** ("database"/"db" for short) — the persisted, named, single-file cache of sampled fingerprints. Today's `LibraryIndex`/`.vbridx`, renamed per the terminology work below. Correlates to exactly one *named* library, but a library's folder set itself is never stored anywhere except inside this file (and whatever the user retypes for an ad-hoc run) — see the "does a library persist without a database" thread, resolved below: it doesn't; the user re-supplies the folder list each time in ad-hoc mode.
+- **Bumper** — one identified, removable segment. Individually addressable (list/add/edit/rename/duplicate/delete), most of which isn't built yet.
+- **Bumper Catalog** ("catalog") — the persisted collection of bumpers. Deliberately uncorrelated to any library or database (already built this way — see the "Bumper catalog" plan/implementation entry below this one).
+
+### Phase 1 — Terminology: "index" → "database"/"db"
+
+Purely a rename, no new behavior, and foundational to everything after it — doing this first means Phase 2 and beyond are built on the final names instead of needing a second pass. Low risk: existing round-trip/atomic-save/path-resolution tests get renamed and re-verified, not rewritten.
+
+Scope (`VBR.Core.Index` → `VBR.Core.Database`, mirroring the sibling `VBR.Core.Catalog` namespace):
+
+- `LibraryIndex` → `LibraryDatabase`, `LibraryIndexEntry` → `LibraryDatabaseEntry`, `LibraryIndexStore` → `LibraryDatabaseStore`, `LibraryIndexKey` → `LibraryDatabaseKey`.
+- `.vbridx` extension → `.vbrdb`; magic header `VBRIDX01` → an 8-byte equivalent (e.g. `VBRDB001`) so an old-format file fails the header check cleanly instead of silently misreading.
+- Default state folder leaf `...\VideoBumperRemover\index\` → `...\database\` (spelled out, matching `...\catalog\`'s own un-abbreviated style — `--library-db-folder` the *flag* already says "db," which is fine; flags tend to be terser than folder names project-wide, not a real inconsistency).
+- `LibraryScanner` itself is unaffected by name (it describes an operation, "scan," not a noun) but its internal references and doc comments update along with everything it touches.
+- `ScanCommand.cs` help text: "index file" → "database file" throughout; flag names themselves (`--library-name`, `--library-db-folder`) are unaffected — they already read correctly under the new terms.
+- Docs: `running_and_building.md`, current `PROGRESS.md` status lines, and matcher-spec.md's amendment blocks update to current terminology. Historical dated entries in this file stay as written — they're accurate records of what things were called at the time, same principle already applied to the `--index` → `--index-folder` → `--library-db-folder` history above.
+
+**Open question:** full internal rename (every C# type) vs. surface-only (CLI text, file extension, folder name, leave `VBR.Core.Index`'s types alone)? The maintainer's stated motivation was UX, not code cleanliness, so surface-only would satisfy it — but this project's own established practice (`CatalogName`, `--library-db-folder`, `--catalog-db-folder`) has consistently kept internal vocabulary matching external vocabulary, on the reasoning that a mismatch confuses whoever reads the code next. Recommend the full rename for consistency with that practice; flagging since it's a real scope choice, not obviously forced.
+
+### Phase 2 — Multi-folder libraries: `--library` becomes a delimited list, plus a new exclusion flag
+
+Real feature work, not a rename — touches `SharedOptions.ResolveCandidates` and every command that calls it (`match`/`remove`/`cleanup`/`scan`; `add-bumper` is unaffected, since it dropped `--library` entirely in the last round of changes).
+
+Proposed shape, per the maintainer's direction and VDF's own "Where to look" UI (include/exclude folders as parallel, symmetric concepts):
+
+- `--library` changes from one `DirectoryInfo` to a semicolon-delimited list of paths, parsed the same way `--tags` already splits on commas in `add-bumper` (a `CustomParser`, no new parsing infrastructure needed). Every path validated to exist, same as today's single-path check.
+- New `--exclude-folders` (name tentative, open below) takes the same delimited-list shape — paths to exclude from whatever `--library` resolved to.
+- `--no-recurse` stays a single flag applying uniformly to every listed path — per-path recursion control isn't proposed and would be a finer-grained feature than this phase needs.
+- Exclusion matching: filter candidates whose path falls under an excluded folder *after* enumeration, mirroring how `.vbr.`-output filtering already works, rather than skipping directory traversal during enumeration. Simpler, consistent with existing code; costs a little wasted enumeration on a large excluded subtree, which seems like the right trade for v1.
+- Confirmed distinct from `.vbr.`-output filtering (maintainer, this round) — that's a filename-pattern rule; this is a path/folder rule. Both stay, independently.
+
+**Open questions:**
+
+- `--exclude-folders` — is that the name, or something else? Alternatives: `--exclude-paths`, `--library-exclude`.
+- Delimiter: semicolon was the maintainer's own suggestion ("probably"). Confirming rather than assuming — the alternative is a repeatable flag (`--library A --library B`), which `System.CommandLine` also supports natively and sidesteps any path-containing-a-semicolon edge case (rare, but real on some filesystems). Recommend sticking with the semicolon-delimited proposal as stated unless there's a reason to prefer repeatable flags; flagging the alternative exists.
+- Can the same folder belong to more than one library at once? Explicitly left open by the maintainer ("leaning toward why not, but leave this as an open question").
+
+### Decision checkpoint (not a build phase) — `vbr cleanup`'s own name
+
+VDF's actual menu (screenshots reviewed this round) has both **"Cleanup Database"** ("Removes entries which file no longer exists or which failed on ffmpeg/ffprobe" — broad) and **"Prune Ghost Entries"** ("Removes entries whose file is gone from a mounted drive AND that carry no comparable data... Tombstones — missing files whose fingerprints are kept to recognize re-downloads — are untouched, as are files on offline drives" — narrow, and explicitly preserves fingerprints for files that are merely gone-for-now). The maintainer wants to stay in VDF's own terminology neighborhood (cleanup/prune) for exactly this kind of future database-maintenance command — but VBR's own `vbr cleanup`/`clean` already means something unrelated (promoting verified `.vbr.` outputs, deleting originals). Maintainer is leaning toward renaming VBR's existing command to free up "cleanup"/"clean"/"prune" for the database-maintenance meaning, but this is **explicitly left open**, not decided.
+
+**Open question, concrete now that VDF's exact wording is in hand:** if `vbr cleanup` gets renamed, what does it become? `vbr promote` reads as a strong candidate — it's already the literal verb ADR 0008 and `docs/decisions/0008-cleanup-command.md` use to describe what the command does internally ("promote a verified `.vbr.` output to replace its original"), so the rename would just surface an already-accurate internal description. Not deciding this here — surfacing a concrete option since the question is now answerable, not just noted.
+
+### Phase 3 (sketched, depends on the checkpoint above) — database-maintenance commands
+
+Mirroring VDF's cleanup/prune split once the naming checkpoint resolves. Connects to something worth deciding *earlier* than the commands themselves, because it affects whether Phase 1 should touch this behavior while it's already in motion:
+
+**The tombstone question.** Today, `LibraryScanner.Scan` unconditionally drops any entry whose file no longer exists, every run, as its very first step — there's no VDF-style "tombstone" concept (keep a gone-file's fingerprints around, in case the same content reappears at a new path — e.g. after exactly the kind of library-root move already discussed and deferred earlier in this document). If VBR ever wants that re-linking capability, the fingerprints need to *not* be discarded the moment a file goes missing — which means adopting tombstoning has to happen before or alongside whatever discards them today, not be bolted on after the fact once the data is already gone. Since Phase 1 already touches this exact code path for the rename, it's cheap to decide now even if building the maintenance commands and the re-linking feature both stay deferred. **Not deciding this now — flagging it as a fork worth resolving before Phase 1 lands**, since "keep discarding immediately" and "start tombstoning" are both one-line changes to the *same* method, but only one of them preserves the option to build re-linking later without redoing this step.
+
+### Later, not sequenced in detail here
+
+Bumper CRUD (list/edit/rename/duplicate/delete — `docs/design/clarification-terms-cli.md` §3), catalog-aware "apply" matching, GUI work. These depend on the foundation above but aren't concretely sequenced yet; will get their own planning pass closer to when they're actually next.
+
+One item doesn't get to default into this bucket along with the rest of CRUD: the source doc's Portability case/handling #9, orphaned bumpers ("once removed, all bumpers will become orphans, but their utility remains... the technical consequences of this are unresolved") is explicitly called out as needed *in v1*, not deferred like #6/#8 are. Nothing in this plan currently addresses it — it needs its own pass before v1 scope closes, even though the mechanism (presumably: a catalog entry's `SourceVideoPath` stops resolving, and the entry — with its fingerprints and reference clip — simply keeps working for matching regardless) is unspecified today. Added to open questions below rather than sequenced, since it's genuinely unresolved, not just unscheduled.
+
+### Answered this round
+
+- **Rename vs. edit for bumper labels** — not a structurally different operation given the current GUID-keyed design (see the top of this entry's surrounding conversation); the real open question is label *uniqueness*, listed below.
+- **Ad-hoc library references don't require a new persisted artifact** — confirmed by the maintainer: *someone* (the user, retyping folder lists) remembers, not *something* (a new stored "library definition"). No new persistence layer needed for Phase 2.
+- **Path exclusions are distinct from `.vbr.` filtering** — confirmed, both stay, independently.
+- **Portability case 2/6 (library-root-move re-linking)** — still deferred, tentatively; maintainer will revisit closer to v1 rather than now.
+- **"Duplicate bumper" is cheap once CRUD exists** — confirmed, pure data copy, no new design needed when the time comes.
+
+### All open questions, collected
+
+1. Phase 1: full internal C# rename vs. surface-only (recommendation: full rename, for consistency with established practice).
+2. Phase 2: `--exclude-folders`'s final name.
+3. Phase 2: semicolon-delimited single flag vs. repeatable `--library` flag (recommendation: keep the delimited-list proposal as stated).
+4. Phase 2: can one folder belong to more than one library at once (maintainer thinking on this).
+5. Checkpoint: does `vbr cleanup` get renamed, and to what (`vbr promote` proposed as a concrete candidate).
+6. Phase 3: adopt tombstoning in `LibraryScanner.Scan` now (cheap, alongside Phase 1's rename) or leave today's immediate-drop behavior and revisit later (costs a second pass through the same code whenever re-linking is eventually built).
+7. New this round: should bumper `Label` values be enforced unique (globally, or per-catalog), given a future name-based lookup feature would otherwise be ambiguous?
+8. New this round: orphaned bumpers (source doc Portability case/handling #9) are called out as v1-required with "unresolved" technical consequences — what does "support" concretely mean here? At minimum needs a decision on whether an orphaned entry's `SourceVideoPath` becoming unresolvable should be surfaced to the user (e.g. `vbr` listing/status output flagging it) or stay silently informational, since matching/removal against other videos doesn't depend on that field at all.
+
 ## Bumper catalog — implemented and validated (2026-07-27, planned; 2026-07-28, built)
 
 **Status: implemented and validated.** Built to the plan below (three maintainer feedback rounds,
