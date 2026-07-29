@@ -308,6 +308,28 @@ at exactly 8s from the extracted clip. A second bumper added to the same catalog
 accumulated as a second entry without touching the first. Full numbers:
 [`iterativeplan.md`](iterativeplan.md).
 
+### Run — `vbr list-bumpers`
+
+```sh
+dotnet run --project VBR.CLI -- list-bumpers --help
+```
+
+Lists the bumpers in a catalog, one line each: `"label", region, length, "thumbnail location"`. Read-only — doesn't touch the catalog file itself, but materializes each entry's embedded thumbnail to a real JPEG under the system temp folder (`{temp}\.vbrthumbs\{label}-thumbnail.jpg`, rewritten on every call) since the catalog only ever stores thumbnail bytes inline (see `add-bumper` above).
+
+```sh
+dotnet run --project VBR.CLI -- list-bumpers --catalog-name "my-bumpers"
+```
+
+Key options:
+
+- `--catalog-name` — which catalog to list. Default: `"default"` when omitted (unlike `add-bumper`, where it's required).
+- `--catalog-db-folder` — where that catalog's file lives; same default and same "must be a folder, not a file" guard as `add-bumper`.
+- `--show-guids` — prints each bumper's `Id` on its own line immediately before that bumper's regular output line.
+
+An empty or nonexistent catalog prints `Catalog '<name>' has no bumpers.` and exits 0, rather than erroring — same "a fresh catalog isn't an error" convention `add-bumper` already established.
+
+**Verified live (2026-07-29)** against a scratch catalog with two real bumpers added via `add-bumper`: output matched the format above exactly, both thumbnails written as real, loadable JPEGs matching the byte counts `add-bumper` reported at capture time, and a label containing filesystem-unsafe characters (`:`, `/`) was sanitized in the thumbnail filename while still shown verbatim in the console line. Full numbers: [`iterativeplan.md`](iterativeplan.md).
+
 ### Test
 
 ```sh

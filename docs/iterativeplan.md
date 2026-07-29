@@ -4,6 +4,85 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Bumper CRUD Part 1 — implemented (2026-07-29)
+
+**Status: implemented and live-verified.** Built exactly to the plan below.
+
+In order to effectively use bumpers, we need to see what bumpers are available. For the CLI, and looking ahead to the GUI, we need to implement the first step in *listing* the bumpers in a catalog.
+
+The `list-bumpers` command will list the bumpers of a catalog in the following format:
+
+```sh
+"bumper label", region, length, thumbnail location
+```
+
+An example:
+
+```sh
+"Netflix ident then black 4s", end, 8s, "c:\temp\.vbrthumbs\Netflix ident then black 4s-thumbnail.jpg"
+```
+
+Takes the `--catalog-db-folder` and `--catalog-name` arguments to specify a catalog.
+
+When a catalog is not specified, the "default" catalog will be assumed.
+
+Thumbnails will use the user's temp folder location from the system, create a directory `.vbrthumbs`, and write the thumbnail to that folder with the label used as the name and "-thumbnail" appended. Looking forward to the GUI, serializing to disk may or may not be necessary.
+
+An optional `--show-guids` parameter will change the output to show the GUID on a new line preceding the other output.
+
+Example:
+
+```sh
+5e449c84-12a7-4936-95c6-f0d01753ab8a
+"Netflix ident then black 4s", end, 8s, "c:\temp\.vbrthumbs\Netflix ident then black 4s-thumbnail.jpg"
+```
+
+### Implementation (2026-07-29)
+
+New `VBR.CLI.Commands.ListBumpersCommand` (`vbr list-bumpers`), registered in `Program.cs`. Read-only
+against the catalog: loads it via the existing `BumperCatalogStore.Load`/`ResolveCatalogPath` (same
+mechanism `add-bumper` already uses, including the "missing catalog file loads as empty, not an
+error" behavior — `list-bumpers` reports `Catalog '<name>' has no bumpers.` and exits 0 rather than
+erroring), then prints one line per entry in the plan's exact format. Entries are sorted by `Label`
+(case-insensitive, matching this project's existing convention for deterministic listing output —
+same rationale as `ResolveCandidates` sorting its file list) since the plan didn't specify an order
+and unsorted `Dictionary` enumeration order isn't a contract worth depending on.
+
+`--catalog-name` defaults to `"default"` when omitted (unlike `add-bumper`, where it's required —
+listing has a sensible default to fall back to; adding a bumper to an implicit catalog didn't seem
+worth the same convenience). `--catalog-db-folder` reuses the identical "already a file" guard
+`add-bumper` has, for the same reason. `--show-guids` prints `entry.Id` on its own line immediately
+before each entry's regular line, exactly as specified.
+
+**Thumbnail materialization.** `BumperCatalogEntry.Thumbnail` only ever stores bytes inline in the
+catalog (see the "Bumper catalog" entry above) — there's no thumbnail *file* until something writes
+one, and `list-bumpers` is that something. Each call re-writes every entry's thumbnail to
+`{Path.GetTempPath()}\.vbrthumbs\{label}-thumbnail.jpg`, unconditionally overwriting whatever was
+there before — simplest option, and cheap (thumbnails are single JPEGs, tens of KB). An entry with
+an empty `Thumbnail` (capture failed at add-time — see `add-bumper`'s "never blocks adding the
+bumper" note) reports `none` instead of a path, rather than writing a zero-byte file. The filename
+uses the entry's raw `Label` for the *displayed* `"label"` field (matching the plan's own example
+verbatim) but a separately filesystem-sanitized (`Path.GetInvalidFileNameChars()` replaced with `_`)
+version for the actual file on disk — labels are free text up to 30 characters and can contain
+characters Windows rejects in filenames (verified live with a label containing `:` and `/`, both
+replaced, the file written without error and the console line still showing the unsanitized label).
+
+**Live-verified** against a real scratch catalog (two bumpers added via `add-bumper` from real
+media, `caprica-end5.mkv` and `daredevil-end20.mkv`): output format matched the plan's example
+exactly (`"Test Bumper One", end, 3s, "...\.vbrthumbs\Test Bumper One-thumbnail.jpg"`), both real
+JPEG thumbnails landed on disk (153,340 and 29,667 bytes, matching the byte counts `add-bumper`
+reported when it captured them) and were loadable files, not stubs. `--show-guids` correctly
+prefixed each entry with its GUID. An empty/nonexistent catalog name printed the friendly message
+and exited 0; omitting `--catalog-name` fell back to `"default"` (also empty in this test, same
+message). `--catalog-db-folder` pointed at an existing file failed with the same clear error
+`add-bumper` gives for the identical mistake.
+
+**Not covered by `VBR.Tests`** — `VBR.CLI` isn't referenced by the test project (a pre-existing gap
+this project has already accepted for every other CLI command; see `add-bumper`'s own
+implementation note above), so verification follows the same established live-smoke-test convention
+rather than unit tests for command wiring. `dotnet build`/`dotnet test VBR.Tests` both clean (69
+passed, unaffected, since nothing in `VBR.Core` changed).
+
 ## CLI terminology & multi-folder libraries — sequencing plan (2026-07-28)
 
 **Status: plan for discussion, not yet approved or built.** Grounded in [`docs/design/clarification-terms-cli.md`](design/clarification-terms-cli.md) (maintainer's UX terminology analysis, three rounds of review) plus a set of concrete decisions and open questions resolved in discussion afterward. This entry sequences the resulting work; it doesn't restate the terminology analysis itself — read that doc first.

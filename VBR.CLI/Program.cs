@@ -23,4 +23,5 @@ root.Subcommands.Add(RemoveCommand.Build());
 root.Subcommands.Add(CommitCommand.Build());
 root.Subcommands.Add(ScanCommand.Build());
 root.Subcommands.Add(AddBumperCommand.Build());
+root.Subcommands.Add(ListBumpersCommand.Build());
 return await root.Parse(args).InvokeAsync();
