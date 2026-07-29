@@ -107,6 +107,7 @@ internal static class ScanCommand {
 			"and whole-file middle so a bumper can be found later without re-decoding. Does not match " +
 			"against any specific bumper; see 'vbr match'/'vbr remove' for that.");
 		cmd.Options.Add(Library);
+		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(NoRecurse);
 		cmd.Options.Add(EdgeBoundary);
 		cmd.Options.Add(SampleInterval);
@@ -121,7 +122,8 @@ internal static class ScanCommand {
 		cmd.Options.Add(LogLevel);
 
 		cmd.SetAction(async (parseResult, ct) => {
-			var library = parseResult.GetValue(Library);
+			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
+			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			TimeSpan edgeBoundary = parseResult.GetValue(EdgeBoundary);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
@@ -141,12 +143,12 @@ internal static class ScanCommand {
 
 			using IDisposable? consoleLogSubscription = SubscribeVerboseLogging(consoleLevel >= ScanReportLevel.verbose);
 
-			if (library is null) {
+			if (libraries.Length == 0) {
 				Console.Error.WriteLine("Error: --library is required.");
 				return 1;
 			}
 
-			CandidateSet? resolved = ResolveCandidates(file: null, library, recurse, out string? resolveError);
+			CandidateSet? resolved = ResolveCandidates(file: null, libraries, excludeFolders, recurse, out string? resolveError);
 			if (resolved is null) {
 				Console.Error.WriteLine(resolveError);
 				return 1;
@@ -161,8 +163,11 @@ internal static class ScanCommand {
 				return 1;
 			}
 
+			// With multiple --library folders, a default name can only ever be a guess -- derived
+			// from the first folder given, same "override if you care" philosophy as the
+			// single-folder case, just extended to pick one of several.
 			string libraryName = string.IsNullOrWhiteSpace(libraryNameArg)
-				? LibraryDatabaseStore.DeriveLibraryName(library.FullName)
+				? LibraryDatabaseStore.DeriveLibraryName(libraries[0].FullName)
 				: libraryNameArg;
 
 			// Checked here, before any scanning (or even the AI-component download) starts, not left
@@ -236,7 +241,7 @@ internal static class ScanCommand {
 			database.SparseIntervalSeconds = sparseInterval.TotalSeconds;
 			var profile = new EdgeDensityProfile(edgeBoundary, sampleInterval, sparseInterval);
 
-			string startAnnouncement = $"Scanning '{library.FullName}' -> database '{databasePath}' ({candidatePaths.Count} candidate file(s))...";
+			string startAnnouncement = $"Scanning '{string.Join("; ", libraries.Select(l => l.FullName))}' -> database '{databasePath}' ({candidatePaths.Count} candidate file(s))...";
 			Console.Error.WriteLine(startAnnouncement);
 			WriteLogLine(startAnnouncement);
 

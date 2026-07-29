@@ -64,6 +64,7 @@ internal static class MatchCommand {
 		cmd.Options.Add(MinSimilarity);
 		cmd.Options.Add(Mode);
 		cmd.Options.Add(Library);
+		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
 		cmd.Options.Add(Output);
@@ -89,7 +90,8 @@ internal static class MatchCommand {
 			float phashPresenceThreshold = parseResult.GetValue(PHashPresenceThreshold);
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
 			DetectionMode mode = parseResult.GetValue(Mode);
-			var library = parseResult.GetValue(Library);
+			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
+			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			var targetFile = parseResult.GetValue(TargetFile);
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			FileInfo? output = parseResult.GetValue(Output);
@@ -98,12 +100,12 @@ internal static class MatchCommand {
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
-			CandidateSet? resolved = ResolveCandidates(targetFile, library, recurse, out string? resolveError);
+			CandidateSet? resolved = ResolveCandidates(targetFile, libraries, excludeFolders, recurse, out string? resolveError);
 			if (resolved is null) {
 				Console.Error.WriteLine(resolveError);
 				return 1;
 			}
-			var (candidatePaths, libraryRoot) = resolved.Value;
+			var (candidatePaths, libraryRoots) = resolved.Value;
 
 			if (dumpFrames is not null && mode is DetectionMode.audio)
 				Console.Error.WriteLine("Note: --dump-frames applies to visual/pHash matching only; --detection-mode audio dumps nothing.");
@@ -127,7 +129,7 @@ internal static class MatchCommand {
 				var rows = new List<MatchRow>(candidatePaths.Count);
 				foreach (string file in candidatePaths) {
 					ct.ThrowIfCancellationRequested();
-					string display = DisplayName(file, libraryRoot);
+					string display = DisplayName(file, libraryRoots);
 					string dumpLabel = $"{++dumpIndex:000}-{Path.GetFileNameWithoutExtension(file)}";
 					MatchRow row;
 					try {
@@ -150,7 +152,7 @@ internal static class MatchCommand {
 
 				if (output is not null && !WriteReport(output, rows, summary,
 						clipFrom, region, clipLength, searchLength, sampleInterval, edgeBoundary, sparseInterval, mode,
-						presenceThreshold, phashPresenceThreshold, minSimilarity, library, targetFile, recurse))
+						presenceThreshold, phashPresenceThreshold, minSimilarity, libraries, excludeFolders, targetFile, recurse))
 					return 1;
 			}
 			return 0;
@@ -167,7 +169,8 @@ internal static class MatchCommand {
 			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
 			TimeSpan sampleInterval, TimeSpan edgeBoundary, TimeSpan sparseInterval, DetectionMode mode,
 			float presenceThreshold, float phashPresenceThreshold, float minSimilarity,
-			DirectoryInfo? library, FileInfo? targetFile, bool recurse) {
+			IReadOnlyList<DirectoryInfo> libraries, IReadOnlyList<DirectoryInfo> excludeFolders,
+			FileInfo? targetFile, bool recurse) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr match report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine($"clip-from:      {clipFrom.FullName}");
@@ -180,7 +183,9 @@ internal static class MatchCommand {
 			$"phash-presence-threshold: {phashPresenceThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
 		report.AppendLine(targetFile is not null
 			? $"file:           {targetFile.FullName}"
-			: $"library:        {library!.FullName}   ({(recurse ? "recursive" : "top level only")})");
+			: $"library:        {string.Join("; ", libraries.Select(l => l.FullName))}   ({(recurse ? "recursive" : "top level only")})");
+		if (excludeFolders.Count > 0)
+			report.AppendLine($"exclude-folders: {string.Join("; ", excludeFolders.Select(e => e.FullName))}");
 		report.AppendLine(new string('-', 78));
 		foreach (MatchRow row in rows)
 			report.AppendLine(row.ToLine());

@@ -84,6 +84,39 @@ internal static class SharedOptions {
 	internal static string FormatSeconds(TimeSpan t) =>
 		t.TotalSeconds.ToString("0.###", CultureInfo.InvariantCulture) + "s";
 
+	// Shared by --library and --exclude-folders: one flag, semicolon-delimited (decided over a
+	// repeatable flag — docs/iterativeplan.md's "CLI terminology & multi-folder libraries" entry).
+	// requireExists is false for --exclude-folders: excluding a folder that's currently offline
+	// (a dismounted network share, say) should still work by path, not error.
+	internal static DirectoryInfo[] ParseFolderListArg(ArgumentResult result, bool requireExists) {
+		if (result.Tokens.Count == 0) return Array.Empty<DirectoryInfo>();
+		var folders = new List<DirectoryInfo>();
+		foreach (string piece in result.Tokens[0].Value.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)) {
+			var dir = new DirectoryInfo(piece);
+			if (requireExists && !dir.Exists) {
+				result.AddError($"Folder not found: {dir.FullName}");
+				continue;
+			}
+			folders.Add(dir);
+		}
+		return folders.ToArray();
+	}
+
+	/// <summary>True if <paramref name="path"/> (a file or directory) falls under any of
+	/// <paramref name="excludeFolders"/> — a path/folder rule, distinct from and independent of the
+	/// '.vbr.'-output filename filter each command applies separately.</summary>
+	internal static bool IsUnderAny(string path, IReadOnlyList<DirectoryInfo> excludeFolders) {
+		if (excludeFolders.Count == 0) return false;
+		string fullPath = Path.GetFullPath(path);
+		foreach (DirectoryInfo exclude in excludeFolders) {
+			string root = Path.GetFullPath(exclude.FullName)
+				.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
+			if (fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+				return true;
+		}
+		return false;
+	}
+
 	internal static readonly Option<FileInfo> ClipFrom = new("--clip-from") {
 		Description = "Source video containing the bumper. The reference clip is extracted from " +
 			"it internally — this never takes a pre-cut clip file.",
@@ -180,9 +213,22 @@ internal static class SharedOptions {
 
 	// Not Required: exactly one of Library/TargetFile must be given, validated in each command's
 	// action (System.CommandLine has no built-in "exactly one of" constraint) via ResolveCandidates.
-	internal static readonly Option<DirectoryInfo> Library = new("--library") {
-		Description = "Folder of video files to search. Subfolders are traversed by default — " +
-			"see --no-recurse. Exactly one of --library or --file is required.",
+	internal static readonly Option<DirectoryInfo[]> Library = new("--library") {
+		Description = "Semicolon-delimited folder(s) of video files to search (e.g. " +
+			"\"D:\\Show;D:\\Extras\"). Subfolders are traversed by default — see --no-recurse. The " +
+			"same folder may appear under more than one library (e.g. across separate " +
+			"--library-db-folder/--library-name runs) — nothing here checks for or prevents that " +
+			"overlap. Exactly one of --library or --file is required.",
+		CustomParser = r => ParseFolderListArg(r, requireExists: true),
+	};
+
+	internal static readonly Option<DirectoryInfo[]> ExcludeFolders = new("--exclude-folders") {
+		Description = "Semicolon-delimited folder(s) to exclude from --library's candidates (e.g. " +
+			"\"D:\\Show\\Extras;D:\\Show\\Deleted Scenes\"). A file is excluded if its path falls " +
+			"under any of these, regardless of which --library folder it was found under — a " +
+			"path/folder rule, independent of the '.vbr.'-output filename filter each command " +
+			"already applies on its own. No effect with --file.",
+		CustomParser = r => ParseFolderListArg(r, requireExists: false),
 	};
 
 	internal static readonly Option<FileInfo> TargetFile = new("--file") {
@@ -200,7 +246,8 @@ internal static class SharedOptions {
 	// definition rather than two copies drifting apart.
 	internal static readonly Option<string> LibraryName = new("--library-name") {
 		Description = "Label for this library — also names its default per-library file (database, " +
-			"catalog, etc.). Default: --library's own folder name.",
+			"catalog, etc.). Default: --library's own folder name (the first folder, if --library " +
+			"names more than one).",
 	};
 
 	internal static readonly Option<DirectoryInfo> DumpFrames = new("--dump-frames") {
@@ -227,23 +274,28 @@ internal static class SharedOptions {
 			"reviewed the output, so this is an assist, not a substitute (ADR 0008).",
 	};
 
-	/// <summary>Resolved set of candidate files plus the root to print paths relative to (null
+	/// <summary>Resolved set of candidate files plus the root(s) to print paths relative to (empty
 	/// for a single-file target, where the display name is just the file name).</summary>
-	internal readonly record struct CandidateSet(IReadOnlyList<string> Files, string? LibraryRoot);
+	internal readonly record struct CandidateSet(IReadOnlyList<string> Files, IReadOnlyList<string> LibraryRoots);
 
 	/// <summary>
-	/// Validates exactly one of <paramref name="file"/>/<paramref name="library"/> was given and
+	/// Validates exactly one of <paramref name="file"/>/<paramref name="libraries"/> was given and
 	/// resolves it to a candidate list — a single file as-is (no extension filtering: the user
-	/// named it explicitly), or every recognized video file under the library folder. Returns
-	/// null and sets <paramref name="error"/> on any validation failure; callers print the error
-	/// and exit nonzero.
+	/// named it explicitly), or every recognized video file under every library folder, minus
+	/// anything under <paramref name="excludeFolders"/>, deduplicated (the same physical file can
+	/// otherwise appear twice if two given library folders overlap, e.g. one nested in the other).
+	/// Returns null and sets <paramref name="error"/> on any validation failure; callers print the
+	/// error and exit nonzero. Each library folder's own existence was already validated by
+	/// <see cref="Library"/>'s own parser (a nonexistent folder can't make it into this list at
+	/// all), so there's no existence re-check here.
 	/// </summary>
-	internal static CandidateSet? ResolveCandidates(FileInfo? file, DirectoryInfo? library, bool recurse, out string? error) {
-		if (file is null && library is null) {
+	internal static CandidateSet? ResolveCandidates(FileInfo? file, IReadOnlyList<DirectoryInfo> libraries,
+			IReadOnlyList<DirectoryInfo> excludeFolders, bool recurse, out string? error) {
+		if (file is null && libraries.Count == 0) {
 			error = "Error: one of --library or --file is required.";
 			return null;
 		}
-		if (file is not null && library is not null) {
+		if (file is not null && libraries.Count > 0) {
 			error = "Error: specify only one of --library or --file, not both.";
 			return null;
 		}
@@ -253,25 +305,39 @@ internal static class SharedOptions {
 				return null;
 			}
 			error = null;
-			return new CandidateSet(new[] { file.FullName }, LibraryRoot: null);
-		}
-		if (!library!.Exists) {
-			error = $"Error: Library folder not found: {library.FullName}";
-			return null;
+			return new CandidateSet(new[] { file.FullName }, LibraryRoots: Array.Empty<string>());
 		}
 		error = null;
-		var files = Directory.EnumerateFiles(library.FullName, "*",
-				new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })
-			.Where(f => ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant()))
-			.OrderBy(f => f, StringComparer.OrdinalIgnoreCase)
-			.ToList();
-		return new CandidateSet(files, library.FullName);
+		var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+		var files = new List<string>();
+		foreach (DirectoryInfo library in libraries) {
+			foreach (string f in Directory.EnumerateFiles(library.FullName, "*",
+					new EnumerationOptions { RecurseSubdirectories = recurse, IgnoreInaccessible = true })) {
+				if (!ClipExtractor.VideoExtensions.Contains(Path.GetExtension(f).ToLowerInvariant())) continue;
+				if (IsUnderAny(f, excludeFolders)) continue;
+				if (seen.Add(Path.GetFullPath(f)))
+					files.Add(f);
+			}
+		}
+		files.Sort(StringComparer.OrdinalIgnoreCase);
+		return new CandidateSet(files, libraries.Select(l => l.FullName).ToList());
 	}
 
-	/// <summary>Library-relative path for a resolved candidate (or just the file name for a
-	/// single-file target, where there's no library root to be relative to).</summary>
-	internal static string DisplayName(string file, string? libraryRoot) =>
-		libraryRoot is null ? Path.GetFileName(file) : Path.GetRelativePath(libraryRoot, file);
+	/// <summary>Library-relative path for a resolved candidate — relative to whichever of
+	/// <paramref name="libraryRoots"/> actually contains it — or just the file name for a
+	/// single-file target (empty <paramref name="libraryRoots"/>, no root to be relative to).</summary>
+	internal static string DisplayName(string file, IReadOnlyList<string> libraryRoots) {
+		if (libraryRoots.Count == 0) return Path.GetFileName(file);
+		string fullFile = Path.GetFullPath(file);
+		foreach (string root in libraryRoots) {
+			string normalizedRoot = Path.GetFullPath(root);
+			if (fullFile.StartsWith(normalizedRoot, StringComparison.OrdinalIgnoreCase))
+				return Path.GetRelativePath(normalizedRoot, file);
+		}
+		// Every candidate came from one of these roots, so this shouldn't happen -- fall back to
+		// the full path rather than throw, since this is display-only.
+		return file;
+	}
 
 	/// <summary>
 	/// When <paramref name="verbose"/>, echoes every log entry VBR.Core/VDF.Core raise via

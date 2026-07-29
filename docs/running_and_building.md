@@ -1,15 +1,10 @@
 # Running & building
 
-Command reference for building, running, and testing this project day to day. For first-time
-environment setup (SDK install, VS Code config, NuGet/AOT troubleshooting), see
-[`development.md`](development.md) — this doc assumes that's already done.
+Command reference for building, running, and testing this project day to day. For first-time environment setup (SDK install, VS Code config, NuGet/AOT troubleshooting), see[`development.md`](development.md) — this doc assumes that's already done.
 
-VBR is *this* project — the part actively being built — so its commands come first below. VDF
-is the inherited engine/GUI this project forks; its commands follow, since it's mostly
-already-working infrastructure at this point rather than the day-to-day focus.
+VBR is *this* project — the part actively being built — so its commands come first below. VDF is the inherited engine/GUI this project forks; its commands follow, since it's mostlyalready-working infrastructure at this point rather than the day-to-day focus.
 
-All commands run from the repo root. VBR and VDF projects currently share one solution file,
-`VideoBumperRemover.sln`, so building or testing against it covers everything at once.
+All commands run from the repo root. VBR and VDF projects currently share one solution file, `VideoBumperRemover.sln`, so building or testing against it covers everything at once.
 
 ## Whole solution
 
@@ -75,9 +70,15 @@ Key options (run `--help` for the full list):
 - `--phash-presence-threshold` (default 0.96) — pHash's own presence gate, only relevant with
   `--detection-mode phash|all`. Treat `phash` mode as experimental: on real testing it's had a
   much narrower true/false-positive margin than visual and has missed real matches visual caught.
-- **Exactly one of `--library <folder>` or `--file <path>` is required.** `--library` is
-  traversed **recursively by default**; `--no-recurse` searches only its top level (no effect
-  with `--file`). Results print library-relative paths, or just the file name for `--file`.
+- **Exactly one of `--library <folder(s)>` or `--file <path>` is required.** `--library` accepts
+  one or more semicolon-delimited folders (e.g. `"D:\Show;D:\Extras"`) — video files under every
+  one are combined into a single candidate list (deduplicated, so overlapping/nested folders don't
+  double-count a file). Traversed **recursively by default**; `--no-recurse` searches only each
+  folder's top level (no effect with `--file`). `--exclude-folders <folder(s)>` (same
+  semicolon-delimited shape) drops any candidate whose path falls under one of them, regardless of
+  which `--library` folder it came from — a path/folder rule, independent of the `.vbr.`-output
+  filename filter below. Results print each file's path relative to whichever `--library` folder
+  contains it, or just the file name for `--file`.
 - `--output <file>` — also write the match report (parameter header + the same rows/summary as
   the console) to a file.
 - `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip-dense/`/`clip-sparse/`
@@ -188,6 +189,10 @@ Key behavior:
 - **No trash/soft-delete stage.** `remove`'s non-destructive sibling output already is the review
   window — the original survives untouched until you run `cleanup`. A second staged-deletion layer
   here would just triple disk usage on libraries that are already large.
+- `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`scan`
+  (each folder's own directory tree walked, deduplicated where folders overlap), and
+  `--exclude-folders` skips whole directories that fall under it, before `cleanup` ever looks
+  inside them for `.vbr.` pairs.
 - `--validate-files` — off by default. When set, ffprobes each `.vbr.` output and sanity-checks
   its duration (precisely, against the manifest, when one is present and parses; otherwise a
   coarser "shorter than the original" check) before it's allowed anywhere near the original. A
@@ -216,6 +221,11 @@ dotnet run --project VBR.CLI -- scan --library "D:\Media\Show" --library-name Sh
 
 Key options:
 
+- `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`cleanup`
+  (e.g. `--library "D:\Media\Show;D:\Media\Extras"`), combined into one candidate list and
+  deduplicated where folders overlap; `--exclude-folders` works the same way too. All of a
+  multi-folder `--library`'s files land in the *same* database — there's still only one
+  `--library-name`/one database file per `scan` invocation, not one per folder.
 - `--edge-boundary`/`--sample-interval`/`--sparse-interval` (defaults 20s / 0.2s / 4s) — how deep
   from each true edge is sampled densely, and the dense/sparse intervals. These are **scan-specific
   defaults**, not the same options on `match`/`remove` (which are relative to a *known*
@@ -224,9 +234,10 @@ Key options:
 - `--library-name <name>` / `--library-db-folder <folder>` — every named library gets its own
   independent database file, always named `{library-name}.vbrdb` (the file name is only ever derived
   from `--library-name`; `--library-db-folder` names the *containing folder*, not the file, and
-  doesn't need to exist yet). Default name: `--library`'s own folder name; default location: a
-  dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\database\` on Windows), never VDF's
-  own database folder.
+  doesn't need to exist yet). Default name: `--library`'s own folder name (the *first* folder, if
+  more than one is given — override with `--library-name` if that guess isn't the one you want);
+  default location: a dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\database\` on
+  Windows), never VDF's own database folder.
 - `--include-vbr-outputs` — off by default: `name.vbr.ext` outputs from a prior `remove` are
   transitional staging artifacts (a review window before `cleanup`), usually redundant to include.
 - `--rescan` (alias `--force`) — bypass change detection and re-sample every candidate, e.g. after
@@ -264,17 +275,7 @@ no `.vbr.` output exists for the target), and `RECOVER` for anything the startup
 dotnet run --project VBR.CLI -- add-bumper --help
 ```
 
-Adds one bumper to a named, persistent **catalog** — samples `--clip-from`'s requested region
-directly from source, extracts a reference clip and a native-resolution thumbnail, measures precise
-duration, and writes a new entry. Like `match`/`remove`, it never accepts a pre-cut clip file
-(`--clip-from`/`--region`/`--clip-length`, identical meaning). Unlike `vbr scan`, a catalog is
-**not** tied to a media folder at all — it's named directly (`--catalog-name`), so the same catalog
-can be built from one collection of videos and applied to a different one later. (An earlier
-version mirrored `scan`'s `--library`/`--library-name` pair here; that wrongly implied a catalog
-belongs to one scanned library, and `--library`'s value turned out to never be used for anything —
-see [`iterativeplan.md`](iterativeplan.md) → "Bumper catalog" for the full story.) Doesn't match or
-remove anything, and doesn't read the catalog back yet — see that same doc for what's still unbuilt
-(catalog-aware matching/"apply", curation, sub-bumper relationships, export/import).
+Adds one bumper to a named, persistent **catalog** — samples `--clip-from`'s requested region directly from source, extracts a reference clip and a native-resolution thumbnail, measures precise duration, and writes a new entry. Like `match`/`remove`, it never accepts a pre-cut clip file(`--clip-from`/`--region`/`--clip-length`, identical meaning). Unlike `vbr scan`, a catalog is**not** tied to a media folder at all — it's named directly (`--catalog-name`), so the same catalog can be built from one collection of videos and applied to a different one later. (An earlier version mirrored `scan`'s `--library`/`--library-name` pair here; that wrongly implied a catalog belongs to one scanned library, and `--library`'s value turned out to never be used for anything —see [`iterativeplan.md`](iterativeplan.md) → "Bumper catalog" for the full story.) Doesn't match or remove anything, and doesn't read the catalog back yet — see that same doc for what's still unbuilt(catalog-aware matching/"apply", curation, sub-bumper relationships, export/import).
 
 ```sh
 dotnet run --project VBR.CLI -- add-bumper --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s --label "Studio ident" --catalog-name "my-bumpers"

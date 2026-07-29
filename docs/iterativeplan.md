@@ -24,18 +24,22 @@ What changed: `VBR.Core.Index` → `VBR.Core.Database` (folder + namespace); `Li
 
 No behavior changed — purely a rename, confirmed by `dotnet build`/`dotnet test VBR.Tests` (67 passed, 0 failed, same as before) plus a live `vbr scan` smoke test against a throwaway file confirming the `.vbrdb` extension, the "Database: ..." console line, and correct default-folder resolution. The old `%LOCALAPPDATA%\VideoBumperRemover\index\` folder from prior real usage was left in place (real user data, not touched) — new scans now default under `...\database\` instead; nothing migrates the old folder's contents, since nothing in it needs migrating (a first scan of a "new" library under the new default location is not an error, same as any other fresh database).
 
-### Phase 2 — Multi-folder libraries: `--library` becomes a delimited list, plus a new exclusion flag — decided, not yet built
+### Phase 2 — Multi-folder libraries: `--library` becomes a delimited list, plus a new exclusion flag — implemented (2026-07-29)
 
-**Status: fully decided (2026-07-29), implementation pending.** Real feature work, not a rename — touches `SharedOptions.ResolveCandidates` and every command that calls it (`match`/`remove`/`cleanup`/`scan`; `add-bumper` is unaffected, since it dropped `--library` entirely in the last round of changes).
+**Status: done.** Real feature work, not a rename — touched `SharedOptions.ResolveCandidates`/`DisplayName` and every command that calls it (`match`/`remove`/`cleanup`/`scan`; `add-bumper` is unaffected, since it dropped `--library` entirely in the last round of changes).
 
-Final shape, per the maintainer's direction and VDF's own "Where to look" UI (include/exclude folders as parallel, symmetric concepts):
+What shipped, per the maintainer's decided shape (VDF's own "Where to look" UI — include/exclude folders as parallel, symmetric concepts):
 
-- `--library` changes from one `DirectoryInfo` to a semicolon-delimited list of paths, parsed the same way `--tags` already splits on commas in `add-bumper` (a `CustomParser`, no new parsing infrastructure needed). Every path validated to exist, same as today's single-path check. **Decided: single flag, semicolon-delimited** (not a repeatable `--library A --library B` flag).
-- New **`--exclude-folders`** (name decided, final) takes the same semicolon-delimited-list shape — paths to exclude from whatever `--library` resolved to.
-- `--no-recurse` stays a single flag applying uniformly to every listed path — per-path recursion control isn't proposed and would be a finer-grained feature than this phase needs.
-- Exclusion matching: filter candidates whose path falls under an excluded folder *after* enumeration, mirroring how `.vbr.`-output filtering already works, rather than skipping directory traversal during enumeration. Simpler, consistent with existing code; costs a little wasted enumeration on a large excluded subtree, which seems like the right trade for v1.
-- Confirmed distinct from `.vbr.`-output filtering — that's a filename-pattern rule; this is a path/folder rule. Both stay, independently.
-- **Decided: the same folder may belong to more than one library at once.** No dedup/exclusivity check across libraries. The maintainer's reasoning: separately-planned work on handling videos that change/move within a library will handle most or all of the consequences of this overlap, so it doesn't need its own guard here.
+- `--library` changed from `Option<DirectoryInfo>` to `Option<DirectoryInfo[]>` with a `CustomParser` that splits on `;`, trims, and validates each path exists (a missing folder is a parse-time error via `result.AddError`, same as any other bad argument — never silently reaches the command's action). Single flag, semicolon-delimited, as decided — not a repeatable `--library A --library B` flag.
+- New `--exclude-folders` — same semicolon-delimited shape, but existence is *not* required (excluding a currently-offline folder, e.g. a dismounted share, should still work by path rather than error).
+- `ResolveCandidates` now enumerates every `--library` folder, filters out anything `IsUnderAny` an exclude folder (path-prefix match, applied *after* enumeration — same trade-off as the `.vbr.`-filename filter, simpler than skipping traversal, costs a little wasted enumeration on a large excluded subtree), and deduplicates the combined list by full path — needed because overlapping/nested `--library` folders (or the maintainer's decided "same folder in more than one library" case) can otherwise reach the same file twice in one run. `CleanupCommand` (which doesn't go through `ResolveCandidates` — it walks directories, not files) got the same treatment directly: loops every library folder's directory tree, skips any directory `IsUnderAny` an exclude folder, and deduplicates directories the same way.
+- `DisplayName`/`CandidateSet.LibraryRoots` changed from a single nullable root to a list — a resolved candidate's relative-path display now picks whichever of the given `--library` roots actually contains it, rather than assuming there's only one.
+- `--no-recurse` unchanged — still one flag applying uniformly to every listed folder, as decided (per-folder recursion control was explicitly out of scope).
+- `vbr scan`'s default `--library-name` (when not given) now derives from the *first* `--library` folder when more than one is given — the same "best-effort default, override if it's wrong" philosophy as the single-folder case, just extended to pick one of several since there's no other sensible single name to derive. All folders' files still land in one database — multi-folder `--library` does not mean multiple databases per `scan` invocation.
+- Confirmed distinct from `.vbr.`-output filtering, as decided — that's a filename-pattern rule; this is a path/folder rule. Both stay, independently.
+- The "same folder may belong to more than one library at once" decision needed no code change here — nothing in this implementation checks for or prevents that overlap; it's simply not a case `ResolveCandidates` (scoped to one command's one `--library` argument) has any way to observe.
+
+Verified live: two library folders combined (3 files total, one correctly dropped by `--exclude-folders`); an intentionally overlapping pair (`dirA` + `dirA\sub`) correctly deduplicated to 2 files, not 3; a nonexistent folder in the list correctly failed at parse time with "Folder not found"; `vbr cleanup` walked both folders' directory trees (skipping the excluded one) without touching anything, since no real `.vbr.` pairs were present. Not covered by `VBR.Tests` — `SharedOptions` lives in `VBR.CLI`, which `VBR.Tests` doesn't reference (a pre-existing gap, not introduced here); verification followed this project's established CLI-layer convention of live smoke-testing rather than unit tests for command wiring.
 
 ### Decided — `vbr cleanup` renamed to `vbr commit`
 
@@ -69,13 +73,13 @@ Bumper CRUD (list/edit/rename/duplicate/delete — `docs/design/clarification-te
 - **Delimiter and flag shape** — semicolon-delimited, single flag (not repeatable).
 - **Folder-in-multiple-libraries** — allowed; separately-planned change-handling work covers the consequences (see Phase 2 above).
 - **`vbr cleanup` → `vbr commit`** — see the dedicated section above; not yet implemented.
-- **Tombstoning** — adopt it; see Phase 3 above for the now-retroactive timing note; not yet implemented.
+- **Tombstoning** — adopt it; implemented 2026-07-29, see the dedicated section above.
 - **Bumper label uniqueness** — **unique within a catalog, not globally.** Two different catalogs may each have a bumper labeled e.g. "Studio ident" without conflict; `BumperCatalogBuilder.AddBumper`/`vbr add-bumper` need a duplicate-label check scoped to the target catalog's own `Entries` before insert. Not yet implemented — `add-bumper` currently allows silent duplicate labels within one catalog (each entry is independently GUID-keyed, so nothing collides at the storage layer; this would be a new CLI/builder-level validation, not a data-model change).
 - **Orphaned bumpers (source doc Portability case/handling #9) — no surfacing needed.** `BumperCatalogEntry.SourceVideoPath` is informational provenance metadata only; it stays exactly as-is when the source file it names disappears, and its unresolvability has no effect on the bumper's validity or matching utility. This closes the "unresolved technical consequences" the source doc flagged — the resolution is that there *are* no technical consequences worth building for, given today's data model. No code change implied.
 
 ### Open questions
 
-None outstanding as of 2026-07-29 — every item raised in this entry's planning pass has a maintainer decision recorded above. Four decided-but-unbuilt items remain: Phase 2 (multi-folder libraries), the `vbr cleanup` → `vbr commit` rename, tombstoning, and catalog-scoped label-uniqueness enforcement. These are independent of each other (none blocks another except Phase 3's dependency on tombstoning + the `commit` rename landing first) — sequencing among them is an implementation-order choice, not an open design question.
+None outstanding as of 2026-07-29 — every item raised in this entry's planning pass has a maintainer decision recorded above. Phase 1 (rename), Phase 2 (multi-folder libraries), and tombstoning are now implemented. Two decided-but-unbuilt items remain: the `vbr cleanup` → `vbr commit` rename, and catalog-scoped label-uniqueness enforcement. Phase 3 (database-maintenance commands) is sketched but blocked on the `commit` rename landing first.
 
 ## Bumper catalog — implemented and validated (2026-07-27, planned; 2026-07-28, built)
 
@@ -490,7 +494,7 @@ Defaults table (source codec detected via the `ffprobe` call `ClipRemover` alrea
 duration probing):
 
 | Source codec | Output encoder | CRF | Confidence |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | H.264 | `libx264` | 22 | Solid — matches HandBrake's own default |
 | H.265/HEVC | `libx265` | 24 | Solid — matches HandBrake's own default |
 | VP9 | `libvpx-vp9` | 31 | First-class, at the maintainer's request (a friend's library is VP9-heavy from YouTube downloads) — less standardized than x264/x265 but common enough to support properly rather than fall back |
@@ -623,7 +627,7 @@ edge window, and confirms they reproduce live `vbr match`-quality presence numbe
 **Live-verified through the built `vbr scan` CLI** against real media (`test_materials/`):
 
 | Verification (plan item) | Result |
-|---|---|
+| --- | --- |
 | 1. Real episode end to end | 49-minute Caprica episode → 738 raw sparse samples (120 usable) + 100 begin-edge (62 usable) + 100 end-edge (15 usable) = 197 merged fingerprints; duration probed correctly (00:49:14); ~21s first sample |
 | 2. Re-scan, nothing changed | 0.16s (vs. 21s) — no decode, no AI-model reload |
 | 3. Touched mtime, same content | Still 0.16s — `OsHash` correctly proves the bytes are unchanged |
@@ -1122,7 +1126,7 @@ same pass rather than deferred).
 tests), reproducing/confirming every number already recorded at the primitive level:
 
 | Case | Command shape | Result |
-|---|---|---|
+| --- | --- | --- |
 | Daredevil end-stack (default edge-boundary/sparse — single-density) | `match --region end --clip-length 10s --sample-interval 0.2s --library ...` | **13/13 @ 99–100%** vs. Doctor Who **0/13 @ ≤49%** |
 | Avatar 47s intro (mixed-density) | `match --region begin --clip-length 47s --edge-boundary 20s --sample-interval 0.5s --sparse-interval 4s --library ...` | **20/20 @ 96–100%** |
 | Caprica 5s end-card (default = single-density) | `match --region end --clip-length 5s --sample-interval 0.2s --library ...` | **19/19 @ 93–100%** |
@@ -1225,7 +1229,7 @@ pass. No pHash code was written; this is structure only.
 **Result — real media, both directions:**
 
 | Test | Corpus | Expectation | Result |
-|---|---|---|---|
+| --- | --- | --- | --- |
 | `MatchMixedDensity_FindsAnEdgeBumperLongerThanTheBoundary` (positive) | Avatar: The Last Airbender S01, 20 episodes, 47s true-begin intro, profile = 20s dense @ 0.5s / 27s sparse @ 4s | most/all episodes match | ✅ **19/19 other episodes MATCH**, present 21–25/40 usable clip frames, bestCos 96–99% |
 | Same clip vs. Doctor Who (2005) S01, 13 episodes (negative control) | unrelated content | zero false positives | ✅ **0/13**, present=0/40 on every file, bestCos 23–49% |
 
@@ -1566,27 +1570,27 @@ re-recorded after the fix.
 
 #### B. CLI features requested — IMPLEMENTED (2026-07-18)
 
-4. **Recursive library traversal by default.**
+1. **Recursive library traversal by default.**
    [`MatchCommand.cs:198`](../VBR.CLI/Commands/MatchCommand.cs#L198) currently enumerates a single
    folder. Switch to `EnumerationOptions { RecurseSubdirectories = true, IgnoreInaccessible = true }`,
    add a `--no-recurse` switch, update the `--library` help text (it currently says
    "non-recursive"), and print **library-relative paths** so same-named files in different
    subfolders remain distinguishable.
 
-5. **`--output <file>`.**
+2. **`--output <file>`.**
    Write the same per-file lines + summary to a file. The probe already did this (its
    `visual-tail-results-*.txt`); the feature was lost during productionization. Restructure each row
    into a small record while doing this so a later `--output-format json` follows cheaply
    (`VDF.CLI` already has a JSON-output precedent).
 
-6. **Optional but recommended: `--dump-frames <dir>` diagnostic.**
+3. **Optional but recommended: `--dump-frames <dir>` diagnostic.**
    Write the sampled clip/window frames as images. This diagnosis required rebuilding the pipeline
    by hand; this switch makes the next "why did this match?" a ten-second glance.
 
 #### C. Re-validation matrix — PASSED (2026-07-18, all five runs; `--detection-mode visual`, 0.2s interval)
 
 | Test | Expectation | Result |
-|---|---|---|
+| --- | --- | --- |
 | Daredevil begin clip (5s) vs Daredevil S01 (begin) | all episodes match, on the *card* frames (not black) | ✅ **12/12 MATCH, present=18/18, bestCos 99–100%, rigid 97–98%@0s** |
 | Same clip vs Doctor Who S01 (begin) | **0** false positives | ✅ **0/13, bestCos 19–53%** (was 9 false MATCHes @ 87–97%) |
 | Same clip vs Avatar S01 (begin) | **0** false positives | ✅ **0/20, bestCos 52–56%** (was 4 false MATCHes) |

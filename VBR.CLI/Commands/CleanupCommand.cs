@@ -43,6 +43,7 @@ internal static class CleanupCommand {
 			"bumper-removal passes, after reviewing the '.vbr.' outputs, not instead of reviewing them.");
 		cmd.Aliases.Add("clean"); // "cleanup" is the name of record everywhere (ADR 0008); "clean" is just shorter to type.
 		cmd.Options.Add(Library);
+		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
 		cmd.Options.Add(ValidateFiles);
@@ -50,7 +51,8 @@ internal static class CleanupCommand {
 		cmd.Options.Add(Verbose);
 
 		cmd.SetAction((parseResult, ct) => {
-			var library = parseResult.GetValue(Library);
+			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
+			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			var targetFile = parseResult.GetValue(TargetFile);
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			bool validateFiles = parseResult.GetValue(ValidateFiles);
@@ -59,18 +61,18 @@ internal static class CleanupCommand {
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
-			if (targetFile is null && library is null) {
+			if (targetFile is null && libraries.Length == 0) {
 				Console.Error.WriteLine("Error: one of --library or --file is required.");
 				return Task.FromResult(1);
 			}
-			if (targetFile is not null && library is not null) {
+			if (targetFile is not null && libraries.Length > 0) {
 				Console.Error.WriteLine("Error: specify only one of --library or --file, not both.");
 				return Task.FromResult(1);
 			}
 
 			var results = new List<CleanupFileResult>();
 			var recoveries = new List<RecoveryAction>();
-			string? libraryRoot = null;
+			IReadOnlyList<string> libraryRoots = Array.Empty<string>();
 
 			if (targetFile is not null) {
 				if (!targetFile.Exists) {
@@ -82,27 +84,32 @@ internal static class CleanupCommand {
 				var (result, recovery) = LibraryCleaner.CleanSingleFile(targetFile.FullName, validateFiles, verbose, ct);
 				if (recovery is not null) {
 					recoveries.Add(recovery);
-					Console.WriteLine(ToLine(recovery, libraryRoot: null));
+					Console.WriteLine(ToLine(recovery, Array.Empty<string>()));
 				}
 				results.Add(result);
-				Console.WriteLine(ToLine(result, libraryRoot: null));
+				Console.WriteLine(ToLine(result, Array.Empty<string>()));
 			}
 			else {
-				if (!library!.Exists) {
-					Console.Error.WriteLine($"Error: Library folder not found: {library.FullName}");
-					return Task.FromResult(1);
-				}
-				libraryRoot = library.FullName;
-				foreach (string directory in EnumerateDirectories(library.FullName, recurse)) {
-					ct.ThrowIfCancellationRequested();
-					CleanupRunResult dirResult = LibraryCleaner.CleanDirectory(directory, validateFiles, verbose, ct);
-					foreach (RecoveryAction recovery in dirResult.RecoveryActions) {
-						recoveries.Add(recovery);
-						Console.WriteLine(ToLine(recovery, libraryRoot));
-					}
-					foreach (CleanupFileResult result in dirResult.Results) {
-						results.Add(result);
-						Console.WriteLine(ToLine(result, libraryRoot));
+				// Existence of each library folder was already validated by --library's own
+				// parser, same as match/remove/scan.
+				libraryRoots = libraries.Select(l => l.FullName).ToList();
+				var processedDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+				foreach (DirectoryInfo library in libraries) {
+					foreach (string directory in EnumerateDirectories(library.FullName, recurse)) {
+						ct.ThrowIfCancellationRequested();
+						if (IsUnderAny(directory, excludeFolders)) continue;
+						// The same directory can be reached twice if two --library folders overlap
+						// (e.g. one nested in the other) -- process it once.
+						if (!processedDirs.Add(Path.GetFullPath(directory))) continue;
+						CleanupRunResult dirResult = LibraryCleaner.CleanDirectory(directory, validateFiles, verbose, ct);
+						foreach (RecoveryAction recovery in dirResult.RecoveryActions) {
+							recoveries.Add(recovery);
+							Console.WriteLine(ToLine(recovery, libraryRoots));
+						}
+						foreach (CleanupFileResult result in dirResult.Results) {
+							results.Add(result);
+							Console.WriteLine(ToLine(result, libraryRoots));
+						}
 					}
 				}
 			}
@@ -111,7 +118,7 @@ internal static class CleanupCommand {
 			Console.WriteLine();
 			Console.WriteLine(summary);
 
-			if (output is not null && !WriteReport(output, results, recoveries, summary, libraryRoot, library, targetFile, recurse, validateFiles))
+			if (output is not null && !WriteReport(output, results, recoveries, summary, libraryRoots, libraries, excludeFolders, targetFile, recurse, validateFiles))
 				return Task.FromResult(1);
 
 			return Task.FromResult(0);
@@ -130,8 +137,8 @@ internal static class CleanupCommand {
 			yield return dir;
 	}
 
-	static string ToLine(CleanupFileResult result, string? libraryRoot) {
-		string display = DisplayName(result.OriginalPath, libraryRoot);
+	static string ToLine(CleanupFileResult result, IReadOnlyList<string> libraryRoots) {
+		string display = DisplayName(result.OriginalPath, libraryRoots);
 		string tag = result.Outcome switch {
 			CleanupOutcome.Cleaned => "CLEANED",
 			CleanupOutcome.Broken => "BROKEN ",
@@ -142,8 +149,8 @@ internal static class CleanupCommand {
 		return result.Detail is null ? $"{tag}  {display,-48}" : $"{tag}  {display,-48}  ({result.Detail})";
 	}
 
-	static string ToLine(RecoveryAction recovery, string? libraryRoot) =>
-		$"RECOVER  {DisplayName(recovery.OriginalPath, libraryRoot),-48}  {recovery.Detail}";
+	static string ToLine(RecoveryAction recovery, IReadOnlyList<string> libraryRoots) =>
+		$"RECOVER  {DisplayName(recovery.OriginalPath, libraryRoots),-48}  {recovery.Detail}";
 
 	static string Summarize(IReadOnlyList<CleanupFileResult> results, IReadOnlyList<RecoveryAction> recoveries) {
 		int cleaned = results.Count(r => r.Outcome == CleanupOutcome.Cleaned);
@@ -156,19 +163,22 @@ internal static class CleanupCommand {
 	}
 
 	static bool WriteReport(FileInfo output, IReadOnlyList<CleanupFileResult> results,
-			IReadOnlyList<RecoveryAction> recoveries, string summary, string? libraryRoot,
-			DirectoryInfo? library, FileInfo? targetFile, bool recurse, bool validateFiles) {
+			IReadOnlyList<RecoveryAction> recoveries, string summary, IReadOnlyList<string> libraryRoots,
+			IReadOnlyList<DirectoryInfo> libraries, IReadOnlyList<DirectoryInfo> excludeFolders,
+			FileInfo? targetFile, bool recurse, bool validateFiles) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr cleanup report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine(targetFile is not null
 			? $"file:           {targetFile.FullName}"
-			: $"library:        {library!.FullName}   ({(recurse ? "recursive" : "top level only")})");
+			: $"library:        {string.Join("; ", libraries.Select(l => l.FullName))}   ({(recurse ? "recursive" : "top level only")})");
+		if (excludeFolders.Count > 0)
+			report.AppendLine($"exclude-folders: {string.Join("; ", excludeFolders.Select(e => e.FullName))}");
 		report.AppendLine($"validate-files: {validateFiles}");
 		report.AppendLine(new string('-', 78));
 		foreach (RecoveryAction recovery in recoveries)
-			report.AppendLine(ToLine(recovery, libraryRoot));
+			report.AppendLine(ToLine(recovery, libraryRoots));
 		foreach (CleanupFileResult result in results)
-			report.AppendLine(ToLine(result, libraryRoot));
+			report.AppendLine(ToLine(result, libraryRoots));
 		report.AppendLine();
 		report.AppendLine(summary);
 		try {

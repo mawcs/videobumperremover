@@ -91,6 +91,7 @@ internal static class RemoveCommand {
 		cmd.Options.Add(MinSimilarity);
 		cmd.Options.Add(Mode);
 		cmd.Options.Add(Library);
+		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
 		cmd.Options.Add(Output);
@@ -120,7 +121,8 @@ internal static class RemoveCommand {
 			float phashPresenceThreshold = parseResult.GetValue(PHashPresenceThreshold);
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
 			DetectionMode mode = parseResult.GetValue(Mode);
-			var library = parseResult.GetValue(Library);
+			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
+			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			var targetFile = parseResult.GetValue(TargetFile);
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			FileInfo? output = parseResult.GetValue(Output);
@@ -129,12 +131,12 @@ internal static class RemoveCommand {
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
-			CandidateSet? resolved = ResolveCandidates(targetFile, library, recurse, out string? resolveError);
+			CandidateSet? resolved = ResolveCandidates(targetFile, libraries, excludeFolders, recurse, out string? resolveError);
 			if (resolved is null) {
 				Console.Error.WriteLine(resolveError);
 				return 1;
 			}
-			var (candidatePaths, libraryRoot) = resolved.Value;
+			var (candidatePaths, libraryRoots) = resolved.Value;
 
 			if (region == ClipEdge.begin && !reEncode)
 				Console.Error.WriteLine(
@@ -169,7 +171,7 @@ internal static class RemoveCommand {
 				var rows = new List<RemoveRow>(candidates.Count);
 				foreach (string file in candidates) {
 					ct.ThrowIfCancellationRequested();
-					string display = DisplayName(file, libraryRoot);
+					string display = DisplayName(file, libraryRoots);
 					string dumpLabel = $"{++dumpIndex:000}-{Path.GetFileNameWithoutExtension(file)}";
 					RemoveRow row;
 					try {
@@ -207,7 +209,7 @@ internal static class RemoveCommand {
 
 				if (output is not null && !WriteReport(output, rows, summary,
 						clipFrom, region, clipLength, searchLength, sampleInterval, edgeBoundary, sparseInterval, mode,
-						presenceThreshold, phashPresenceThreshold, minSimilarity, library, targetFile, recurse, removalMode))
+						presenceThreshold, phashPresenceThreshold, minSimilarity, libraries, excludeFolders, targetFile, recurse, removalMode))
 					return 1;
 			}
 			return 0;
@@ -220,7 +222,8 @@ internal static class RemoveCommand {
 			FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, TimeSpan searchLength,
 			TimeSpan sampleInterval, TimeSpan edgeBoundary, TimeSpan sparseInterval, DetectionMode mode,
 			float presenceThreshold, float phashPresenceThreshold, float minSimilarity,
-			DirectoryInfo? library, FileInfo? targetFile, bool recurse, RemovalMode removalMode) {
+			IReadOnlyList<DirectoryInfo> libraries, IReadOnlyList<DirectoryInfo> excludeFolders,
+			FileInfo? targetFile, bool recurse, RemovalMode removalMode) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr remove report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 		report.AppendLine($"clip-from:      {clipFrom.FullName}");
@@ -233,7 +236,9 @@ internal static class RemoveCommand {
 			$"phash-presence-threshold: {phashPresenceThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
 		report.AppendLine(targetFile is not null
 			? $"file:           {targetFile.FullName}"
-			: $"library:        {library!.FullName}   ({(recurse ? "recursive" : "top level only")})");
+			: $"library:        {string.Join("; ", libraries.Select(l => l.FullName))}   ({(recurse ? "recursive" : "top level only")})");
+		if (excludeFolders.Count > 0)
+			report.AppendLine($"exclude-folders: {string.Join("; ", excludeFolders.Select(e => e.FullName))}");
 		report.AppendLine($"mode:           {(removalMode == RemovalMode.ReEncode ? "re-encode (--re-encode true)" : "stream-copy (--re-encode false)")}");
 		report.AppendLine(new string('-', 78));
 		foreach (RemoveRow row in rows)
