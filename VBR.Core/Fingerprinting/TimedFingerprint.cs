@@ -29,7 +29,7 @@ namespace VBR.Core.Fingerprinting;
 /// separately-decoded passes (dense begin, dense end, sparse whole-file) into one combined,
 /// timestamp-sorted list, and one type per point is simpler to merge/sort/persist than keeping two
 /// parallel arrays in lockstep. <c>MemoryPack</c>-serializable directly — this is the shape
-/// persisted per-file in the library index (see <c>VBR.Core.Index</c>).
+/// persisted per-file in the library database (see <c>VBR.Core.Database</c>).
 /// </summary>
 [MemoryPackable(GenerateType.VersionTolerant)]
 public sealed partial class TimedFingerprint {

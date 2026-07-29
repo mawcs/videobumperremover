@@ -194,12 +194,12 @@ internal static class SharedOptions {
 		Description = "With --library: search only its top level instead of traversing subfolders. No effect with --file.",
 	};
 
-	// Shared by `scan` and `add-bumper` — both name a per-library file (an index, a catalog) after
+	// Shared by `scan` and `add-bumper` — both name a per-library file (a database, a catalog) after
 	// this, defaulting from --library's own folder name. Promoted here (was scan-only originally)
 	// once add-bumper needed the identical option, per this file's own stated purpose: one shared
 	// definition rather than two copies drifting apart.
 	internal static readonly Option<string> LibraryName = new("--library-name") {
-		Description = "Label for this library — also names its default per-library file (index, " +
+		Description = "Label for this library — also names its default per-library file (database, " +
 			"catalog, etc.). Default: --library's own folder name.",
 	};
 

@@ -16,15 +16,15 @@
 
 using System;
 using System.IO;
+using VBR.Core.Database;
 using VBR.Core.Fingerprinting;
-using VBR.Core.Index;
 using Xunit;
 
-namespace VBR.Tests.Index;
+namespace VBR.Tests.Database;
 
-public class LibraryIndexStoreTests {
+public class LibraryDatabaseStoreTests {
 	static string CreateTempDir() {
-		string dir = Path.Combine(Path.GetTempPath(), "vbr_index_tests", Guid.NewGuid().ToString("N"));
+		string dir = Path.Combine(Path.GetTempPath(), "vbr_database_tests", Guid.NewGuid().ToString("N"));
 		Directory.CreateDirectory(dir);
 		return dir;
 	}
@@ -33,14 +33,14 @@ public class LibraryIndexStoreTests {
 		try { Directory.Delete(dir, recursive: true); } catch { }
 	}
 
-	static LibraryIndex BuildSampleIndex() {
-		var index = new LibraryIndex {
+	static LibraryDatabase BuildSampleDatabase() {
+		var database = new LibraryDatabase {
 			LibraryName = "Sample Library",
 			EdgeBoundarySeconds = 20,
 			DenseIntervalSeconds = 0.2,
 			SparseIntervalSeconds = 4,
 		};
-		var entry = new LibraryIndexEntry {
+		var entry = new LibraryDatabaseEntry {
 			Path = @"D:\Media\Show\S01E01.mkv",
 			FileSize = 123_456_789,
 			DateCreated = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
@@ -54,29 +54,29 @@ public class LibraryIndexStoreTests {
 				new TimedFingerprint(20.0, new byte[] { 7, 8, 9 }, 0xCCCCCCCCCCCCCCCC),
 			},
 		};
-		index.Entries[LibraryIndexKey.Normalize(entry.Path)] = entry;
-		return index;
+		database.Entries[LibraryDatabaseKey.Normalize(entry.Path)] = entry;
+		return database;
 	}
 
 	[Fact]
 	public void SaveThenLoad_RoundTripsHeaderAndEntries() {
 		string dir = CreateTempDir();
 		try {
-			string path = Path.Combine(dir, "library.vbridx");
-			LibraryIndex original = BuildSampleIndex();
+			string path = Path.Combine(dir, "library.vbrdb");
+			LibraryDatabase original = BuildSampleDatabase();
 
-			LibraryIndexStore.Save(original, path);
-			LibraryIndex loaded = LibraryIndexStore.Load(path);
+			LibraryDatabaseStore.Save(original, path);
+			LibraryDatabase loaded = LibraryDatabaseStore.Load(path);
 
-			Assert.Equal(LibraryIndex.CurrentFormatVersion, loaded.FormatVersion);
+			Assert.Equal(LibraryDatabase.CurrentFormatVersion, loaded.FormatVersion);
 			Assert.Equal(original.LibraryName, loaded.LibraryName);
 			Assert.Equal(original.EdgeBoundarySeconds, loaded.EdgeBoundarySeconds);
 			Assert.Equal(original.DenseIntervalSeconds, loaded.DenseIntervalSeconds);
 			Assert.Equal(original.SparseIntervalSeconds, loaded.SparseIntervalSeconds);
 			Assert.Single(loaded.Entries);
 
-			LibraryIndexEntry originalEntry = Assert.Single(original.Entries.Values);
-			LibraryIndexEntry loadedEntry = Assert.Single(loaded.Entries.Values);
+			LibraryDatabaseEntry originalEntry = Assert.Single(original.Entries.Values);
+			LibraryDatabaseEntry loadedEntry = Assert.Single(loaded.Entries.Values);
 			Assert.Equal(originalEntry.Path, loadedEntry.Path);
 			Assert.Equal(originalEntry.FileSize, loadedEntry.FileSize);
 			Assert.Equal(originalEntry.DateCreated, loadedEntry.DateCreated);
@@ -98,8 +98,8 @@ public class LibraryIndexStoreTests {
 	public void Save_UsesAtomicSwap_NoLeftoverTempFile() {
 		string dir = CreateTempDir();
 		try {
-			string path = Path.Combine(dir, "library.vbridx");
-			LibraryIndexStore.Save(BuildSampleIndex(), path);
+			string path = Path.Combine(dir, "library.vbrdb");
+			LibraryDatabaseStore.Save(BuildSampleDatabase(), path);
 			Assert.True(File.Exists(path));
 			Assert.False(File.Exists(path + ".tmp"));
 		}
@@ -113,13 +113,13 @@ public class LibraryIndexStoreTests {
 			// `path` itself being an existing directory (not a file) makes the final File.Move fail
 			// every attempt -- exercises Save's retry-then-give-up path deterministically, instead of
 			// depending on a real transient antivirus/other-process lock. LibraryScanner is what
-			// catches this in the real product (LibraryScannerTests.IndexSaveFailure_...); this proves
+			// catches this in the real product (LibraryScannerTests.DatabaseSaveFailure_...); this proves
 			// Save itself still surfaces a genuine, non-transient failure rather than hanging or
 			// swallowing it.
-			string path = Path.Combine(dir, "library.vbridx");
+			string path = Path.Combine(dir, "library.vbrdb");
 			Directory.CreateDirectory(path);
 
-			Exception ex = Assert.ThrowsAny<Exception>(() => LibraryIndexStore.Save(BuildSampleIndex(), path));
+			Exception ex = Assert.ThrowsAny<Exception>(() => LibraryDatabaseStore.Save(BuildSampleDatabase(), path));
 			Assert.True(ex is IOException or UnauthorizedAccessException,
 				$"Expected IOException or UnauthorizedAccessException, got {ex.GetType()}: {ex.Message}");
 		}
@@ -127,12 +127,12 @@ public class LibraryIndexStoreTests {
 	}
 
 	[Fact]
-	public void Load_NonexistentFile_ReturnsFreshEmptyIndex() {
+	public void Load_NonexistentFile_ReturnsFreshEmptyDatabase() {
 		string dir = CreateTempDir();
 		try {
-			LibraryIndex index = LibraryIndexStore.Load(Path.Combine(dir, "does-not-exist.vbridx"));
-			Assert.Equal(LibraryIndex.CurrentFormatVersion, index.FormatVersion);
-			Assert.Empty(index.Entries);
+			LibraryDatabase database = LibraryDatabaseStore.Load(Path.Combine(dir, "does-not-exist.vbrdb"));
+			Assert.Equal(LibraryDatabase.CurrentFormatVersion, database.FormatVersion);
+			Assert.Empty(database.Entries);
 		}
 		finally { DeleteTempDir(dir); }
 	}
@@ -141,9 +141,9 @@ public class LibraryIndexStoreTests {
 	public void Load_WrongMagicHeader_Throws() {
 		string dir = CreateTempDir();
 		try {
-			string path = Path.Combine(dir, "not-an-index.vbridx");
-			File.WriteAllText(path, "this is not a library index file, just plain text");
-			Assert.Throws<InvalidOperationException>(() => LibraryIndexStore.Load(path));
+			string path = Path.Combine(dir, "not-a-database.vbrdb");
+			File.WriteAllText(path, "this is not a library database file, just plain text");
+			Assert.Throws<InvalidOperationException>(() => LibraryDatabaseStore.Load(path));
 		}
 		finally { DeleteTempDir(dir); }
 	}
@@ -153,7 +153,7 @@ public class LibraryIndexStoreTests {
 	[InlineData(@"D:\Media\TV Shows\", "TV Shows")]
 	[InlineData(@"D:\Media\TV Shows/", "TV Shows")]
 	public void DeriveLibraryName_UsesLastPathSegment_IgnoringTrailingSeparators(string folder, string expected) {
-		Assert.Equal(expected, LibraryIndexStore.DeriveLibraryName(folder));
+		Assert.Equal(expected, LibraryDatabaseStore.DeriveLibraryName(folder));
 	}
 
 	// Path.Combine never *doubles* a separator explicitFolder already ends with, but it doesn't
@@ -161,23 +161,23 @@ public class LibraryIndexStoreTests {
 	// still a valid Windows path either way; the point of the test is the file name (always derived
 	// from libraryName), not which separator character precedes it.
 	[Theory]
-	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Library.vbridx")]
-	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Library.vbridx")]
-	[InlineData(@"C:\some\custom-folder/", @"C:\some\custom-folder/My Library.vbridx")]
-	public void ResolveIndexPath_ExplicitFolder_FileNameAlwaysDerivedFromLibraryName(string explicitFolder, string expected) {
-		Assert.Equal(expected, LibraryIndexStore.ResolveIndexPath(explicitFolder, "My Library"));
+	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Library.vbrdb")]
+	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Library.vbrdb")]
+	[InlineData(@"C:\some\custom-folder/", @"C:\some\custom-folder/My Library.vbrdb")]
+	public void ResolveDatabasePath_ExplicitFolder_FileNameAlwaysDerivedFromLibraryName(string explicitFolder, string expected) {
+		Assert.Equal(expected, LibraryDatabaseStore.ResolveDatabasePath(explicitFolder, "My Library"));
 	}
 
 	[Fact]
-	public void ResolveIndexPath_NoExplicitPath_DefaultsUnderDedicatedFolder_NamedAfterLibrary() {
-		string resolved = LibraryIndexStore.ResolveIndexPath(null, "My Library");
-		string folder = LibraryIndexStore.GetDefaultIndexFolder();
-		Assert.Equal(Path.Combine(folder, "My Library.vbridx"), resolved);
+	public void ResolveDatabasePath_NoExplicitPath_DefaultsUnderDedicatedFolder_NamedAfterLibrary() {
+		string resolved = LibraryDatabaseStore.ResolveDatabasePath(null, "My Library");
+		string folder = LibraryDatabaseStore.GetDefaultDatabaseFolder();
+		Assert.Equal(Path.Combine(folder, "My Library.vbrdb"), resolved);
 	}
 
 	[Fact]
-	public void ResolveIndexPath_SanitizesInvalidFileNameCharactersInLibraryName() {
-		string resolved = LibraryIndexStore.ResolveIndexPath(null, "Colon: Test");
+	public void ResolveDatabasePath_SanitizesInvalidFileNameCharactersInLibraryName() {
+		string resolved = LibraryDatabaseStore.ResolveDatabasePath(null, "Colon: Test");
 		Assert.DoesNotContain(":", Path.GetFileName(resolved));
 	}
 }

@@ -17,9 +17,9 @@
 using System;
 using System.IO;
 using VBR.Core.Catalog;
+using VBR.Core.Database;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
-using VBR.Core.Index;
 using Xunit;
 
 namespace VBR.Tests.Catalog;
@@ -117,7 +117,7 @@ public class BumperCatalogStoreTests {
 		try {
 			// `path` itself being an existing directory (not a file) makes the final File.Move fail
 			// every attempt -- exercises Save's retry-then-give-up path deterministically, same
-			// mechanism (and same reason to test it) as LibraryIndexStoreTests' equivalent.
+			// mechanism (and same reason to test it) as LibraryDatabaseStoreTests' equivalent.
 			string path = Path.Combine(dir, "library.vbrcat");
 			Directory.CreateDirectory(path);
 
@@ -151,13 +151,13 @@ public class BumperCatalogStoreTests {
 	}
 
 	[Fact]
-	public void Load_IndexFileGivenAsCatalog_Throws() {
-		// Cross-check that the two stores' magic headers actually differ -- an index file must never
+	public void Load_DatabaseFileGivenAsCatalog_Throws() {
+		// Cross-check that the two stores' magic headers actually differ -- a database file must never
 		// silently load as a catalog (or vice versa).
 		string dir = CreateTempDir();
 		try {
 			string path = Path.Combine(dir, "confused.vbrcat");
-			File.WriteAllBytes(path, "VBRIDX01"u8.ToArray());
+			File.WriteAllBytes(path, "VBRDB001"u8.ToArray());
 			Assert.Throws<InvalidOperationException>(() => BumperCatalogStore.Load(path));
 		}
 		finally { DeleteTempDir(dir); }
@@ -184,10 +184,10 @@ public class BumperCatalogStoreTests {
 	}
 
 	[Fact]
-	public void DefaultCatalogFolder_IsSiblingOfDefaultIndexFolder_NotInsideIt() {
+	public void DefaultCatalogFolder_IsSiblingOfDefaultDatabaseFolder_NotInsideIt() {
 		string catalogFolder = BumperCatalogStore.GetDefaultCatalogFolder();
-		string indexFolder = LibraryIndexStore.GetDefaultIndexFolder();
-		Assert.NotEqual(indexFolder, catalogFolder);
-		Assert.Equal(Path.GetDirectoryName(indexFolder), Path.GetDirectoryName(catalogFolder));
+		string databaseFolder = LibraryDatabaseStore.GetDefaultDatabaseFolder();
+		Assert.NotEqual(databaseFolder, catalogFolder);
+		Assert.Equal(Path.GetDirectoryName(databaseFolder), Path.GetDirectoryName(catalogFolder));
 	}
 }

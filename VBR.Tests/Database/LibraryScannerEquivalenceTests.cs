@@ -14,17 +14,17 @@
 // */
 //
 
+using VBR.Core.Database;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
-using VBR.Core.Index;
 using VBR.Core.Matching;
 using Xunit.Abstractions;
 
-namespace VBR.Tests.Index;
+namespace VBR.Tests.Database;
 
 // Verifies docs/iterativeplan.md's "Library scan" verification item 7: fingerprints pulled from a
-// *persisted, scanned* index reproduce the same presence numbers VisualBumperMatcherMixedDensityTests
-// gets sampling live via --clip-from -- proof the index is a real cache of equivalent data, not
+// *persisted, scanned* database reproduce the same presence numbers VisualBumperMatcherMixedDensityTests
+// gets sampling live via --clip-from -- proof the database is a real cache of equivalent data, not
 // just a differently-shaped one. Run (PowerShell), same corpus shape as the other real-media tests:
 //   $env:BUMPER_CLIP_EPISODE="D:\...\Caprica - S01E01 - pt1 - Pilot.mkv"
 //   $env:BUMPER_EPISODES_DIR="D:\...\Caprica\Season 01"
@@ -40,7 +40,7 @@ public class LibraryScannerEquivalenceTests {
 	public LibraryScannerEquivalenceTests(ITestOutputHelper output) => _out = output;
 
 	[SkippableFact]
-	public void ScannedIndexFingerprints_ReproduceLiveMatchNumbers() {
+	public void ScannedDatabaseFingerprints_ReproduceLiveMatchNumbers() {
 		string? clipEpisode = Environment.GetEnvironmentVariable("BUMPER_CLIP_EPISODE");
 		string? episodesDir = Environment.GetEnvironmentVariable("BUMPER_EPISODES_DIR");
 		string? regionRaw = Environment.GetEnvironmentVariable("BUMPER_REGION");
@@ -62,25 +62,25 @@ public class LibraryScannerEquivalenceTests {
 			.ToList();
 		Skip.If(candidates.Count == 0, "No episode files found in BUMPER_EPISODES_DIR.");
 
-		string indexPath = Path.Combine(Path.GetTempPath(), $"vbr_equiv_test_{Guid.NewGuid():N}.vbridx");
-		var index = new LibraryIndex();
+		string databasePath = Path.Combine(Path.GetTempPath(), $"vbr_equiv_test_{Guid.NewGuid():N}.vbrdb");
+		var database = new LibraryDatabase();
 		try {
 			using (var scanner = new LibraryScanner()) {
-				LibraryScanner.ScanSummary summary = scanner.Scan(candidates, index, indexPath, profile, forceRescan: false);
+				LibraryScanner.ScanSummary summary = scanner.Scan(candidates, database, databasePath, profile, forceRescan: false);
 				_out.WriteLine($"Scanned {summary.Scanned}/{summary.Total} file(s), {summary.Failed} failed.");
 			}
 
-			string clipKey = LibraryIndexKey.Normalize(clipEpisode!);
-			Skip.If(!index.Entries.TryGetValue(clipKey, out LibraryIndexEntry? clipEntry),
-				"BUMPER_CLIP_EPISODE must be one of the files under BUMPER_EPISODES_DIR (the scan indexes it alongside every other candidate).");
+			string clipKey = LibraryDatabaseKey.Normalize(clipEpisode!);
+			Skip.If(!database.Entries.TryGetValue(clipKey, out LibraryDatabaseEntry? clipEntry),
+				"BUMPER_CLIP_EPISODE must be one of the files under BUMPER_EPISODES_DIR (the scan databases it alongside every other candidate).");
 
 			(IReadOnlyList<TimedFrame> Embeddings, IReadOnlyList<TimedPHash> PHashes) clipEdge = FilterToEdge(clipEntry!, region, edgeBoundary);
 			Skip.If(clipEdge.Embeddings.Count == 0, "The clip episode's scanned entry has no fingerprints in the requested edge window.");
-			_out.WriteLine($"Clip edge window: {clipEdge.Embeddings.Count} fingerprint(s) from the scanned index.");
+			_out.WriteLine($"Clip edge window: {clipEdge.Embeddings.Count} fingerprint(s) from the scanned database.");
 
 			using var matcher = new VisualBumperMatcher();
 			var results = new List<(string File, MatchResult Dino, MatchResult PHash)>();
-			foreach ((string key, LibraryIndexEntry entry) in index.Entries) {
+			foreach ((string key, LibraryDatabaseEntry entry) in database.Entries) {
 				if (key == clipKey) continue;
 				var candidateEdge = FilterToEdge(entry, region, edgeBoundary);
 				if (candidateEdge.Embeddings.Count == 0) continue;
@@ -92,16 +92,16 @@ public class LibraryScannerEquivalenceTests {
 				_out.WriteLine($"{Path.GetFileName(file),-56}  dino: {dino.Detail}  |  phash: {phash.Detail}");
 
 			int matched = results.Count(r => r.Dino.Present);
-			_out.WriteLine($"{matched}/{results.Count} episodes matched via index-cached fingerprints (informational; see the doc comment above for why exact numbers may drift from the other tests).");
-			Assert.True(matched > 0, "Expected at least one other episode to match using fingerprints pulled from the scanned index.");
+			_out.WriteLine($"{matched}/{results.Count} episodes matched via database-cached fingerprints (informational; see the doc comment above for why exact numbers may drift from the other tests).");
+			Assert.True(matched > 0, "Expected at least one other episode to match using fingerprints pulled from the scanned database.");
 		}
 		finally {
-			try { if (File.Exists(indexPath)) File.Delete(indexPath); } catch { }
+			try { if (File.Exists(databasePath)) File.Delete(databasePath); } catch { }
 		}
 	}
 
 	static (IReadOnlyList<TimedFrame> Embeddings, IReadOnlyList<TimedPHash> PHashes) FilterToEdge(
-			LibraryIndexEntry entry, ClipEdge region, TimeSpan edgeBoundary) {
+			LibraryDatabaseEntry entry, ClipEdge region, TimeSpan edgeBoundary) {
 		double boundary = edgeBoundary.TotalSeconds;
 		double duration = entry.Duration.TotalSeconds;
 		var embeddings = new List<TimedFrame>();

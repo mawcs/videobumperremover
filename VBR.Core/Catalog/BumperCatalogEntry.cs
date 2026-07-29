@@ -24,7 +24,7 @@ namespace VBR.Core.Catalog;
 /// <summary>
 /// One known bumper, independent of any particular video (docs/iterativeplan.md, "Bumper catalog").
 /// The persisted counterpart to a single <c>vbr add-bumper</c> call — mirrors
-/// <see cref="Index.LibraryIndexEntry"/>'s shape (same <see cref="TimedFingerprint"/> type, same
+/// <see cref="Database.LibraryDatabaseEntry"/>'s shape (same <see cref="TimedFingerprint"/> type, same
 /// change-detection-free simplicity: a catalog entry is curated once, not periodically re-verified
 /// against a source file the way a library entry is).
 /// </summary>
@@ -70,7 +70,7 @@ public sealed partial class BumperCatalogEntry {
 	[MemoryPackOrder(6)]
 	public TimeSpan Duration { get; set; }
 
-	/// <summary>Same type <see cref="Index.LibraryIndexEntry.Fingerprints"/> uses — sampled
+	/// <summary>Same type <see cref="Database.LibraryDatabaseEntry.Fingerprints"/> uses — sampled
 	/// directly from the source video (never from the extracted reference clip), matching
 	/// <c>match</c>/<c>remove</c>'s established direct-source-decode path.</summary>
 	[MemoryPackOrder(7)]

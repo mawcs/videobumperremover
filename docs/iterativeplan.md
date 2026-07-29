@@ -16,20 +16,13 @@ reference rather than deleted or overwritten.
 - **Bumper** — one identified, removable segment. Individually addressable (list/add/edit/rename/duplicate/delete), most of which isn't built yet.
 - **Bumper Catalog** ("catalog") — the persisted collection of bumpers. Deliberately uncorrelated to any library or database (already built this way — see the "Bumper catalog" plan/implementation entry below this one).
 
-### Phase 1 — Terminology: "index" → "database"/"db"
+### Phase 1 — Terminology: "index" → "database"/"db" — implemented and validated (2026-07-29)
 
-Purely a rename, no new behavior, and foundational to everything after it — doing this first means Phase 2 and beyond are built on the final names instead of needing a second pass. Low risk: existing round-trip/atomic-save/path-resolution tests get renamed and re-verified, not rewritten.
+**Status: done.** Went with the full internal rename (the open question below was resolved in that direction, for consistency with `CatalogName`/`--library-db-folder`/`--catalog-db-folder`'s established practice of keeping internal vocabulary matching external vocabulary).
 
-Scope (`VBR.Core.Index` → `VBR.Core.Database`, mirroring the sibling `VBR.Core.Catalog` namespace):
+What changed: `VBR.Core.Index` → `VBR.Core.Database` (folder + namespace); `LibraryIndex` → `LibraryDatabase`, `LibraryIndexEntry` → `LibraryDatabaseEntry`, `LibraryIndexStore` → `LibraryDatabaseStore`, `LibraryIndexKey` → `LibraryDatabaseKey`; `ResolveIndexPath`/`GetDefaultIndexFolder` → `ResolveDatabasePath`/`GetDefaultDatabaseFolder`; `.vbridx` → `.vbrdb`; magic header `VBRIDX01` → `VBRDB001`; default state folder leaf `index` → `database`; `LibraryScanner`'s `ScanSummary.IndexSaveError` → `DatabaseSaveError`, and its `indexPath` parameters/locals → `databasePath`. `VBR.Tests/Index` → `VBR.Tests/Database`, with matching test-class/method renames (`LibraryIndexStoreTests` → `LibraryDatabaseStoreTests`, etc.). `ScanCommand`'s help text and console/log output ("Index: ..." → "Database: ...", "could not save the index" → "could not save the database", etc.) and `SharedOptions.LibraryName`'s help text updated to match. `VBR.Core.Catalog`'s doc comments (which cross-referenced the old `Index.*` types throughout) updated in step. `docs/running_and_building.md` and `docs/design/matcher-spec.md`'s amendment blocks updated to current terminology; `docs/PROGRESS.md`'s and `AGENTS.md`'s own "index" mentions were checked and left as-is — they're either inside historical dated entries (accurate records of what things were called at the time, same principle this document itself follows) or refer to something unrelated (VDF's own architecture, a generic English use of "index").
 
-- `LibraryIndex` → `LibraryDatabase`, `LibraryIndexEntry` → `LibraryDatabaseEntry`, `LibraryIndexStore` → `LibraryDatabaseStore`, `LibraryIndexKey` → `LibraryDatabaseKey`.
-- `.vbridx` extension → `.vbrdb`; magic header `VBRIDX01` → an 8-byte equivalent (e.g. `VBRDB001`) so an old-format file fails the header check cleanly instead of silently misreading.
-- Default state folder leaf `...\VideoBumperRemover\index\` → `...\database\` (spelled out, matching `...\catalog\`'s own un-abbreviated style — `--library-db-folder` the *flag* already says "db," which is fine; flags tend to be terser than folder names project-wide, not a real inconsistency).
-- `LibraryScanner` itself is unaffected by name (it describes an operation, "scan," not a noun) but its internal references and doc comments update along with everything it touches.
-- `ScanCommand.cs` help text: "index file" → "database file" throughout; flag names themselves (`--library-name`, `--library-db-folder`) are unaffected — they already read correctly under the new terms.
-- Docs: `running_and_building.md`, current `PROGRESS.md` status lines, and matcher-spec.md's amendment blocks update to current terminology. Historical dated entries in this file stay as written — they're accurate records of what things were called at the time, same principle already applied to the `--index` → `--index-folder` → `--library-db-folder` history above.
-
-**Open question:** full internal rename (every C# type) vs. surface-only (CLI text, file extension, folder name, leave `VBR.Core.Index`'s types alone)? The maintainer's stated motivation was UX, not code cleanliness, so surface-only would satisfy it — but this project's own established practice (`CatalogName`, `--library-db-folder`, `--catalog-db-folder`) has consistently kept internal vocabulary matching external vocabulary, on the reasoning that a mismatch confuses whoever reads the code next. Recommend the full rename for consistency with that practice; flagging since it's a real scope choice, not obviously forced.
+No behavior changed — purely a rename, confirmed by `dotnet build`/`dotnet test VBR.Tests` (67 passed, 0 failed, same as before) plus a live `vbr scan` smoke test against a throwaway file confirming the `.vbrdb` extension, the "Database: ..." console line, and correct default-folder resolution. The old `%LOCALAPPDATA%\VideoBumperRemover\index\` folder from prior real usage was left in place (real user data, not touched) — new scans now default under `...\database\` instead; nothing migrates the old folder's contents, since nothing in it needs migrating (a first scan of a "new" library under the new default location is not an error, same as any other fresh database).
 
 ### Phase 2 — Multi-folder libraries: `--library` becomes a delimited list, plus a new exclusion flag
 
@@ -77,7 +70,7 @@ One item doesn't get to default into this bucket along with the rest of CRUD: th
 
 ### All open questions, collected
 
-1. Phase 1: full internal C# rename vs. surface-only (recommendation: full rename, for consistency with established practice).
+1. ~~Phase 1: full internal C# rename vs. surface-only~~ — resolved, full rename, implemented 2026-07-29 (see Phase 1's status above).
 2. Phase 2: `--exclude-folders`'s final name.
 3. Phase 2: semicolon-delimited single flag vs. repeatable `--library` flag (recommendation: keep the delimited-list proposal as stated).
 4. Phase 2: can one folder belong to more than one library at once (maintainer thinking on this).

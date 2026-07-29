@@ -15,9 +15,9 @@
 //
 
 using System.CommandLine;
+using VBR.Core.Database;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
-using VBR.Core.Index;
 using VDF.Core.AI;
 using static VBR.CLI.Commands.SharedOptions;
 
@@ -31,7 +31,7 @@ namespace VBR.CLI.Commands;
 internal enum ScanReportLevel { quiet, info, debug, verbose, trace }
 
 /// <summary>
-/// <c>vbr scan</c> — builds/updates a named library's cached fingerprint index
+/// <c>vbr scan</c> — builds/updates a named library's cached fingerprint database
 /// (docs/iterativeplan.md, "Library scan — cached fingerprint index"). Samples every candidate
 /// file's true edges (dense) and whole-file middle (sparse) up front so a bumper can be found later
 /// without re-decoding — but doesn't know or check *which* bumper; that stays a separate, later
@@ -61,14 +61,14 @@ internal static class ScanCommand {
 	};
 
 	static readonly Option<DirectoryInfo> LibraryDbFolder = new("--library-db-folder") {
-		Description = "Folder to hold this library's index file. The file itself is always named " +
-			"after --library-name (with a .vbridx extension) -- there's no separate way to set the " +
+		Description = "Folder to hold this library's database file. The file itself is always named " +
+			"after --library-name (with a .vbrdb extension) -- there's no separate way to set the " +
 			"file name. Doesn't need to exist yet; created on first save. Default: a dedicated " +
 			"per-library folder under VBR's own state folder.",
 	};
 
 	static readonly Option<bool> IncludeVbrOutputs = new("--include-vbr-outputs") {
-		Description = "Also index 'name.vbr.ext' outputs from a prior 'vbr remove' run — excluded " +
+		Description = "Also include 'name.vbr.ext' outputs from a prior 'vbr remove' run — excluded " +
 			"by default since they're transitional staging artifacts (a review window before " +
 			"'vbr cleanup' promotes or discards them) that usually near-duplicate the original.",
 	};
@@ -91,7 +91,7 @@ internal static class ScanCommand {
 
 	static readonly Option<FileInfo> LogFile = new("--log-file") {
 		Description = "Where to write this scan's log (appended to, so repeated runs accumulate " +
-			"history). Default: sibling to the index file, same library name with a .log extension.",
+			"history). Default: sibling to the database file, same library name with a .log extension.",
 	};
 
 	static readonly Option<ScanReportLevel> LogLevel = new("--log-level") {
@@ -103,7 +103,7 @@ internal static class ScanCommand {
 
 	internal static Command Build() {
 		var cmd = new Command("scan",
-			"Build or update a library's cached fingerprint index — samples every file's true edges " +
+			"Build or update a library's cached fingerprint database — samples every file's true edges " +
 			"and whole-file middle so a bumper can be found later without re-decoding. Does not match " +
 			"against any specific bumper; see 'vbr match'/'vbr remove' for that.");
 		cmd.Options.Add(Library);
@@ -162,12 +162,12 @@ internal static class ScanCommand {
 			}
 
 			string libraryName = string.IsNullOrWhiteSpace(libraryNameArg)
-				? LibraryIndexStore.DeriveLibraryName(library.FullName)
+				? LibraryDatabaseStore.DeriveLibraryName(library.FullName)
 				: libraryNameArg;
 
 			// Checked here, before any scanning (or even the AI-component download) starts, not left
-			// for LibraryIndexStore.Save to discover: a file already sitting at --library-db-folder's
-			// path can never work as a folder to hold the index, and it's not worth wasting an entire
+			// for LibraryDatabaseStore.Save to discover: a file already sitting at --library-db-folder's
+			// path can never work as a folder to hold the database, and it's not worth wasting an entire
 			// run's sampling work to find that out only once a save is attempted.
 			if (libraryDbFolderArg is not null && File.Exists(libraryDbFolderArg.FullName)) {
 				Console.Error.WriteLine(
@@ -187,14 +187,14 @@ internal static class ScanCommand {
 				return 1;
 			}
 
-			string indexPath = LibraryIndexStore.ResolveIndexPath(libraryDbFolderArg?.FullName, libraryName);
+			string databasePath = LibraryDatabaseStore.ResolveDatabasePath(libraryDbFolderArg?.FullName, libraryName);
 			string logPath = logFileArg?.FullName ??
-				Path.Combine(Path.GetDirectoryName(indexPath)!, Path.GetFileNameWithoutExtension(indexPath) + ".log");
+				Path.Combine(Path.GetDirectoryName(databasePath)!, Path.GetFileNameWithoutExtension(databasePath) + ".log");
 
 			// Open-write-close per line (mirrors VDF.Core.Utils.Logger.Add) rather than holding one
 			// handle open for the whole scan: keeps writes resilient to another process (antivirus, a
 			// tail, another vbr instance) briefly touching the file, and a write failure here must
-			// never be allowed to crash the scan the way an unprotected index save once did (fixed
+			// never be allowed to crash the scan the way an unprotected database save once did (fixed
 			// 2026-07-26) -- so it's swallowed the same way Logger's own writes are.
 			void WriteLogLine(string line) {
 				if (fileLevel == ScanReportLevel.quiet) return;
@@ -222,21 +222,21 @@ internal static class ScanCommand {
 				Console.Error.WriteLine("AI components ready.");
 			}
 
-			LibraryIndex index;
+			LibraryDatabase database;
 			try {
-				index = LibraryIndexStore.Load(indexPath);
+				database = LibraryDatabaseStore.Load(databasePath);
 			}
 			catch (Exception ex) {
 				Console.Error.WriteLine($"Error: {ex.Message}");
 				return 1;
 			}
-			index.LibraryName = libraryName;
-			index.EdgeBoundarySeconds = edgeBoundary.TotalSeconds;
-			index.DenseIntervalSeconds = sampleInterval.TotalSeconds;
-			index.SparseIntervalSeconds = sparseInterval.TotalSeconds;
+			database.LibraryName = libraryName;
+			database.EdgeBoundarySeconds = edgeBoundary.TotalSeconds;
+			database.DenseIntervalSeconds = sampleInterval.TotalSeconds;
+			database.SparseIntervalSeconds = sparseInterval.TotalSeconds;
 			var profile = new EdgeDensityProfile(edgeBoundary, sampleInterval, sparseInterval);
 
-			string startAnnouncement = $"Scanning '{library.FullName}' -> index '{indexPath}' ({candidatePaths.Count} candidate file(s))...";
+			string startAnnouncement = $"Scanning '{library.FullName}' -> database '{databasePath}' ({candidatePaths.Count} candidate file(s))...";
 			Console.Error.WriteLine(startAnnouncement);
 			WriteLogLine(startAnnouncement);
 
@@ -279,7 +279,7 @@ internal static class ScanCommand {
 			using var scanner = new LibraryScanner(emitDetailedLogging);
 			LibraryScanner.ScanSummary summary;
 			try {
-				summary = scanner.Scan(candidatePaths, index, indexPath, profile, rescan, OnFileScanned, ct);
+				summary = scanner.Scan(candidatePaths, database, databasePath, profile, rescan, OnFileScanned, ct);
 			}
 			catch (OperationCanceledException) {
 				const string cancelMessage = "Cancelled — progress up to the last checkpoint was saved.";
@@ -293,17 +293,17 @@ internal static class ScanCommand {
 				Console.Error.WriteLine();
 			string summaryLine = $"{summary.Scanned} sampled, {summary.SkippedUnchanged} unchanged (skipped), " +
 				$"{summary.Failed} failed, {summary.Total} total.";
-			string indexLine = $"Index: {indexPath}";
+			string databaseLine = $"Database: {databasePath}";
 			Console.WriteLine(summaryLine);
-			Console.WriteLine(indexLine);
+			Console.WriteLine(databaseLine);
 			WriteLogLine(summaryLine);
-			WriteLogLine(indexLine);
+			WriteLogLine(databaseLine);
 
-			if (summary.IndexSaveError is not null) {
-				string errorLine1 = $"Error: could not save the index: {summary.IndexSaveError}";
+			if (summary.DatabaseSaveError is not null) {
+				string errorLine1 = $"Error: could not save the database: {summary.DatabaseSaveError}";
 				const string errorLine2 = "This run's results were not persisted -- re-run 'vbr scan' once the " +
 					"underlying issue clears (a common cause is antivirus or another process briefly locking " +
-					"the index file). Files already written by an earlier checkpoint this run are unaffected.";
+					"the database file). Files already written by an earlier checkpoint this run are unaffected.";
 				Console.Error.WriteLine(errorLine1);
 				Console.Error.WriteLine(errorLine2);
 				WriteLogLine(errorLine1);

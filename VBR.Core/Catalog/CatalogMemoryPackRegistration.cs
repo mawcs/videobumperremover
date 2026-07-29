@@ -21,14 +21,14 @@ namespace VBR.Core.Catalog;
 
 /// <summary>
 /// Registers this namespace's MemoryPack-serializable types explicitly, same rationale (and same
-/// pattern) as <c>VBR.Core.Index.MemoryPackRegistration</c>: MemoryPack's lazy reflection-based
-/// formatter lookup can be trimmed away under Native AOT. Kept separate from the index's own
+/// pattern) as <c>VBR.Core.Database.MemoryPackRegistration</c>: MemoryPack's lazy reflection-based
+/// formatter lookup can be trimmed away under Native AOT. Kept separate from the database's own
 /// registration rather than added to it — the catalog is a wholly independent store (per
 /// docs/iterativeplan.md's "Bumper catalog" plan) and this project has no code path that needs one
 /// without the other, so there's no reason to couple their registration. <see cref="TimedFingerprint"/>
-/// is registered here too, not just assumed already-registered via the index's own static
+/// is registered here too, not just assumed already-registered via the database's own static
 /// constructor: a process that only ever touches <see cref="BumperCatalogStore"/> must not depend
-/// on <c>LibraryIndexStore</c> having run first. Called from <see cref="BumperCatalogStore"/>'s
+/// on <c>LibraryDatabaseStore</c> having run first. Called from <see cref="BumperCatalogStore"/>'s
 /// static constructor.
 /// </summary>
 static class CatalogMemoryPackRegistration {

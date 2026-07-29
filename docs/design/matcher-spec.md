@@ -192,7 +192,7 @@ a catalog slot in without rework:
 >
 > **Amendment (2026-07-26) — `vbr scan` built.** The "leave room for `vbr enroll`, `vbr scan`,
 > `vbr remove`" bullet below is now half stale: `vbr remove` shipped 2026-07-19/20 (ADR 0007/0008),
-> and `vbr scan` — the persisted fingerprint index, not a matcher — shipped 2026-07-26. It's a
+> and `vbr scan` — the persisted fingerprint database, not a matcher — shipped 2026-07-26. It's a
 > deliberately separate command with its own flag surface (`--edge-boundary`/`--sample-interval`/
 > `--sparse-interval` with scan-appropriate defaults, `--library-name`/`--library-db-folder`,
 > `--include-vbr-outputs`, `--rescan`, `--console-info`/`--log-file`/`--log-level`), not an

@@ -24,11 +24,11 @@ namespace VBR.Core.Catalog;
 
 /// <summary>
 /// Resolves where a named bumper catalog lives and loads/saves it. Deliberately mirrors
-/// <c>VBR.Core.Index.LibraryIndexStore</c>'s exact mechanics (same MemoryPack `VersionTolerant`
+/// <c>VBR.Core.Database.LibraryDatabaseStore</c>'s exact mechanics (same MemoryPack `VersionTolerant`
 /// convention, same magic-header-checked load, same atomic temp-file-then-move save with retry) —
-/// but is its own dedicated store at its own dedicated default folder, not shared with the index.
+/// but is its own dedicated store at its own dedicated default folder, not shared with the database.
 /// A catalog is named independently of any media folder (post-ship simplification, 2026-07-28 —
-/// see <see cref="BumperCatalog"/>'s doc comment), so unlike the index there is no folder argument
+/// see <see cref="BumperCatalog"/>'s doc comment), so unlike the database there is no folder argument
 /// anywhere in this type at all, only a name.
 /// </summary>
 public static class BumperCatalogStore {
@@ -46,9 +46,9 @@ public static class BumperCatalogStore {
 		return Path.Combine(folder, SanitizeFileName(catalogName) + CatalogFileExtension);
 	}
 
-	/// <summary>A dedicated VBR-specific folder, sibling to (not inside) the library index's own —
-	/// mirrors <c>LibraryIndexStore.GetDefaultIndexFolder</c>'s per-OS resolution algorithm rooted
-	/// at a "catalog" leaf instead of "index" so the two stores never collide. Created if missing.</summary>
+	/// <summary>A dedicated VBR-specific folder, sibling to (not inside) the library database's own —
+	/// mirrors <c>LibraryDatabaseStore.GetDefaultDatabaseFolder</c>'s per-OS resolution algorithm rooted
+	/// at a "catalog" leaf instead of "database" so the two stores never collide. Created if missing.</summary>
 	public static string GetDefaultCatalogFolder() {
 		string baseFolder;
 		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
@@ -88,7 +88,7 @@ public static class BumperCatalogStore {
 	}
 
 	/// <summary>Writes <paramref name="catalog"/> to <paramref name="path"/> via a temp-file-then-
-	/// move swap plus retry (identical mechanics to <c>LibraryIndexStore.Save</c>, including the
+	/// move swap plus retry (identical mechanics to <c>LibraryDatabaseStore.Save</c>, including the
 	/// retry-on-transient-lock rationale — see that method's doc comment).</summary>
 	/// <exception cref="IOException">The rename still fails after retrying — a genuine,
 	/// non-transient problem with <paramref name="path"/>'s destination.</exception>
@@ -108,7 +108,7 @@ public static class BumperCatalogStore {
 	const int MoveRetryAttempts = 4;
 	static readonly TimeSpan MoveRetryDelay = TimeSpan.FromMilliseconds(150);
 
-	/// <summary>Same transient-lock retry as <c>LibraryIndexStore</c>'s own <c>MoveIntoPlace</c> —
+	/// <summary>Same transient-lock retry as <c>LibraryDatabaseStore</c>'s own <c>MoveIntoPlace</c> —
 	/// see that method's doc comment for the full rationale (real-time antivirus on a freshly
 	/// written file being the common real-world trigger on Windows).</summary>
 	static void MoveIntoPlace(string tempPath, string path) {

@@ -17,20 +17,20 @@
 using MemoryPack;
 using VBR.Core.Fingerprinting;
 
-namespace VBR.Core.Index;
+namespace VBR.Core.Database;
 
 /// <summary>
 /// Registers this project's MemoryPack-serializable types explicitly, same rationale as VDF's own
 /// <c>VDF.Core.Utils.MemoryPackRegistration</c> (see that class's doc comment): MemoryPack's lazy
 /// reflection-based formatter lookup can be trimmed away under Native AOT, so every type this
 /// project serializes is rooted here at compile time instead. Called from
-/// <see cref="LibraryIndexStore"/>'s static constructor — the only place this project's MemoryPack
+/// <see cref="LibraryDatabaseStore"/>'s static constructor — the only place this project's MemoryPack
 /// serialization happens.
 /// </summary>
 static class MemoryPackRegistration {
 	internal static void Register() {
-		MemoryPackFormatterProvider.Register<LibraryIndex>();
-		MemoryPackFormatterProvider.Register<LibraryIndexEntry>();
+		MemoryPackFormatterProvider.Register<LibraryDatabase>();
+		MemoryPackFormatterProvider.Register<LibraryDatabaseEntry>();
 		MemoryPackFormatterProvider.Register<TimedFingerprint>();
 	}
 }

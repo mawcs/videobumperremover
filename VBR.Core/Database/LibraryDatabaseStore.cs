@@ -20,23 +20,25 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using MemoryPack;
 
-namespace VBR.Core.Index;
+namespace VBR.Core.Database;
 
 /// <summary>
-/// Resolves where a named library's index file lives (decision 13 — one physical file per named
+/// Resolves where a named library's database file lives (decision 13 — one physical file per named
 /// library, in a dedicated VBR folder by default, both overridable) and loads/saves it. Deliberately
 /// simple compared to VDF's own <c>DatabaseUtils</c> (no streaming writer, no legacy-format
-/// migration): this project has no installed base of index files yet to be gentle with, and a
+/// migration): this project has no installed base of database files yet to be gentle with, and a
 /// scanned library's fingerprint set is nowhere near VDF's multi-million-entry whole-drive scale.
-/// A leading magic header plus <see cref="LibraryIndex.FormatVersion"/> inside the payload itself
+/// A leading magic header plus <see cref="LibraryDatabase.FormatVersion"/> inside the payload itself
 /// give a real future migration path if one is ever needed, without paying streaming-writer
-/// complexity now.
+/// complexity now. Named "database"/"db" rather than "index" since 2026-07-28 — a UX call, not a
+/// technical one (see iterativeplan.md's "CLI terminology & multi-folder libraries" entry): "index"
+/// is the technically precise term, but tested as confusing to users relative to "database."
 /// </summary>
-public static class LibraryIndexStore {
-	static LibraryIndexStore() => MemoryPackRegistration.Register();
+public static class LibraryDatabaseStore {
+	static LibraryDatabaseStore() => MemoryPackRegistration.Register();
 
-	const string IndexFileExtension = ".vbridx";
-	static ReadOnlySpan<byte> FormatMagic => "VBRIDX01"u8;
+	const string DatabaseFileExtension = ".vbrdb";
+	static ReadOnlySpan<byte> FormatMagic => "VBRDB001"u8;
 
 	/// <summary>Derives a default library name from the folder being scanned — the last path
 	/// segment, trailing separators ignored so <c>D:\Media\Show\</c> and <c>D:\Media\Show</c>
@@ -47,24 +49,24 @@ public static class LibraryIndexStore {
 		return string.IsNullOrEmpty(name) ? trimmed : name;
 	}
 
-	/// <summary>Resolves the index file's full path: always <c>{folder}/{sanitized library
-	/// name}.vbridx</c> — the file's name is derived from <paramref name="libraryName"/> alone and
+	/// <summary>Resolves the database file's full path: always <c>{folder}/{sanitized library
+	/// name}.vbrdb</c> — the file's name is derived from <paramref name="libraryName"/> alone and
 	/// is never independently specified, so there is exactly one thing to keep in sync between a
-	/// library and its index. <paramref name="explicitFolder"/> is the containing folder when given
+	/// library and its database. <paramref name="explicitFolder"/> is the containing folder when given
 	/// (decision 13's <c>--library-db-folder</c> override, itself not required to exist yet — same as any
-	/// other output folder, it's created on first save), else <see cref="GetDefaultIndexFolder"/>.
+	/// other output folder, it's created on first save), else <see cref="GetDefaultDatabaseFolder"/>.
 	/// <c>Path.Combine</c> handles a trailing separator on <paramref name="explicitFolder"/> either
 	/// way, so callers don't need to normalize it first.</summary>
-	public static string ResolveIndexPath(string? explicitFolder, string libraryName) {
-		string folder = string.IsNullOrWhiteSpace(explicitFolder) ? GetDefaultIndexFolder() : explicitFolder;
-		return Path.Combine(folder, SanitizeFileName(libraryName) + IndexFileExtension);
+	public static string ResolveDatabasePath(string? explicitFolder, string libraryName) {
+		string folder = string.IsNullOrWhiteSpace(explicitFolder) ? GetDefaultDatabaseFolder() : explicitFolder;
+		return Path.Combine(folder, SanitizeFileName(libraryName) + DatabaseFileExtension);
 	}
 
 	/// <summary>The dedicated VBR-specific folder decision 6 calls for — mirrors
 	/// <c>VDF.Core.Utils.CoreUtils.GetDefaultStateFolder</c>'s per-OS resolution algorithm, rooted
 	/// at a VBR-specific base instead of VDF's, so the two projects' persisted state never mixes
 	/// (decision 2/6). Created if missing.</summary>
-	public static string GetDefaultIndexFolder() {
+	public static string GetDefaultDatabaseFolder() {
 		string baseFolder;
 		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
 			baseFolder = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -77,7 +79,7 @@ public static class LibraryIndexStore {
 			baseFolder = Environment.GetEnvironmentVariable("XDG_STATE_HOME")
 				?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state");
 		}
-		string folder = Path.Combine(baseFolder, "VideoBumperRemover", "index");
+		string folder = Path.Combine(baseFolder, "VideoBumperRemover", "database");
 		Directory.CreateDirectory(folder);
 		return folder;
 	}
@@ -88,32 +90,32 @@ public static class LibraryIndexStore {
 		return name.Length == 0 ? "library" : name;
 	}
 
-	/// <summary>Loads the index at <paramref name="path"/>, or a fresh empty one if it doesn't
+	/// <summary>Loads the database at <paramref name="path"/>, or a fresh empty one if it doesn't
 	/// exist yet — a first scan of a new library is not an error.</summary>
-	/// <exception cref="InvalidOperationException">The file exists but isn't a recognized index
+	/// <exception cref="InvalidOperationException">The file exists but isn't a recognized database
 	/// (wrong magic header) or deserialized to null (corrupt).</exception>
-	public static LibraryIndex Load(string path) {
+	public static LibraryDatabase Load(string path) {
 		if (!File.Exists(path))
-			return new LibraryIndex();
+			return new LibraryDatabase();
 		byte[] raw = File.ReadAllBytes(path);
 		if (raw.Length < FormatMagic.Length || !raw.AsSpan(0, FormatMagic.Length).SequenceEqual(FormatMagic))
-			throw new InvalidOperationException($"'{path}' is not a recognized library index file.");
-		LibraryIndex? index = MemoryPackSerializer.Deserialize<LibraryIndex>(raw.AsSpan(FormatMagic.Length));
-		return index ?? throw new InvalidOperationException($"Library index at '{path}' deserialized to null (corrupt file).");
+			throw new InvalidOperationException($"'{path}' is not a recognized library database file.");
+		LibraryDatabase? database = MemoryPackSerializer.Deserialize<LibraryDatabase>(raw.AsSpan(FormatMagic.Length));
+		return database ?? throw new InvalidOperationException($"Library database at '{path}' deserialized to null (corrupt file).");
 	}
 
-	/// <summary>Writes <paramref name="index"/> to <paramref name="path"/> via a temp-file-then-move
+	/// <summary>Writes <paramref name="database"/> to <paramref name="path"/> via a temp-file-then-move
 	/// swap, so a crash mid-save leaves either the old file or the new one intact, never a
 	/// half-written one — same rationale as VDF's own <c>ScannedFiles_new.db</c> pattern.</summary>
 	/// <exception cref="IOException">The rename still fails after retrying (see
 	/// <see cref="MoveIntoPlace"/>) — a genuine, non-transient problem with <paramref name="path"/>'s
 	/// destination. Callers that scan many files (<see cref="LibraryScanner"/>) must treat this as
 	/// recoverable: log it and keep going rather than letting it crash the whole run.</exception>
-	public static void Save(LibraryIndex index, string path) {
+	public static void Save(LibraryDatabase database, string path) {
 		string? dir = Path.GetDirectoryName(path);
 		if (dir is { Length: > 0 })
 			Directory.CreateDirectory(dir);
-		byte[] payload = MemoryPackSerializer.Serialize(index);
+		byte[] payload = MemoryPackSerializer.Serialize(database);
 		string tempPath = path + ".tmp";
 		using (var file = new FileStream(tempPath, FileMode.Create, FileAccess.Write, FileShare.None)) {
 			file.Write(FormatMagic);

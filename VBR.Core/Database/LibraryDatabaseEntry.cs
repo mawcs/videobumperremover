@@ -18,7 +18,7 @@ using System;
 using MemoryPack;
 using VBR.Core.Fingerprinting;
 
-namespace VBR.Core.Index;
+namespace VBR.Core.Database;
 
 /// <summary>
 /// One scanned video file's cached fingerprints — the persisted counterpart to a
@@ -28,7 +28,7 @@ namespace VBR.Core.Index;
 /// doc comment for the exact reasoning this mirrors).
 /// </summary>
 [MemoryPackable(GenerateType.VersionTolerant)]
-public sealed partial class LibraryIndexEntry {
+public sealed partial class LibraryDatabaseEntry {
 	[MemoryPackOrder(0)]
 	public string Path { get; set; } = string.Empty;
 
@@ -51,7 +51,7 @@ public sealed partial class LibraryIndexEntry {
 	public TimeSpan Duration { get; set; }
 
 	/// <summary>Chromaprint blocks for the whole file (~1s each) — self-contained, not read from or
-	/// written to VDF's own <c>FileEntry.AudioFingerprint</c> (see <see cref="LibraryIndex"/>'s doc
+	/// written to VDF's own <c>FileEntry.AudioFingerprint</c> (see <see cref="LibraryDatabase"/>'s doc
 	/// comment for why this store never touches VDF's scan data). Null when the file has no usable
 	/// audio track.</summary>
 	[MemoryPackOrder(6)]

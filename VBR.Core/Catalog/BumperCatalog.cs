@@ -25,7 +25,7 @@ namespace VBR.Core.Catalog;
 /// media folder — a catalog identified from one collection of videos can be applied to a different
 /// one later (post-ship simplification, 2026-07-28: an earlier version reused <c>vbr scan</c>'s
 /// <c>--library</c>/<c>--library-name</c> pair, which wrongly implied a catalog belongs to one
-/// scanned library). Mirrors <see cref="Index.LibraryIndex"/>'s shape closely (same MemoryPack
+/// scanned library). Mirrors <see cref="Database.LibraryDatabase"/>'s shape closely (same MemoryPack
 /// `VersionTolerant` convention, same magic-header-checked atomic store) but is a wholly separate
 /// file/format: a catalog is keyed by bumper identity, not by file, and has no per-file
 /// change-detection concept at all.
@@ -41,7 +41,7 @@ public sealed partial class BumperCatalog {
 	public string CatalogName { get; set; } = string.Empty;
 
 	/// <summary>Keyed by <see cref="BumperCatalogEntry.Id"/> — a GUID, so (unlike
-	/// <see cref="Index.LibraryIndex.Entries"/>) no normalization step is needed for the key
+	/// <see cref="Database.LibraryDatabase.Entries"/>) no normalization step is needed for the key
 	/// itself.</summary>
 	[MemoryPackOrder(2)]
 	public Dictionary<string, BumperCatalogEntry> Entries { get; set; } = new();

@@ -23,13 +23,13 @@ using VBR.Core.Fingerprinting;
 using VDF.Core.FFTools;
 using VDF.Core.Utils;
 
-namespace VBR.Core.Index;
+namespace VBR.Core.Database;
 
 /// <summary>
 /// Orchestrates one `vbr scan` run over a resolved candidate list: for each file, decide whether
 /// the cached entry can be reused or the file needs (re-)sampling
 /// (<see cref="WholeFileSampler"/> + a whole-file Chromaprint audio fingerprint), and periodically
-/// checkpoint the index to disk so an interrupted run loses at most the work since the last save
+/// checkpoint the database to disk so an interrupted run loses at most the work since the last save
 /// (decision 7). Processes candidates one at a time (decision 8 — sequential for v1).
 ///
 /// Change-detection mirrors the *logic* of VDF's own <c>ScanEngine.RefreshExistingEntry</c> without
@@ -38,19 +38,20 @@ namespace VBR.Core.Index;
 /// outright. Move/rename relinking (VDF's <c>TryRelinkMovedFile</c>) is deliberately not
 /// implemented here — a moved file just re-samples as if new, a conscious v1 simplification, not an
 /// oversight. Entries whose file no longer exists on disk at all are dropped, not tombstoned (no
-/// VDF-style <c>RememberDeletedContent</c> equivalent yet).
+/// VDF-style <c>RememberDeletedContent</c> equivalent yet — see iterativeplan.md's "CLI terminology
+/// & multi-folder libraries" entry, "the tombstone question," for the open question this leaves).
 /// </summary>
 public sealed class LibraryScanner : IDisposable {
 	public enum ScanOutcome { Sampled, SkippedUnchanged, Failed }
 
 	public readonly record struct FileScanResult(string Path, ScanOutcome Outcome, string? Detail, string? Error);
 
-	/// <param name="IndexSaveError">Null if the index's final save succeeded. Non-null means the
+	/// <param name="DatabaseSaveError">Null if the database's final save succeeded. Non-null means the
 	/// scan itself completed (every candidate was sampled/skipped/failed as reported above) but the
-	/// *last* attempt to persist the index to <c>indexPath</c> failed — distinct from a per-file
+	/// *last* attempt to persist the database to <c>databasePath</c> failed — distinct from a per-file
 	/// failure because it means some or all of this run's results may not actually be on disk, not
 	/// just that one candidate couldn't be read.</param>
-	public readonly record struct ScanSummary(int Scanned, int SkippedUnchanged, int Failed, int Total, string? IndexSaveError = null);
+	public readonly record struct ScanSummary(int Scanned, int SkippedUnchanged, int Failed, int Total, string? DatabaseSaveError = null);
 
 	static readonly TimeSpan DefaultCheckpointInterval = TimeSpan.FromSeconds(30);
 
@@ -58,7 +59,7 @@ public sealed class LibraryScanner : IDisposable {
 	readonly bool verboseLogging;
 	readonly TimeSpan checkpointInterval;
 
-	/// <param name="checkpointInterval">How often the index is saved mid-scan (decision 7). Exposed
+	/// <param name="checkpointInterval">How often the database is saved mid-scan (decision 7). Exposed
 	/// (rather than a hardcoded constant) so tests can force frequent checkpoints deterministically;
 	/// defaults to a sane interval for real use.</param>
 	public LibraryScanner(bool verboseLogging = false, TimeSpan? checkpointInterval = null) {
@@ -68,8 +69,8 @@ public sealed class LibraryScanner : IDisposable {
 	}
 
 	/// <summary>
-	/// Scans <paramref name="candidatePaths"/> into <paramref name="index"/> (mutated in place),
-	/// saving to <paramref name="indexPath"/> at each checkpoint and once more at the end.
+	/// Scans <paramref name="candidatePaths"/> into <paramref name="database"/> (mutated in place),
+	/// saving to <paramref name="databasePath"/> at each checkpoint and once more at the end.
 	/// <paramref name="onFileScanned"/> fires after every candidate (sampled, skipped, or failed) —
 	/// the CLI uses it to drive both the default running counter and <c>--verbose</c> per-file
 	/// detail from one callback. <paramref name="onCheckpoint"/> fires after every *successful* save
@@ -78,12 +79,12 @@ public sealed class LibraryScanner : IDisposable {
 	/// scan. Neither a per-file failure nor a save failure ever throws out of this method (besides
 	/// <see cref="OperationCanceledException"/> from <paramref name="ct"/>, which is intentionally
 	/// left to propagate) — both are logged and the scan continues; see
-	/// <see cref="ScanSummary.IndexSaveError"/> for how a save failure is reported back.
+	/// <see cref="ScanSummary.DatabaseSaveError"/> for how a save failure is reported back.
 	/// </summary>
 	public ScanSummary Scan(
 			IReadOnlyList<string> candidatePaths,
-			LibraryIndex index,
-			string indexPath,
+			LibraryDatabase database,
+			string databasePath,
 			EdgeDensityProfile profile,
 			bool forceRescan,
 			Action<FileScanResult>? onFileScanned = null,
@@ -95,32 +96,32 @@ public sealed class LibraryScanner : IDisposable {
 		// Drop entries for files that no longer exist at all -- not entries merely absent from
 		// *this run's* filtered candidate list (e.g. a .vbr. output with --include-vbr-outputs off
 		// this time but on previously), which would be a real file losing its cache for no reason.
-		foreach (string staleKey in index.Entries
+		foreach (string staleKey in database.Entries
 				.Where(kv => !File.Exists(kv.Value.Path))
 				.Select(kv => kv.Key)
 				.ToList())
-			index.Entries.Remove(staleKey);
+			database.Entries.Remove(staleKey);
 
 		foreach (string path in candidatePaths) {
 			ct.ThrowIfCancellationRequested();
-			string key = LibraryIndexKey.Normalize(path);
+			string key = LibraryDatabaseKey.Normalize(path);
 			try {
 				var fileInfo = new FileInfo(path);
 				if (!fileInfo.Exists) {
-					index.Entries.Remove(key);
+					database.Entries.Remove(key);
 					failed++;
 					onFileScanned?.Invoke(new FileScanResult(path, ScanOutcome.Failed, null, "file no longer exists"));
 					continue;
 				}
 
-				if (!forceRescan && index.Entries.TryGetValue(key, out LibraryIndexEntry? existing) && TryReuse(existing, fileInfo)) {
+				if (!forceRescan && database.Entries.TryGetValue(key, out LibraryDatabaseEntry? existing) && TryReuse(existing, fileInfo)) {
 					skipped++;
 					onFileScanned?.Invoke(new FileScanResult(path, ScanOutcome.SkippedUnchanged, "cached, unchanged", null));
 					continue;
 				}
 
-				LibraryIndexEntry entry = SampleFile(path, fileInfo, profile, ct);
-				index.Entries[key] = entry;
+				LibraryDatabaseEntry entry = SampleFile(path, fileInfo, profile, ct);
+				database.Entries[key] = entry;
 				scanned++;
 				onFileScanned?.Invoke(new FileScanResult(path, ScanOutcome.Sampled,
 					$"{entry.Fingerprints.Length} fingerprint(s), duration {entry.Duration}", null));
@@ -137,38 +138,38 @@ public sealed class LibraryScanner : IDisposable {
 				// the *common* case on a re-scan, so gating checkpoints on "something was actually
 				// sampled" would checkpoint far less often than decision 7 intends.
 				if (DateTime.UtcNow - lastCheckpoint >= checkpointInterval) {
-					if (TrySave(index, indexPath) is null) {
-						onCheckpoint?.Invoke(index.Entries.Count);
+					if (TrySave(database, databasePath) is null) {
+						onCheckpoint?.Invoke(database.Entries.Count);
 						if (verboseLogging)
-							Logger.Instance.Info($"[scan] checkpoint saved ({index.Entries.Count} entries).");
+							Logger.Instance.Info($"[scan] checkpoint saved ({database.Entries.Count} entries).");
 					}
 					lastCheckpoint = DateTime.UtcNow;
 				}
 			}
 		}
 
-		string? indexSaveError = TrySave(index, indexPath);
-		if (indexSaveError is null)
-			onCheckpoint?.Invoke(index.Entries.Count);
-		return new ScanSummary(scanned, skipped, failed, candidatePaths.Count, indexSaveError);
+		string? databaseSaveError = TrySave(database, databasePath);
+		if (databaseSaveError is null)
+			onCheckpoint?.Invoke(database.Entries.Count);
+		return new ScanSummary(scanned, skipped, failed, candidatePaths.Count, databaseSaveError);
 	}
 
-	/// <summary>Saves the index, catching and logging (never crashing the scan on) any failure —
-	/// most commonly a transient antivirus/other-process lock on the index file that
-	/// <see cref="LibraryIndexStore.Save"/>'s own retries didn't clear, or a genuinely bad
-	/// destination path. <paramref name="index"/> keeps every sampled entry in memory regardless, so
+	/// <summary>Saves the database, catching and logging (never crashing the scan on) any failure —
+	/// most commonly a transient antivirus/other-process lock on the database file that
+	/// <see cref="LibraryDatabaseStore.Save"/>'s own retries didn't clear, or a genuinely bad
+	/// destination path. <paramref name="database"/> keeps every sampled entry in memory regardless, so
 	/// a failed save here costs nothing beyond this attempt: the next checkpoint (or the final save)
 	/// tries again and, once one succeeds, persists everything accumulated up to that point — the
 	/// same "log it, keep going" contract as a per-file sampling failure, just for the save step
 	/// instead of the read step. Returns null on success, else the exception's message (for
-	/// <see cref="ScanSummary.IndexSaveError"/>).</summary>
-	static string? TrySave(LibraryIndex index, string indexPath) {
+	/// <see cref="ScanSummary.DatabaseSaveError"/>).</summary>
+	static string? TrySave(LibraryDatabase database, string databasePath) {
 		try {
-			LibraryIndexStore.Save(index, indexPath);
+			LibraryDatabaseStore.Save(database, databasePath);
 			return null;
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException) {
-			Logger.Instance.Warn($"[scan] Failed to save index to '{indexPath}': {ex.Message}");
+			Logger.Instance.Warn($"[scan] Failed to save database to '{databasePath}': {ex.Message}");
 			return ex.Message;
 		}
 	}
@@ -176,7 +177,7 @@ public sealed class LibraryScanner : IDisposable {
 	// Same shape as VDF's ScanEngine.RefreshExistingEntry: size mismatch never survives; a
 	// same-size, same-timestamps entry is trusted outright; a same-size, different-timestamps entry
 	// is trusted only once OsHash proves the bytes are actually unchanged.
-	static bool TryReuse(LibraryIndexEntry existing, FileInfo fileInfo) {
+	static bool TryReuse(LibraryDatabaseEntry existing, FileInfo fileInfo) {
 		if (existing.FileSize != fileInfo.Length)
 			return false;
 		if (existing.DateCreated == fileInfo.CreationTimeUtc && existing.DateModified == fileInfo.LastWriteTimeUtc)
@@ -190,10 +191,10 @@ public sealed class LibraryScanner : IDisposable {
 		return false;
 	}
 
-	LibraryIndexEntry SampleFile(string path, FileInfo fileInfo, EdgeDensityProfile profile, CancellationToken ct) {
+	LibraryDatabaseEntry SampleFile(string path, FileInfo fileInfo, EdgeDensityProfile profile, CancellationToken ct) {
 		WholeFileSampler.Result sampled = sampler.Sample(path, profile, ct);
 		uint[]? audioFingerprint = ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
-		return new LibraryIndexEntry {
+		return new LibraryDatabaseEntry {
 			Path = path,
 			FileSize = fileInfo.Length,
 			DateCreated = fileInfo.CreationTimeUtc,

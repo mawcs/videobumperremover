@@ -203,7 +203,7 @@ Key behavior:
 dotnet run --project VBR.CLI -- scan --help
 ```
 
-Builds/updates a **cached fingerprint index** for a library — samples every file's true edges
+Builds/updates a **cached fingerprint database** for a library — samples every file's true edges
 (dense) and whole-file middle (sparse) up front so a bumper can be found later without re-decoding.
 Unlike `match`/`remove`/`cleanup`, it doesn't take `--clip-from`/`--region`/`--detection-mode` —
 there's nothing to match against yet, only fingerprints to gather. See
@@ -222,18 +222,18 @@ Key options:
   `--clip-length`; the scan has no known bumper length, so it presumptively covers the first/last
   20s of every file instead).
 - `--library-name <name>` / `--library-db-folder <folder>` — every named library gets its own
-  independent index file, always named `{library-name}.vbridx` (the file name is only ever derived
+  independent database file, always named `{library-name}.vbrdb` (the file name is only ever derived
   from `--library-name`; `--library-db-folder` names the *containing folder*, not the file, and
   doesn't need to exist yet). Default name: `--library`'s own folder name; default location: a
-  dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\index\` on Windows), never VDF's
+  dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\database\` on Windows), never VDF's
   own database folder.
 - `--include-vbr-outputs` — off by default: `name.vbr.ext` outputs from a prior `remove` are
-  transitional staging artifacts (a review window before `cleanup`), usually redundant to index.
+  transitional staging artifacts (a review window before `cleanup`), usually redundant to include.
 - `--rescan` (alias `--force`) — bypass change detection and re-sample every candidate, e.g. after
   changing `--edge-boundary`/interval defaults.
 - Change detection mirrors VDF's own incremental-rescan logic: unchanged size+timestamps skip
   entirely (no decode); same size but a touched timestamp is verified via a content hash before
-  trusting the cache; anything else re-samples. The index is checkpointed to disk periodically
+  trusting the cache; anything else re-samples. The database is checkpointed to disk periodically
   during a scan (not just at the end), so an interrupted run only loses the work since the last
   checkpoint.
 - `--console-info quiet|info|debug|verbose|trace` — how much progress detail hits the console.
@@ -245,13 +245,13 @@ Key options:
   reserved for finer-grained detail than anything logs today — same as `verbose` for now.
 - `--log-file <path>` / `--log-level` — an independently leveled, appended-to log file (same five
   levels as `--console-info`, applied separately). Default level `verbose`, default location
-  sibling to the index file with the same library name and a `.log` extension — so a quiet console
+  sibling to the database file with the same library name and a `.log` extension — so a quiet console
   plus a fully-detailed log file is the out-of-the-box default, not something you have to ask for.
 
 **Verified live (2026-07-26)** against real media: a 49-minute episode scans in ~21s and produces
 197 merged fingerprints; an unchanged re-scan takes 0.16s; a touched-mtime-but-same-content file
 still skips via the content hash; `.vbr.` exclusion and `--include-vbr-outputs` both confirmed;
-two independently-named libraries produce two independent index files. Full numbers:
+two independently-named libraries produce two independent database files. Full numbers:
 [`iterativeplan.md`](iterativeplan.md).
 
 Report rows: `CLEANED`, `BROKEN` (needs attention — original untouched), `PENDING` (cleaned, but
@@ -293,7 +293,7 @@ Key options:
   label you choose, independent of any `--library`/media folder.
 - `--catalog-db-folder` — where this catalog's file lives; doesn't need to exist yet. Default: a
   dedicated folder under VBR's own state folder (`%LOCALAPPDATA%\VideoBumperRemover\catalog\` on
-  Windows) — a sibling of, not shared with, `vbr scan`'s own index folder.
+  Windows) — a sibling of, not shared with, `vbr scan`'s own database folder.
 - `--verbose` — same logging convention as every other command: model path, sampled/usable frame
   counts, and exact ffmpeg commands run, to the console and `log.txt`.
 

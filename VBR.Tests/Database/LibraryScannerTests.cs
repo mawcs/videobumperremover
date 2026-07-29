@@ -17,12 +17,12 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using VBR.Core.Database;
 using VBR.Core.Fingerprinting;
-using VBR.Core.Index;
 using VDF.Core.Utils;
 using Xunit;
 
-namespace VBR.Tests.Index;
+namespace VBR.Tests.Database;
 
 /// <summary>
 /// Covers <see cref="LibraryScanner"/>'s change-detection and resilience logic without needing
@@ -50,9 +50,9 @@ public class LibraryScannerTests {
 		return path;
 	}
 
-	static LibraryIndexEntry CacheEntryMatching(string path) {
+	static LibraryDatabaseEntry CacheEntryMatching(string path) {
 		var info = new FileInfo(path);
-		return new LibraryIndexEntry {
+		return new LibraryDatabaseEntry {
 			Path = path,
 			FileSize = info.Length,
 			DateCreated = info.CreationTimeUtc,
@@ -68,14 +68,14 @@ public class LibraryScannerTests {
 		string dir = CreateTempDir();
 		try {
 			string file = WriteFile(dir, "episode.mkv", 1024);
-			var index = new LibraryIndex();
-			index.Entries[LibraryIndexKey.Normalize(file)] = CacheEntryMatching(file);
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			var database = new LibraryDatabase();
+			database.Entries[LibraryDatabaseKey.Normalize(file)] = CacheEntryMatching(file);
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
 			var results = new List<LibraryScanner.FileScanResult>();
 			LibraryScanner.ScanSummary summary = scanner.Scan(
-				new[] { file }, index, indexPath, Profile, forceRescan: false, results.Add);
+				new[] { file }, database, databasePath, Profile, forceRescan: false, results.Add);
 
 			Assert.Equal(1, summary.SkippedUnchanged);
 			Assert.Equal(0, summary.Scanned);
@@ -92,13 +92,13 @@ public class LibraryScannerTests {
 			// Not a real video, so the forced re-sample attempt fails -- the point of this test is
 			// that it *attempts* one at all (proving the cache was bypassed), not that it succeeds.
 			string file = WriteFile(dir, "episode.mkv", 1024);
-			var index = new LibraryIndex();
-			index.Entries[LibraryIndexKey.Normalize(file)] = CacheEntryMatching(file);
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			var database = new LibraryDatabase();
+			database.Entries[LibraryDatabaseKey.Normalize(file)] = CacheEntryMatching(file);
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
 			var results = new List<LibraryScanner.FileScanResult>();
-			scanner.Scan(new[] { file }, index, indexPath, Profile, forceRescan: true, results.Add);
+			scanner.Scan(new[] { file }, database, databasePath, Profile, forceRescan: true, results.Add);
 
 			Assert.NotEqual(LibraryScanner.ScanOutcome.SkippedUnchanged, Assert.Single(results).Outcome);
 		}
@@ -110,15 +110,15 @@ public class LibraryScannerTests {
 		string dir = CreateTempDir();
 		try {
 			string file = WriteFile(dir, "episode.mkv", 2048);
-			var index = new LibraryIndex();
-			LibraryIndexEntry stale = CacheEntryMatching(file);
+			var database = new LibraryDatabase();
+			LibraryDatabaseEntry stale = CacheEntryMatching(file);
 			stale.FileSize = 1; // pretend the cached entry was for a very different-sized file
-			index.Entries[LibraryIndexKey.Normalize(file)] = stale;
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			database.Entries[LibraryDatabaseKey.Normalize(file)] = stale;
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
 			var results = new List<LibraryScanner.FileScanResult>();
-			scanner.Scan(new[] { file }, index, indexPath, Profile, forceRescan: false, results.Add);
+			scanner.Scan(new[] { file }, database, databasePath, Profile, forceRescan: false, results.Add);
 
 			Assert.NotEqual(LibraryScanner.ScanOutcome.SkippedUnchanged, Assert.Single(results).Outcome);
 		}
@@ -131,39 +131,39 @@ public class LibraryScannerTests {
 		try {
 			// OsHashUtils needs >= 64 KiB to produce a hash at all.
 			string file = WriteFile(dir, "episode.mkv", 70 * 1024);
-			var index = new LibraryIndex();
-			LibraryIndexEntry stale = CacheEntryMatching(file);
+			var database = new LibraryDatabase();
+			LibraryDatabaseEntry stale = CacheEntryMatching(file);
 			stale.DateModified = stale.DateModified.AddDays(-1); // same bytes, different recorded mtime
-			index.Entries[LibraryIndexKey.Normalize(file)] = stale;
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			database.Entries[LibraryDatabaseKey.Normalize(file)] = stale;
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
 			var results = new List<LibraryScanner.FileScanResult>();
 			LibraryScanner.ScanSummary summary = scanner.Scan(
-				new[] { file }, index, indexPath, Profile, forceRescan: false, results.Add);
+				new[] { file }, database, databasePath, Profile, forceRescan: false, results.Add);
 
 			Assert.Equal(1, summary.SkippedUnchanged);
 			Assert.Equal(LibraryScanner.ScanOutcome.SkippedUnchanged, Assert.Single(results).Outcome);
 			// The stored entry's timestamp was refreshed even though sampling was skipped.
-			LibraryIndexEntry refreshed = index.Entries[LibraryIndexKey.Normalize(file)];
+			LibraryDatabaseEntry refreshed = database.Entries[LibraryDatabaseKey.Normalize(file)];
 			Assert.Equal(new FileInfo(file).LastWriteTimeUtc, refreshed.DateModified);
 		}
 		finally { DeleteTempDir(dir); }
 	}
 
 	[Fact]
-	public void MissingOnDiskEntry_IsDroppedFromIndex() {
+	public void MissingOnDiskEntry_IsDroppedFromDatabase() {
 		string dir = CreateTempDir();
 		try {
 			string ghostPath = Path.Combine(dir, "deleted-episode.mkv");
-			var index = new LibraryIndex();
-			index.Entries[LibraryIndexKey.Normalize(ghostPath)] = new LibraryIndexEntry { Path = ghostPath };
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			var database = new LibraryDatabase();
+			database.Entries[LibraryDatabaseKey.Normalize(ghostPath)] = new LibraryDatabaseEntry { Path = ghostPath };
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
-			scanner.Scan(Array.Empty<string>(), index, indexPath, Profile, forceRescan: false);
+			scanner.Scan(Array.Empty<string>(), database, databasePath, Profile, forceRescan: false);
 
-			Assert.Empty(index.Entries);
+			Assert.Empty(database.Entries);
 		}
 		finally { DeleteTempDir(dir); }
 	}
@@ -176,13 +176,13 @@ public class LibraryScannerTests {
 			// the first failure and still reports the second, rather than the whole Scan throwing.
 			string fileA = WriteFile(dir, "a.mkv", 512);
 			string fileB = WriteFile(dir, "b.mkv", 512);
-			var index = new LibraryIndex();
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			var database = new LibraryDatabase();
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
 			var results = new List<LibraryScanner.FileScanResult>();
 			LibraryScanner.ScanSummary summary = scanner.Scan(
-				new[] { fileA, fileB }, index, indexPath, Profile, forceRescan: false, results.Add);
+				new[] { fileA, fileB }, database, databasePath, Profile, forceRescan: false, results.Add);
 
 			Assert.Equal(2, summary.Total);
 			Assert.Equal(2, summary.Failed);
@@ -198,40 +198,40 @@ public class LibraryScannerTests {
 		try {
 			string fileA = WriteFile(dir, "a.mkv", 1024);
 			string fileB = WriteFile(dir, "b.mkv", 1024);
-			var index = new LibraryIndex();
-			index.Entries[LibraryIndexKey.Normalize(fileA)] = CacheEntryMatching(fileA);
-			index.Entries[LibraryIndexKey.Normalize(fileB)] = CacheEntryMatching(fileB);
-			string indexPath = Path.Combine(dir, "lib.vbridx");
+			var database = new LibraryDatabase();
+			database.Entries[LibraryDatabaseKey.Normalize(fileA)] = CacheEntryMatching(fileA);
+			database.Entries[LibraryDatabaseKey.Normalize(fileB)] = CacheEntryMatching(fileB);
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			// A zero interval means "checkpoint after every file" -- both are cache-hits (fast,
 			// no real sampling needed), so this stays deterministic and quick.
 			using var scanner = new LibraryScanner(checkpointInterval: TimeSpan.Zero);
 			int checkpointCalls = 0;
-			scanner.Scan(new[] { fileA, fileB }, index, indexPath, Profile, forceRescan: false,
+			scanner.Scan(new[] { fileA, fileB }, database, databasePath, Profile, forceRescan: false,
 				onCheckpoint: _ => checkpointCalls++);
 
 			Assert.Equal(3, checkpointCalls); // one after each of the 2 files, plus the final save
-			Assert.True(File.Exists(indexPath));
+			Assert.True(File.Exists(databasePath));
 		}
 		finally { DeleteTempDir(dir); }
 	}
 
 	[Fact]
-	public void IndexSaveFailure_DoesNotStopTheScan_AndIsReportedOnTheSummary() {
+	public void DatabaseSaveFailure_DoesNotStopTheScan_AndIsReportedOnTheSummary() {
 		string dir = CreateTempDir();
 		try {
 			string fileA = WriteFile(dir, "a.mkv", 1024);
 			string fileB = WriteFile(dir, "b.mkv", 1024);
-			var index = new LibraryIndex();
-			index.Entries[LibraryIndexKey.Normalize(fileA)] = CacheEntryMatching(fileA);
-			index.Entries[LibraryIndexKey.Normalize(fileB)] = CacheEntryMatching(fileB);
+			var database = new LibraryDatabase();
+			database.Entries[LibraryDatabaseKey.Normalize(fileA)] = CacheEntryMatching(fileA);
+			database.Entries[LibraryDatabaseKey.Normalize(fileB)] = CacheEntryMatching(fileB);
 
-			// A regular file standing in for the index's own directory makes every
-			// Directory.CreateDirectory(...) inside LibraryIndexStore.Save throw -- a simple, portable
+			// A regular file standing in for the database's own directory makes every
+			// Directory.CreateDirectory(...) inside LibraryDatabaseStore.Save throw -- a simple, portable
 			// way to make every save attempt (checkpoint and final) fail deterministically, without
 			// needing real ACL manipulation.
 			string blockingFile = WriteFile(dir, "blocking-file", 1);
-			string indexPath = Path.Combine(blockingFile, "lib.vbridx");
+			string databasePath = Path.Combine(blockingFile, "lib.vbrdb");
 
 			// Zero interval means "try to checkpoint after every file" -- proves a failed *mid-scan*
 			// checkpoint doesn't abort the loop either, not just the final save.
@@ -239,19 +239,19 @@ public class LibraryScannerTests {
 			var results = new List<LibraryScanner.FileScanResult>();
 			int checkpointCalls = 0;
 			LibraryScanner.ScanSummary summary = scanner.Scan(
-				new[] { fileA, fileB }, index, indexPath, Profile, forceRescan: false,
+				new[] { fileA, fileB }, database, databasePath, Profile, forceRescan: false,
 				onFileScanned: results.Add,
 				onCheckpoint: _ => checkpointCalls++);
 
-			// The failures are all in *saving* the index, not in reading the two (cache-hit) files --
+			// The failures are all in *saving* the database, not in reading the two (cache-hit) files --
 			// per-file outcomes are unaffected.
 			Assert.Equal(2, summary.SkippedUnchanged);
 			Assert.Equal(2, results.Count);
 			Assert.All(results, r => Assert.Equal(LibraryScanner.ScanOutcome.SkippedUnchanged, r.Outcome));
 
-			Assert.NotNull(summary.IndexSaveError);
+			Assert.NotNull(summary.DatabaseSaveError);
 			Assert.Equal(0, checkpointCalls); // every save attempt failed, so none should report success
-			Assert.False(File.Exists(indexPath));
+			Assert.False(File.Exists(databasePath));
 		}
 		finally { DeleteTempDir(dir); }
 	}
