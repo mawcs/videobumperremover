@@ -70,7 +70,7 @@ internal static class ScanCommand {
 	static readonly Option<bool> IncludeVbrOutputs = new("--include-vbr-outputs") {
 		Description = "Also include 'name.vbr.ext' outputs from a prior 'vbr remove' run — excluded " +
 			"by default since they're transitional staging artifacts (a review window before " +
-			"'vbr cleanup' promotes or discards them) that usually near-duplicate the original.",
+			"'vbr commit' promotes or discards them) that usually near-duplicate the original.",
 	};
 
 	static readonly Option<bool> Rescan = new("--rescan") {

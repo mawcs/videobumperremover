@@ -263,8 +263,8 @@ internal static class SharedOptions {
 			"what's actually happening on a given run, not just the summary line.",
 	};
 
-	// cleanup-only, but defined here alongside Verbose/TargetFile/Library rather than in
-	// CleanupCommand — SharedOptions is this project's one place option definitions live,
+	// commit-only, but defined here alongside Verbose/TargetFile/Library rather than in
+	// CommitCommand — SharedOptions is this project's one place option definitions live,
 	// per its own doc comment above, even though this one option isn't shared with match/remove.
 	internal static readonly Option<bool> ValidateFiles = new("--validate-files") {
 		Description = "Before promoting each '.vbr.' output, ffprobe it and sanity-check its " +

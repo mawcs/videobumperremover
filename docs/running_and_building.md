@@ -146,28 +146,29 @@ the bumper). Both are documented, accepted v1 stream-copy characteristics (see t
 **Re-encode cut points are frame-accurate** (~28ms off in testing) — this is the main practical
 reason to prefer it beyond subtitle correctness.
 
-### Run — `vbr cleanup`
+### Run — `vbr commit`
 
 ```sh
-dotnet run --project VBR.CLI -- cleanup --help
+dotnet run --project VBR.CLI -- commit --help
 ```
 
 Promotes verified `.vbr.` outputs (from a prior `vbr remove` run) to replace their originals —
 deletes the pre-cut original and its manifest. **The only command that deletes video files**; see
-[ADR 0008](decisions/0008-cleanup-command.md) for the full design. Run this *between*
-bumper-removal passes, once you've reviewed each `.vbr.` output — not as a substitute for
-reviewing them, and not automatically after `remove`. `clean` works too — it's just a shorter
-alias for the same command.
+[ADR 0008](decisions/0008-cleanup-command.md) for the full design (built as `vbr cleanup`, renamed
+to `vbr commit` 2026-07-29 — see the ADR's amendment note and
+[`iterativeplan.md`](iterativeplan.md) → "CLI terminology & multi-folder libraries" for why). Run
+this *between* bumper-removal passes, once you've reviewed each `.vbr.` output — not as a
+substitute for reviewing them, and not automatically after `remove`.
 
 ```sh
-dotnet run --project VBR.CLI -- cleanup --library "D:\Media\Show"
+dotnet run --project VBR.CLI -- commit --library "D:\Media\Show"
 ```
 
 Or a single file — scoped to *only* that file, never the rest of its directory (decided,
 2026-07-20; see the ADR's Decision 10):
 
 ```sh
-dotnet run --project VBR.CLI -- cleanup --file "D:\Media\Show\S01E05.mkv"
+dotnet run --project VBR.CLI -- commit --file "D:\Media\Show\S01E05.mkv"
 ```
 
 Key behavior:
@@ -187,18 +188,18 @@ Key behavior:
   completed, it just retries the delete; if it hadn't, it restores the original and lets the
   normal pass reprocess the pair from scratch in the same run.
 - **No trash/soft-delete stage.** `remove`'s non-destructive sibling output already is the review
-  window — the original survives untouched until you run `cleanup`. A second staged-deletion layer
+  window — the original survives untouched until you run `commit`. A second staged-deletion layer
   here would just triple disk usage on libraries that are already large.
 - `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`scan`
   (each folder's own directory tree walked, deduplicated where folders overlap), and
-  `--exclude-folders` skips whole directories that fall under it, before `cleanup` ever looks
+  `--exclude-folders` skips whole directories that fall under it, before `commit` ever looks
   inside them for `.vbr.` pairs.
 - `--validate-files` — off by default. When set, ffprobes each `.vbr.` output and sanity-checks
   its duration (precisely, against the manifest, when one is present and parses; otherwise a
   coarser "shorter than the original" check) before it's allowed anywhere near the original. A
   file that fails is reported broken and left completely alone. Off by default because the CLI
   can't enforce that you actually reviewed the output — this assists that, it doesn't replace it.
-- `--output <file>` — also write the cleanup report to a file, same as `match`/`remove`.
+- `--output <file>` — also write the commit report to a file, same as `match`/`remove`.
 - `--verbose` — same logging hookup as `match`/`remove`: every mark/promote/delete call and
   recovery action, to the console and `log.txt`.
 
@@ -210,7 +211,7 @@ dotnet run --project VBR.CLI -- scan --help
 
 Builds/updates a **cached fingerprint database** for a library — samples every file's true edges
 (dense) and whole-file middle (sparse) up front so a bumper can be found later without re-decoding.
-Unlike `match`/`remove`/`cleanup`, it doesn't take `--clip-from`/`--region`/`--detection-mode` —
+Unlike `match`/`remove`/`commit`, it doesn't take `--clip-from`/`--region`/`--detection-mode` —
 there's nothing to match against yet, only fingerprints to gather. See
 [`iterativeplan.md`](iterativeplan.md) → "Library scan — implemented and validated" for the full
 design and validated numbers.
@@ -221,7 +222,7 @@ dotnet run --project VBR.CLI -- scan --library "D:\Media\Show" --library-name Sh
 
 Key options:
 
-- `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`cleanup`
+- `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`commit`
   (e.g. `--library "D:\Media\Show;D:\Media\Extras"`), combined into one candidate list and
   deduplicated where folders overlap; `--exclude-folders` works the same way too. All of a
   multi-folder `--library`'s files land in the *same* database — there's still only one
@@ -239,7 +240,7 @@ Key options:
   default location: a dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\database\` on
   Windows), never VDF's own database folder.
 - `--include-vbr-outputs` — off by default: `name.vbr.ext` outputs from a prior `remove` are
-  transitional staging artifacts (a review window before `cleanup`), usually redundant to include.
+  transitional staging artifacts (a review window before `commit`), usually redundant to include.
 - `--rescan` (alias `--force`) — bypass change detection and re-sample every candidate, e.g. after
   changing `--edge-boundary`/interval defaults.
 - Change detection mirrors VDF's own incremental-rescan logic: unchanged size+timestamps skip
@@ -316,7 +317,7 @@ dotnet test VBR.Tests --filter "FullyQualifiedName~AudioBumperMatcherTests"
 files, gated by environment variables — they skip cleanly when unset, so a normal `dotnet test`
 run never needs them. Each header comment has the exact recipe; representative examples:
 
-`LibraryCleanerTests` (`vbr cleanup`'s mark/promote/delete/recovery logic) is different: it's pure
+`LibraryCleanerTests` (`vbr commit`'s mark/promote/delete/recovery logic) is different: it's pure
 filesystem manipulation with no video content involved, so almost all of it runs as ordinary,
 always-on tests against temp directories with plain dummy files — no environment variables, no
 curated library. The two `--validate-files` tests are the exception, shelling out to ffmpeg/

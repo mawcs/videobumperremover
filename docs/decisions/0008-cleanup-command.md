@@ -2,6 +2,15 @@
 
 - **Status:** accepted. The three items the maintainer flagged for a final call are decided
   (below); everything else in "Open questions" remains genuinely open.
+- **Renamed (2026-07-29): `vbr cleanup` → `vbr commit`**, `clean` alias dropped. Purely a CLI-surface
+  rename — every decision below, `VBR.Core.Cleanup.LibraryCleaner`, and all of this ADR's content
+  are otherwise unchanged and still describe the command accurately, just under its new name. Freed
+  "cleanup"/"clean"/"prune" for future VDF-style database-maintenance commands (see
+  `docs/iterativeplan.md`'s "CLI terminology & multi-folder libraries" entry for the full reasoning
+  and what those future commands are expected to be). This document's body is left as originally
+  written, calling the command `cleanup` throughout — an accurate historical record of what was
+  decided and built on 2026-07-20, same convention `iterativeplan.md` follows for its own
+  dated entries.
 - **Date:** 2026-07-20
 - **Implementation status (2026-07-20):** built and verified. `VBR.Core.Cleanup.LibraryCleaner` +
   `VBR.CLI.Commands.CleanupCommand`. 18 unit tests (temp-directory-based, no curated real-media
