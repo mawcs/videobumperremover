@@ -152,7 +152,7 @@ public class LibraryScannerTests {
 	}
 
 	[Fact]
-	public void MissingOnDiskEntry_IsDroppedFromDatabase() {
+	public void MissingOnDiskEntry_IsTombstonedNotDropped() {
 		string dir = CreateTempDir();
 		try {
 			string ghostPath = Path.Combine(dir, "deleted-episode.mkv");
@@ -161,9 +161,57 @@ public class LibraryScannerTests {
 			string databasePath = Path.Combine(dir, "lib.vbrdb");
 
 			using var scanner = new LibraryScanner();
+			// Empty candidate list -- exercises only the sweep at the top of Scan, not the
+			// per-candidate "file vanished" branch (covered separately below).
 			scanner.Scan(Array.Empty<string>(), database, databasePath, Profile, forceRescan: false);
 
-			Assert.Empty(database.Entries);
+			LibraryDatabaseEntry tombstoned = Assert.Single(database.Entries.Values);
+			Assert.NotNull(tombstoned.TombstonedUtc);
+		}
+		finally { DeleteTempDir(dir); }
+	}
+
+	[Fact]
+	public void MissingFileInCandidateList_TombstonesExistingEntry_NotDropped() {
+		string dir = CreateTempDir();
+		try {
+			// Ghost path is passed as a candidate (unlike the sweep-only test above), exercising the
+			// per-candidate "file vanished" branch specifically.
+			string ghostPath = Path.Combine(dir, "deleted-episode.mkv");
+			var database = new LibraryDatabase();
+			database.Entries[LibraryDatabaseKey.Normalize(ghostPath)] = new LibraryDatabaseEntry { Path = ghostPath };
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
+
+			using var scanner = new LibraryScanner();
+			var results = new List<LibraryScanner.FileScanResult>();
+			LibraryScanner.ScanSummary summary = scanner.Scan(
+				new[] { ghostPath }, database, databasePath, Profile, forceRescan: false, results.Add);
+
+			Assert.Equal(1, summary.Failed);
+			Assert.Equal(LibraryScanner.ScanOutcome.Failed, Assert.Single(results).Outcome);
+			LibraryDatabaseEntry tombstoned = Assert.Single(database.Entries.Values);
+			Assert.NotNull(tombstoned.TombstonedUtc);
+		}
+		finally { DeleteTempDir(dir); }
+	}
+
+	[Fact]
+	public void TombstonedEntry_IsClearedWhenTheFileReappearsUnchanged() {
+		string dir = CreateTempDir();
+		try {
+			string file = WriteFile(dir, "episode.mkv", 1024);
+			var database = new LibraryDatabase();
+			LibraryDatabaseEntry entry = CacheEntryMatching(file);
+			entry.TombstonedUtc = DateTime.UtcNow.AddDays(-3); // pretend an earlier scan found it missing
+			database.Entries[LibraryDatabaseKey.Normalize(file)] = entry;
+			string databasePath = Path.Combine(dir, "lib.vbrdb");
+
+			using var scanner = new LibraryScanner();
+			LibraryScanner.ScanSummary summary = scanner.Scan(
+				new[] { file }, database, databasePath, Profile, forceRescan: false);
+
+			Assert.Equal(1, summary.SkippedUnchanged);
+			Assert.Null(database.Entries[LibraryDatabaseKey.Normalize(file)].TombstonedUtc);
 		}
 		finally { DeleteTempDir(dir); }
 	}

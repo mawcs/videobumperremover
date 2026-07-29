@@ -61,4 +61,15 @@ public sealed partial class LibraryDatabaseEntry {
 	/// <see cref="WholeFileSampler"/>.</summary>
 	[MemoryPackOrder(7)]
 	public TimedFingerprint[] Fingerprints { get; set; } = Array.Empty<TimedFingerprint>();
+
+	/// <summary>Non-null once a scan found this entry's file missing on disk — the UTC time that
+	/// scan ran (VDF-style tombstoning, adopted 2026-07-29; see iterativeplan.md's "CLI terminology
+	/// & multi-folder libraries" entry). The entry, fingerprints included, is deliberately kept
+	/// rather than removed: if the same content ever reappears at a new path (e.g. a re-download),
+	/// there's still something to re-link against, instead of a full re-sample. Cleared back to null
+	/// automatically the moment a scan finds the file present again at *this* entry's own
+	/// <see cref="Path"/> — re-linking to a *different* path once tombstoned is still deferred,
+	/// unbuilt (<see cref="LibraryScanner"/> only clears/sets this; nothing reads it yet).</summary>
+	[MemoryPackOrder(8)]
+	public DateTime? TombstonedUtc { get; set; }
 }

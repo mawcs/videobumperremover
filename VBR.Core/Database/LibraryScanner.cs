@@ -37,9 +37,10 @@ namespace VBR.Core.Database;
 /// verify via <see cref="OsHashUtils"/> before trusting the cache; same size and timestamps → trust
 /// outright. Move/rename relinking (VDF's <c>TryRelinkMovedFile</c>) is deliberately not
 /// implemented here — a moved file just re-samples as if new, a conscious v1 simplification, not an
-/// oversight. Entries whose file no longer exists on disk at all are dropped, not tombstoned (no
-/// VDF-style <c>RememberDeletedContent</c> equivalent yet — see iterativeplan.md's "CLI terminology
-/// & multi-folder libraries" entry, "the tombstone question," for the open question this leaves).
+/// oversight. Entries whose file no longer exists on disk at all are tombstoned
+/// (<see cref="LibraryDatabaseEntry.TombstonedUtc"/> set), not dropped — VDF-style
+/// <c>RememberDeletedContent</c>, adopted 2026-07-29 — so the fingerprints survive for a future
+/// re-linking pass (still unbuilt) instead of being discarded the moment a file goes missing.
 /// </summary>
 public sealed class LibraryScanner : IDisposable {
 	public enum ScanOutcome { Sampled, SkippedUnchanged, Failed }
@@ -93,14 +94,14 @@ public sealed class LibraryScanner : IDisposable {
 		int scanned = 0, skipped = 0, failed = 0;
 		DateTime lastCheckpoint = DateTime.UtcNow;
 
-		// Drop entries for files that no longer exist at all -- not entries merely absent from
-		// *this run's* filtered candidate list (e.g. a .vbr. output with --include-vbr-outputs off
-		// this time but on previously), which would be a real file losing its cache for no reason.
-		foreach (string staleKey in database.Entries
-				.Where(kv => !File.Exists(kv.Value.Path))
-				.Select(kv => kv.Key)
-				.ToList())
-			database.Entries.Remove(staleKey);
+		// Tombstone (not drop) entries for files that no longer exist at all -- not entries merely
+		// absent from *this run's* filtered candidate list (e.g. a .vbr. output with
+		// --include-vbr-outputs off this time but on previously), which would be a real file losing
+		// its cache for no reason. Already-tombstoned entries are left alone (TombstonedUtc keeps
+		// its original time, not refreshed on every subsequent scan that still finds it gone).
+		foreach (LibraryDatabaseEntry stale in database.Entries.Values)
+			if (stale.TombstonedUtc is null && !File.Exists(stale.Path))
+				stale.TombstonedUtc = DateTime.UtcNow;
 
 		foreach (string path in candidatePaths) {
 			ct.ThrowIfCancellationRequested();
@@ -108,13 +109,15 @@ public sealed class LibraryScanner : IDisposable {
 			try {
 				var fileInfo = new FileInfo(path);
 				if (!fileInfo.Exists) {
-					database.Entries.Remove(key);
+					if (database.Entries.TryGetValue(key, out LibraryDatabaseEntry? gone) && gone.TombstonedUtc is null)
+						gone.TombstonedUtc = DateTime.UtcNow;
 					failed++;
 					onFileScanned?.Invoke(new FileScanResult(path, ScanOutcome.Failed, null, "file no longer exists"));
 					continue;
 				}
 
 				if (!forceRescan && database.Entries.TryGetValue(key, out LibraryDatabaseEntry? existing) && TryReuse(existing, fileInfo)) {
+					existing.TombstonedUtc = null;
 					skipped++;
 					onFileScanned?.Invoke(new FileScanResult(path, ScanOutcome.SkippedUnchanged, "cached, unchanged", null));
 					continue;

@@ -53,6 +53,7 @@ public class LibraryDatabaseStoreTests {
 				new TimedFingerprint(0.2, new byte[] { 4, 5, 6 }, 0xBBBBBBBBBBBBBBBB),
 				new TimedFingerprint(20.0, new byte[] { 7, 8, 9 }, 0xCCCCCCCCCCCCCCCC),
 			},
+			TombstonedUtc = new DateTime(2026, 7, 29, 0, 0, 0, DateTimeKind.Utc),
 		};
 		database.Entries[LibraryDatabaseKey.Normalize(entry.Path)] = entry;
 		return database;
@@ -84,6 +85,7 @@ public class LibraryDatabaseStoreTests {
 			Assert.Equal(originalEntry.OsHash, loadedEntry.OsHash);
 			Assert.Equal(originalEntry.Duration, loadedEntry.Duration);
 			Assert.Equal(originalEntry.AudioFingerprint, loadedEntry.AudioFingerprint);
+			Assert.Equal(originalEntry.TombstonedUtc, loadedEntry.TombstonedUtc);
 			Assert.Equal(originalEntry.Fingerprints.Length, loadedEntry.Fingerprints.Length);
 			for (int i = 0; i < originalEntry.Fingerprints.Length; i++) {
 				Assert.Equal(originalEntry.Fingerprints[i].TimestampSeconds, loadedEntry.Fingerprints[i].TimestampSeconds);
