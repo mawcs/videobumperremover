@@ -43,7 +43,9 @@ internal static class AddBumperCommand {
 
 	static readonly Option<string> LabelOption = new("--label") {
 		Description = $"Short, human-facing name for this bumper (max {MaxLabelLength} characters), " +
-			"e.g. 'Disney FBI warning 2003' -- the one field you must supply yourself; no auto-suggestion.",
+			"e.g. 'Disney FBI warning 2003' -- the one field you must supply yourself; no auto-suggestion. " +
+			"Must be unique within the target --catalog-name (case-insensitive); other catalogs may " +
+			"reuse the same label freely.",
 		Required = true,
 	};
 
@@ -146,6 +148,20 @@ internal static class AddBumperCommand {
 				return 1;
 			}
 			catalog.CatalogName = catalogName;
+
+			// Decided (docs/iterativeplan.md, "CLI terminology & multi-folder libraries" entry,
+			// 2026-07-29): labels are unique *within* a catalog, not globally -- two different
+			// catalogs may each have their own "Studio ident" without conflict. Checked here,
+			// before the (expensive: ffmpeg decode + ONNX inference) builder call, not after --
+			// same "fail fast on a cheap check before expensive work" principle already applied to
+			// --catalog-db-folder's existing-file guard above.
+			if (catalog.Entries.Values.Any(e => string.Equals(e.Label, label, StringComparison.OrdinalIgnoreCase))) {
+				Console.Error.WriteLine(
+					$"Error: catalog '{catalogName}' already has a bumper labeled '{label}' -- labels must " +
+					"be unique within a catalog. Use a different --label (bumper rename/edit isn't a CLI " +
+					"command yet, so an existing entry can't be renamed out of the way).");
+				return 1;
+			}
 
 			BumperCatalogEntry entry;
 			try {

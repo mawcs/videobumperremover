@@ -287,7 +287,9 @@ Key options:
 - `--label` (required, max 30 characters) — the one field you must supply yourself; no
   auto-suggestion from the filename/folder (considered and rejected during planning — too many
   edge cases to guess reliably, e.g. show name living in a grandparent folder, episode codes to
-  strip).
+  strip). **Must be unique within the target `--catalog-name`, case-insensitively** — a duplicate
+  is rejected before any sampling/extraction work starts; a different catalog may freely reuse the
+  same label.
 - `--description` (optional, max 255 characters) and `--tags` (optional, comma-separated) add
   curation context. All three (including `--label`) are enforced at the CLI, not the underlying
   data model.
