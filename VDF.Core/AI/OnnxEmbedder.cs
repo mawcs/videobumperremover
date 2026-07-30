@@ -52,7 +52,16 @@ namespace VDF.Core.AI {
 		/// build resolved, no compatible GPU, driver issue), silently falls back to the exact same
 		/// CPU-only <see cref="SessionOptions"/> this class has always used — never a hard
 		/// failure just because GPU inference wasn't available.</param>
-		public OnnxEmbedder(string modelPath, bool preferDirectML = false) {
+		/// <param name="directMlDeviceId">The DXGI adapter index DirectML should target — **not
+		/// safe to leave at the default 0 on every machine**: live-verified (2026-07-30) that on a
+		/// machine with a remote-session display adapter registered alongside a real GPU, DXGI
+		/// enumerates the virtual display adapter at index 0 (it advertises full D3D12 feature
+		/// levels despite having no real compute hardware behind them) and the real GPU at index 1
+		/// — device 0 crashed with a native access violation in <c>InferenceSession.Init</c>, not a
+		/// clean "unsupported" error. Callers are expected to have already probed which index
+		/// actually works (<c>HardwareAcceleration.ProbeDirectMlInSubprocess</c>) rather than
+		/// trusting the default blindly.</param>
+		public OnnxEmbedder(string modelPath, bool preferDirectML = false, int directMlDeviceId = 0) {
 			AiComponents.EnsureResolverInstalled(preferDirectML);
 			// InferenceSession does NOT take ownership of caller-supplied options —
 			// without the using this native handle waited for its finalizer.
@@ -62,7 +71,16 @@ namespace VDF.Core.AI {
 			options.IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
 			if (preferDirectML) {
 				try {
-					options.AppendExecutionProvider_DML();
+					// Both required by DirectML's own documented integration contract (Microsoft's
+					// ONNX Runtime DirectML EP docs) -- memory-pattern optimization and parallel
+					// execution both assume CPU-style allocation reuse the DirectML allocator
+					// doesn't support the same way; omitting either is a documented cause of
+					// DirectML failing to initialize (or behaving incorrectly) even on hardware
+					// that fully supports it. Necessary but not sufficient on its own -- see
+					// directMlDeviceId's doc comment for the actual root cause found live.
+					options.EnableMemoryPattern = false;
+					options.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
+					options.AppendExecutionProvider_DML(directMlDeviceId);
 				}
 				catch (Exception ex) {
 					Logger.Instance.Warn($"[onnx] DirectML execution provider unavailable ({ex.Message}) -- falling back to CPU inference.");

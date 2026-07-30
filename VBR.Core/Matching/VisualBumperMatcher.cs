@@ -132,7 +132,7 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 		if (embedder is null) {
 			if (verboseLogging)
 				Logger.Instance.Info($"[visual] Loading ONNX model: {AiComponents.ModelPath}");
-			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML);
+			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML, HardwareAcceleration.DirectMlDeviceId);
 			if (verboseLogging)
 				Logger.Instance.Info("[visual] ONNX inference session ready.");
 		}

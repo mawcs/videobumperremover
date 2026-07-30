@@ -1,13 +1,12 @@
 # ADR 0013: GPU acceleration — ffmpeg decode/encode and ONNX inference
 
-- **Status:** accepted, implemented and live-verified on a real machine (2026-07-30) — with one
-  real design gap found and fixed in the process (see "Live-verified" below): DirectML
-  initialization can crash the process with a native access violation that no managed
-  `try`/`catch` can contain, which the original design didn't account for. Full GPU-encoder and
-  DirectML-success verification on hardware that actually has a working NVENC/QSV/AMF encoder or a
-  real GPU/display driver still hasn't happened — the machine this was verified on has neither
-  (every GPU path correctly and safely fell back to CPU, which is exactly what's checked below,
-  but it doesn't exercise the "GPU path actually engages" direction).
+- **Status:** accepted, implemented and live-verified on a real machine with a working GPU
+  (RTX 3080, 2026-07-30). GPU re-encode (Decision 3) is now confirmed actually engaging, not just
+  falling back — see the second "Live-verified" section below. DirectML inference (Decision 5)
+  still does not actually engage on this machine even though decode/encode GPU paths both do on
+  the same hardware; it falls back to CPU safely and correctly, but the underlying cause (a DXGI
+  adapter handle that validates in a probe subprocess but is rejected in the real process) remains
+  unresolved — see "Open questions."
 - **Date:** 2026-07-30
 - **Related:** [`0009-library-scan-database.md`](0009-library-scan-database.md) (scanning speed),
   [`0010-database-backed-removal.md`](0010-database-backed-removal.md) (matching speed),
@@ -54,9 +53,13 @@ unconditionally), and no ONNX execution provider beyond the default CPU one exis
 3. **Encode: H.264/HEVC GPU tier on top of ADR 0012's CPU table, detected by probing a real
    encode.** `VBR.Core.Removal.GpuEncoderProbe` tries `h264_nvenc`/`h264_qsv`/`h264_amf` (or the
    `hevc_*` equivalents), in that priority order, by actually running a trivial synthetic 1-frame
-   encode (`-f lavfi -i color=... -c:v <candidate> -f null -`) — **not** a static
-   `ffmpeg -encoders` list check, since a build can list an encoder as compiled-in with no
-   compatible driver/GPU present, which only fails at real invocation time. Cached once per
+   encode (`-f lavfi -i color=c=black:s=256x256:r=1 -frames:v 1 -c:v <candidate> -f null -`) —
+   **not** a static `ffmpeg -encoders` list check, since a build can list an encoder as compiled-in
+   with no compatible driver/GPU present, which only fails at real invocation time. The synthetic
+   frame is 256×256, not smaller — live-verified (see below) that a 64×64 probe frame makes a
+   genuinely working NVENC encoder report failure (`Frame Dimension less than the minimum
+   supported value`), so the probe frame must clear every candidate encoder's minimum-dimension
+   floor, not just be cheap. Cached once per
    process run (hardware doesn't change mid-run; re-probing each new `vbr` invocation is cheap
    insurance against a stale answer surviving a driver update). Scope is deliberately narrow: only
    H.264 and HEVC — the two codecs every mainstream GPU vendor supports maturely, and the two rows
@@ -182,15 +185,73 @@ path:
   the logged exact ffmpeg command line — not the old `CRF 18` placeholder). `-hwaccel auto` was
   confirmed present in the logged ffmpeg command line for both decode and re-encode calls.
 
-**Still not verified: the actual GPU-engaged path** — no machine with a working NVENC/QSV/AMF
-encoder or a functioning DirectML-capable GPU has run this yet. Decode `-hwaccel` actually
-reproducing identical fingerprints at higher speed, `GpuEncoderProbe` actually picking a working
-encoder and producing correct comparable-quality output, and `AppendExecutionProvider_DML()`
-actually succeeding rather than falling back — none of that is confirmed yet. This is the next
-step (on the maintainer's own RTX 3080 machine), not a gap the design left unaddressed.
+**Follow-up verification on the maintainer's real RTX 3080 machine confirmed decode/encode GPU
+acceleration actually engages** (see next section) — the item above is resolved for Decisions 2/3.
+DirectML (Decision 5) remains unresolved: see "Open questions."
+
+## Live-verified (2026-07-30, real RTX 3080 machine, RDP session)
+
+Follow-up verification on the maintainer's actual machine (headless, RDP-only access, RTX 3080 —
+confirmed via `dxdiag`/WMI, not a sandbox) surfaced three more findings, one already fixed and
+proven, two still open.
+
+- **Incorrect intermediate theory, corrected by the maintainer with hard evidence.** Initial
+  DirectML failures on this machine led to a hypothesis that RDP sessions block GPU access
+  generally. The maintainer disproved this directly: a manual `ffmpeg -c:v h264_nvenc` run on this
+  exact machine, this exact RDP session, on a real file, measured `speed=62x elapsed=0:00:50.83`
+  versus the CPU encode's `speed=11.7x elapsed=0:04:29.57` — real NVENC hardware acceleration
+  working over RDP. The investigation refocused on what's DirectML/D3D12-specific rather than a
+  blanket RDP limitation.
+- **Root cause found for DirectML device selection: `AppendExecutionProvider_DML()` with no
+  explicit device index defaults to DXGI adapter 0, and adapter 0 on this machine is a phantom.**
+  `dxdiag /t` lists two Display Devices: a "Microsoft Remote Display Adapter" *first*
+  (`Device Type: Display-Only Device`, `Chip type: Unknown`, but falsely advertising
+  `Feature Levels: 12_2,...`), and the real "NVIDIA GeForce RTX 3080" *second* (explicitly carries
+  `Adapter Attributes: ...,D3D12_GENERIC_ML,...`). **Fixed**: `HardwareAcceleration.ProbeDirectMlInSubprocess`
+  now tries device indices 0 through 4 (one probe subprocess per candidate — a crash kills that
+  process before it could try the next index itself), records the first index whose probe
+  subprocess neither crashes nor throws, and every real `OnnxEmbedder` construction site is passed
+  that index instead of the implicit 0 default.
+- **New, unresolved: the winning probe index still fails in the real (non-probe) process.** With
+  the fix above, the probe subprocess consistently succeeds at device index 2 on this machine — but
+  the real `OnnxEmbedder` construction in the actual `vbr` process, using that same index 2,
+  consistently fails with a *different*, cleanly catchable error:
+  `[ErrorCode:RuntimeException] ... C0262002 Specified display adapter handle is invalid.` No
+  crash — `OnnxEmbedder`'s try/catch handles it exactly as designed, logs a WARN, and falls back to
+  CPU correctly every time (`present=5/6 bestCos=98%`, matching the CPU-only baseline). The
+  mechanism isn't understood: one theory is that DXGI adapter handles/indices aren't stable across
+  separate process launches in this specific RDP-virtualized display environment, so a handle
+  that's valid when the probe subprocess opens it is no longer valid by the time a *different*
+  process (the real run) opens "the same" index moments later. Not confirmed. The net effect is
+  safe (clean fallback, no crash, correct results) but DirectML acceleration does not actually
+  engage on this machine.
+- **Ruled out as the (sole) cause: ONNX Runtime version mismatch.** Hypothesized the
+  `Microsoft.ML.OnnxRuntime.Managed 1.23.2` wrapper was ABI-mismatched against the DirectML native
+  runtime (pinned `1.23.0`, since no `1.23.2` DirectML package exists). Downgraded the whole
+  project's pin to `1.23.0` (confirmed via NuGet that `1.23.0` still ships a matching
+  `onnxruntime-osx-x86_64-1.23.0.tgz`, so nothing about the original 1.23.2 rationale was lost) and
+  re-tested — the identical "invalid adapter handle" failure persisted. Kept the downgrade anyway
+  (still correct/safer, removes one variable) but it did not fix this issue.
+- **Fixed and confirmed: `GpuEncoderProbe` was reporting real, working GPU encoders as failed.**
+  The original 64×64 synthetic probe frame is below NVENC's minimum supported encode dimension —
+  manually running the exact probe command reproduced `InitializeEncoder failed: invalid param
+  (8): Frame Dimension less than the minimum supported value`, on the same machine where a real
+  NVENC encode (see above) works fine. Bumped the probe frame to 256×256 (Decision 3, updated
+  above) and re-ran `vbr remove --hardware-accel auto --verbose` end-to-end: `GpuEncoderProbe` now
+  logs `'h264_nvenc' probed successfully`, `ClipRemover` logs `Re-encode video codec: h264_nvenc
+  (GPU)`, and the real ffmpeg invocation shows `-c:v h264_nvenc -cq 22 -preset p5` — **GPU
+  re-encode acceleration is now confirmed actually engaging**, not just falling back to CPU. (QSV
+  and AMF still report probe failures on this machine at 256×256 too — expected and correct, since
+  this machine has no Intel/AMD GPU for those encoders to run on at all.)
 
 ## Open questions
 
+- **Why DirectML's real (non-probe) `OnnxEmbedder` construction fails with "invalid adapter
+  handle" at the same device index its own probe subprocess just confirmed works** — the single
+  open item blocking actual DirectML acceleration on this machine. Candidate next step: re-probe
+  inside the *same* process immediately before constructing the real embedder, rather than trusting
+  a result from an earlier, separate probe process, to test whether the handle instability is
+  specifically a cross-process phenomenon.
 - GPU quality-flag numeric values (Decision 3) — starting guesses, not tuned.
 - Whether `-preset`/`-global_quality`/`-quality` choices for the three GPU encoder families are
   well-chosen — same "not yet finalized" status ADR 0012 left its own CPU preset value in.

@@ -14,6 +14,7 @@
 // */
 //
 
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
@@ -33,8 +34,12 @@ namespace VBR.Core.Removal;
 /// check.</b> A build can list e.g. <c>h264_nvenc</c> as compiled-in with no NVIDIA driver
 /// present at all — the encoder would only fail at actual invocation time, which is exactly the
 /// failure mode this class exists to catch before trusting a real removal to it. The probe itself
-/// is cheap: a single 64×64, 1-frame synthetic source through <c>-f lavfi</c>, discarded to
-/// <c>-f null</c> — no real file ever touches the candidate encoder during detection.
+/// is cheap: a single 256×256, 1-frame synthetic source through <c>-f lavfi</c>, discarded to
+/// <c>-f null</c> — no real file ever touches the candidate encoder during detection. 256×256 (not
+/// a smaller size) is deliberate: live-verified on real NVENC hardware that a 64×64 probe frame
+/// fails encoder init with "Frame Dimension less than the minimum supported value" even though the
+/// same encoder works fine on real (much larger) sources — a probe frame must clear every
+/// candidate encoder's minimum-dimension floor, not just be small/cheap.
 /// </summary>
 public static class GpuEncoderProbe {
 	// Priority order per family: NVENC first (the most common discrete-GPU case and the
@@ -69,19 +74,20 @@ public static class GpuEncoderProbe {
 				return cached;
 
 			foreach (string candidate in candidates) {
-				if (ProbeEncoder(candidate, ct)) {
+				(bool success, string? detail) = ProbeEncoder(candidate, ct);
+				if (success) {
 					if (verbose) Logger.Instance.Info($"[gpu-encode] '{candidate}' probed successfully -- using it for {codecFamily}.");
 					cache[codecFamily] = candidate;
 					return candidate;
 				}
-				if (verbose) Logger.Instance.Info($"[gpu-encode] '{candidate}' probe failed -- trying the next candidate, if any.");
+				if (verbose) Logger.Instance.Info($"[gpu-encode] '{candidate}' probe failed -- trying the next candidate, if any. ({detail})");
 			}
 			cache[codecFamily] = null;
 			return null;
 		}
 	}
 
-	static bool ProbeEncoder(string encoderName, CancellationToken ct) {
+	static (bool Success, string? Detail) ProbeEncoder(string encoderName, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -93,7 +99,11 @@ public static class GpuEncoderProbe {
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
 		psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("lavfi");
-		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add("color=c=black:s=64x64:r=1");
+		// 256x256, not a smaller/cheaper size -- see the class doc comment: NVENC rejects a 64x64
+		// probe frame with "Frame Dimension less than the minimum supported value" even when the
+		// encoder itself works fine, which was live-verified to make this probe report false
+		// negatives for a genuinely working GPU encoder.
+		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add("color=c=black:s=256x256:r=1");
 		psi.ArgumentList.Add("-frames:v"); psi.ArgumentList.Add("1");
 		psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add(encoderName);
 		psi.ArgumentList.Add("-f"); psi.ArgumentList.Add("null");
@@ -112,14 +122,16 @@ public static class GpuEncoderProbe {
 			// expectation of how long this normally takes.
 			if (!process.WaitForExit(15_000)) {
 				try { process.Kill(entireProcessTree: true); } catch { }
-				return false;
+				return (false, "timed out");
 			}
 			Task.WaitAll(stdoutTask, stderrTask);
-			return process.ExitCode == 0;
+			if (process.ExitCode == 0) return (true, null);
+			string stderrText = stderrTask.Result.Trim();
+			return (false, stderrText.Length > 0 ? stderrText : $"exit code {process.ExitCode}");
 		}
-		catch {
+		catch (Exception ex) {
 			try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
-			return false;
+			return (false, ex.Message);
 		}
 	}
 }

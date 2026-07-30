@@ -55,13 +55,22 @@ public static class HardwareAcceleration {
 
 	static bool directMlUnavailable;
 
+	/// <summary>Which DXGI adapter index actually initializes DirectML successfully on this
+	/// machine — set by <see cref="ProbeDirectMlInSubprocess"/> once it finds one. **Device 0 is
+	/// not a safe default** (see that method's doc comment): live-verified that a remote-session
+	/// display adapter can enumerate at index 0, ahead of the real GPU, while falsely advertising
+	/// full D3D12 feature-level support. Real `OnnxEmbedder` construction (as opposed to the probe
+	/// itself) should always pass this value, never a hardcoded 0.</summary>
+	public static int DirectMlDeviceId { get; private set; }
+
 	/// <summary>True when ONNX inference should request the DirectML execution provider
 	/// (docs/decisions/0013-gpu-acceleration.md) — Windows only; CUDA/other <see cref="Mode"/>
 	/// values still map to DirectML here too, since DirectML is the only ONNX GPU backend this
 	/// project targets (no CUDA execution provider support, by design — see that ADR). False for
 	/// the rest of this process once <see cref="MarkDirectMlUnavailable"/> has been called (e.g.
-	/// the runtime failed to download) — every subsequent caller falls back to CPU inference
-	/// without re-attempting a download that already failed once this run.</summary>
+	/// the runtime failed to download, or no device index initialized successfully) — every
+	/// subsequent caller falls back to CPU inference without re-attempting something that already
+	/// failed once this run.</summary>
 	public static bool PreferDirectML => Enabled && OperatingSystem.IsWindows() && !directMlUnavailable;
 
 	/// <summary>Called after a DirectML acquisition/initialization failure so the rest of this
@@ -75,24 +84,59 @@ public static class HardwareAcceleration {
 	/// for why this exists at all.</summary>
 	public const string DirectMlProbeArgument = "--internal-probe-directml";
 
+	// Generous relative to any real machine's adapter count -- live-verified (2026-07-30) that
+	// device 0 can be a phantom remote-session display adapter, not a real GPU, so at least one
+	// extra index beyond "the obvious one" always needs trying; this leaves headroom for multi-GPU
+	// machines too, not just the single-real-GPU-plus-one-virtual-adapter case actually observed.
+	const int MaxDirectMlDeviceIdToTry = 4;
+
 	/// <summary>
-	/// Verifies DirectML actually initializes successfully by running the exact same
-	/// <c>OnnxEmbedder(modelPath, preferDirectML: true)</c> construction <em>in a separate child
-	/// process</em>, not this one — live-verified (2026-07-30) to be necessary, not defensive
-	/// overkill: on a machine with no real GPU/display driver, <c>AppendExecutionProvider_DML</c>
-	/// followed by <c>InferenceSession</c> construction crashed with a native access violation
-	/// (0xC0000005) that bypassed every managed <c>try</c>/<c>catch</c> up the stack, including
-	/// <c>OnnxEmbedder</c>'s own — a native crash cannot be caught from managed code at all, only
-	/// isolated by process boundary, the same reason <see cref="Removal.GpuEncoderProbe"/> probes
-	/// ffmpeg encoders out-of-process too. The child process is this same executable, re-invoked
-	/// with <see cref="DirectMlProbeArgument"/> as a hidden first argument (handled at the very top
-	/// of <c>Program.Main</c>, before normal CLI parsing) — its own crash or nonzero exit only ever
-	/// affects the probe, never the real run.
+	/// Finds a DXGI adapter index DirectML actually initializes successfully against, by running
+	/// the exact same <c>OnnxEmbedder(modelPath, preferDirectML: true, deviceId)</c> construction
+	/// <em>in a separate child process per candidate index</em> (0 through <see cref="MaxDirectMlDeviceIdToTry"/>),
+	/// stopping at the first success. Two things live-verified (2026-07-30) that make both the
+	/// process isolation and the multi-index search necessary, not defensive overkill:
+	/// <list type="bullet">
+	/// <item>A failed DirectML device init crashed with a native access violation (0xC0000005)
+	/// that bypassed every managed <c>try</c>/<c>catch</c> up the stack, including
+	/// <c>OnnxEmbedder</c>'s own — uncatchable from managed code, only isolable by process
+	/// boundary, the same reason <see cref="Removal.GpuEncoderProbe"/> probes ffmpeg encoders
+	/// out-of-process too.</item>
+	/// <item><b>Device index 0 is not a safe default.</b> On a machine reached over a remote
+	/// session, DXGI enumerated a virtual "remote display adapter" at index 0 — one that falsely
+	/// advertises full D3D12 feature-level support (no real compute hardware backs the claim) —
+	/// ahead of the real GPU at index 1. Trying only index 0 would have permanently marked
+	/// DirectML unavailable on a machine where it actually works fine, just not at the default
+	/// index.</item>
+	/// </list>
+	/// Each candidate is its own child process (a crash terminates that one attempt cleanly;
+	/// nothing carries over to the next candidate) — invoked via <see cref="DirectMlProbeArgument"/>
+	/// as a hidden first argument, handled at the very top of <c>Program.Main</c> before normal CLI
+	/// parsing, so a crash never touches System.CommandLine or any real command's state.
 	/// </summary>
-	public static bool ProbeDirectMlInSubprocess(string modelPath, CancellationToken ct = default) {
+	/// <returns><c>Success</c>/<c>DeviceId</c> describe the first working index found (sets
+	/// <see cref="DirectMlDeviceId"/> as a side effect on success). <c>Detail</c> is the *last*
+	/// candidate's diagnostic text when none worked — the child's own caught-exception message
+	/// (<see cref="RunDirectMlProbe"/> writes it to stderr before returning nonzero) when it
+	/// exited cleanly with an error, or a note that it crashed/timed out when there's no such text
+	/// to read (a real native crash exits via the OS, not this process's own error-reporting path).</returns>
+	public static (bool Success, int DeviceId, string? Detail) ProbeDirectMlInSubprocess(string modelPath, CancellationToken ct = default) {
+		string? lastDetail = null;
+		for (int deviceId = 0; deviceId <= MaxDirectMlDeviceIdToTry; deviceId++) {
+			(bool success, string? detail) = ProbeOneDevice(modelPath, deviceId, ct);
+			if (success) {
+				DirectMlDeviceId = deviceId;
+				return (true, deviceId, null);
+			}
+			lastDetail = $"device {deviceId}: {detail}";
+		}
+		return (false, 0, lastDetail);
+	}
+
+	static (bool Success, string? Detail) ProbeOneDevice(string modelPath, int deviceId, CancellationToken ct) {
 		try {
 			string? processPath = Environment.ProcessPath;
-			if (string.IsNullOrEmpty(processPath)) return false;
+			if (string.IsNullOrEmpty(processPath)) return (false, "could not determine this process's own executable path");
 
 			var psi = new ProcessStartInfo {
 				FileName = processPath,
@@ -107,11 +151,12 @@ public static class HardwareAcceleration {
 			// exe has no such indirection: processPath already IS the app.
 			if (Path.GetFileNameWithoutExtension(processPath).Equals("dotnet", StringComparison.OrdinalIgnoreCase)) {
 				string? assemblyLocation = Assembly.GetEntryAssembly()?.Location;
-				if (string.IsNullOrEmpty(assemblyLocation)) return false;
+				if (string.IsNullOrEmpty(assemblyLocation)) return (false, "could not determine the entry assembly's location");
 				psi.ArgumentList.Add(assemblyLocation);
 			}
 			psi.ArgumentList.Add(DirectMlProbeArgument);
 			psi.ArgumentList.Add(modelPath);
+			psi.ArgumentList.Add(deviceId.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
 			using var process = new Process { StartInfo = psi };
 			process.Start();
@@ -123,28 +168,37 @@ public static class HardwareAcceleration {
 			// driver, not an expectation of how long this normally takes.
 			if (!process.WaitForExit(30_000)) {
 				try { process.Kill(entireProcessTree: true); } catch { }
-				return false;
+				return (false, "the probe did not exit within 30s and was killed");
 			}
 			Task.WaitAll(stdoutTask, stderrTask);
-			return process.ExitCode == 0;
+			if (process.ExitCode == 0) return (true, null);
+			string stderr = stderrTask.Result.Trim();
+			// A clean nonzero exit from RunDirectMlProbe's own catch block always has a message on
+			// stderr; a true native crash (access violation, etc.) terminates via the OS instead,
+			// so there is nothing here to read -- report the raw exit code so it's still visible.
+			return (false, stderr.Length > 0 ? stderr : $"the probe process exited with code {process.ExitCode} and no error output (likely a native crash)");
 		}
-		catch {
-			return false;
+		catch (Exception ex) {
+			return (false, $"could not run the probe process: {ex.Message}");
 		}
 	}
 
-	/// <summary>The child-process entry point <see cref="ProbeDirectMlInSubprocess"/> invokes —
-	/// called from <c>VBR.CLI.Program</c>'s own hidden-argument check, before normal CLI parsing,
-	/// so a crash here never touches System.CommandLine or any real command's state. Constructs
-	/// exactly what a real run would construct; a clean 0 means DirectML is safe to trust this
-	/// process's HardwareAcceleration state after the parent reads this exit code.</summary>
-	public static int RunDirectMlProbe(string modelPath) {
+	/// <summary>The child-process entry point <see cref="ProbeDirectMlInSubprocess"/> invokes (once
+	/// per candidate device index) — called from <c>VBR.CLI.Program</c>'s own hidden-argument
+	/// check, before normal CLI parsing, so a crash here never touches System.CommandLine or any
+	/// real command's state. Constructs exactly what a real run would construct against
+	/// <paramref name="deviceId"/>; a clean 0 means that index is safe to trust after the parent
+	/// reads this exit code. On failure, writes the caught exception's type and message to stderr
+	/// before returning nonzero — the parent's <see cref="ProbeDirectMlInSubprocess"/> surfaces
+	/// this text so a failure is diagnosable instead of a bare "didn't work."</summary>
+	public static int RunDirectMlProbe(string modelPath, int deviceId) {
 		try {
 			VDF.Core.AI.AiComponents.EnsureResolverInstalled(preferDirectML: true);
-			using var embedder = new VDF.Core.AI.OnnxEmbedder(modelPath, preferDirectML: true);
+			using var embedder = new VDF.Core.AI.OnnxEmbedder(modelPath, preferDirectML: true, deviceId);
 			return 0;
 		}
-		catch {
+		catch (Exception ex) {
+			Console.Error.WriteLine($"{ex.GetType().Name}: {ex.Message}");
 			return 1;
 		}
 	}

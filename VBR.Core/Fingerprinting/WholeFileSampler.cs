@@ -148,7 +148,7 @@ public sealed class WholeFileSampler : IDisposable {
 		if (embedder is null) {
 			if (verboseLogging)
 				Logger.Instance.Info($"[scan] Loading ONNX model: {AiComponents.ModelPath}");
-			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML);
+			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML, HardwareAcceleration.DirectMlDeviceId);
 			if (verboseLogging)
 				Logger.Instance.Info("[scan] ONNX inference session ready.");
 		}

@@ -24,8 +24,18 @@
     <PackageReference Include="MemoryPack" Version="1.21.4" />
     <!-- Managed-only wrapper (pure P/Invoke, Native-AOT-safe). The native onnxruntime
          library is NOT bundled: AI.AiComponents downloads the pinned version on demand
-         and routes the DllImport to it. Version must equal AiComponents.RuntimeVersion. -->
-    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.23.2" />
+         and routes the DllImport to it. Version must equal AiComponents.RuntimeVersion.
+         Pinned to 1.23.0, not the newer 1.23.2 (Modifications Copyright (C) 2026 mawcs,
+         docs/decisions/0013-gpu-acceleration.md): Microsoft.ML.OnnxRuntime.DirectML has no
+         1.23.2 release at all (skips 1.23.0 to 1.24.1), and a managed/native version
+         mismatch between this wrapper and the separately-downloaded DirectML-flavored
+         native runtime caused a real, reproducible native crash (0xC0000005) in
+         InferenceSession.Init on real GPU hardware; pinning everything (managed wrapper,
+         CPU native build, DirectML native build) to the exact same 1.23.0 removes that
+         mismatch as a variable. 1.23.0 still ships osx-x86_64 (Intel Mac) binaries, same as
+         1.23.2 did (confirmed against the actual GitHub release asset listing, not just
+         assumed), so this doesn't reopen the platform-support reason 1.23.2 was chosen. -->
+    <PackageReference Include="Microsoft.ML.OnnxRuntime.Managed" Version="1.23.0" />
     <PackageReference Include="Mono.Posix.NETStandard" Version="5.20.1-preview" />
   </ItemGroup>
   <ItemGroup>

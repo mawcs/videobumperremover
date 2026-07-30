@@ -138,7 +138,7 @@ public sealed class MixedDensitySampler : IDisposable {
 		if (embedder is null) {
 			if (verboseLogging)
 				Logger.Instance.Info($"[mixed-density] Loading ONNX model: {AiComponents.ModelPath}");
-			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML);
+			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML, HardwareAcceleration.DirectMlDeviceId);
 			if (verboseLogging)
 				Logger.Instance.Info("[mixed-density] ONNX inference session ready.");
 		}

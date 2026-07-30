@@ -43,17 +43,24 @@ namespace VDF.Core.AI {
 	public static class AiComponents {
 		/// <summary>
 		/// Pinned ONNX Runtime version. Must match the Microsoft.ML.OnnxRuntime.Managed
-		/// PackageReference. 1.23.2 is the newest release that still ships osx-x86_64
-		/// binaries (1.24+ dropped Intel macs, which VDF releases still target).
+		/// PackageReference. Pinned to 1.23.0, not the newer 1.23.2 (Modifications Copyright (C)
+		/// 2026 mawcs, docs/decisions/0013-gpu-acceleration.md): <see cref="DirectMlRuntimeVersion"/>
+		/// has no 1.23.2 release at all (that NuGet package skips 1.23.0 → 1.24.1), and a
+		/// managed/native version mismatch between the two caused a real, reproducible native
+		/// crash (0xC0000005) in <c>InferenceSession.Init</c> on real GPU hardware — pinning both
+		/// runtime flavors (and the managed wrapper) to the exact same version removes that
+		/// mismatch as a variable. 1.23.0 still ships osx-x86_64 (Intel Mac) binaries, same as
+		/// 1.23.2 did — confirmed against the actual GitHub release asset listing — so this
+		/// doesn't reopen the platform-support reason 1.23.2 was originally chosen (1.24+ dropped
+		/// Intel Macs, which VDF releases still target).
 		/// </summary>
-		public const string RuntimeVersion = "1.23.2";
+		public const string RuntimeVersion = "1.23.0";
 
-		/// <summary>Pinned <c>Microsoft.ML.OnnxRuntime.DirectML</c> version — deliberately NOT the
-		/// same as <see cref="RuntimeVersion"/>: that NuGet package has no <c>1.23.2</c> release
-		/// (skips <c>1.23.0</c> → <c>1.24.1</c>); <c>1.23.0</c> is the nearest available, minimizing
-		/// ABI drift against the <c>Microsoft.ML.OnnxRuntime.Managed 1.23.2</c> wrapper both runtime
-		/// flavors share (docs/decisions/0013-gpu-acceleration.md).</summary>
-		public const string DirectMlRuntimeVersion = "1.23.0";
+		/// <summary>Pinned <c>Microsoft.ML.OnnxRuntime.DirectML</c> version — the exact same as
+		/// <see cref="RuntimeVersion"/>, deliberately: see that constant's own doc comment for why
+		/// keeping the two versions identical (rather than the nearest-available mismatch this
+		/// project shipped with initially) was necessary, not just tidier.</summary>
+		public const string DirectMlRuntimeVersion = RuntimeVersion;
 		/// <summary>Pinned <c>Microsoft.AI.DirectML</c> version — the exact minimum
 		/// <c>Microsoft.ML.OnnxRuntime.DirectML 1.23.0</c> depends on (confirmed against its
 		/// published NuGet dependency group), also its latest published release.</summary>

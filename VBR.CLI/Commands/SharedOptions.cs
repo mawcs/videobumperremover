@@ -434,16 +434,20 @@ internal static class SharedOptions {
 				}
 			}
 			// Runtime files being present doesn't mean DirectML actually initializes correctly on
-			// this machine -- verified live (2026-07-30) that it can hard-crash the process (a
-			// native access violation no managed try/catch can contain) on a machine with no real
-			// GPU/display driver. Probed out-of-process every time, not just after a fresh
+			// this machine -- verified live (2026-07-30) that a failed device init can hard-crash
+			// the process (a native access violation no managed try/catch can contain), and that
+			// device index 0 specifically can be a phantom remote-session display adapter rather
+			// than the real GPU. Probed out-of-process every time, not just after a fresh
 			// download, since a prior run's already-downloaded files say nothing about whether
 			// this run's driver/hardware state actually supports it.
 			if (HardwareAcceleration.PreferDirectML) {
-				bool safe = HardwareAcceleration.ProbeDirectMlInSubprocess(AiComponents.ModelPath, ct);
+				(bool safe, int deviceId, string? detail) = HardwareAcceleration.ProbeDirectMlInSubprocess(AiComponents.ModelPath, ct);
 				if (!safe) {
-					Console.Error.WriteLine("Warning: DirectML acceleration did not initialize correctly on this machine — falling back to CPU inference.");
+					Console.Error.WriteLine($"Warning: DirectML acceleration did not initialize correctly on this machine ({detail}) — falling back to CPU inference.");
 					HardwareAcceleration.MarkDirectMlUnavailable();
+				}
+				else if (deviceId != 0) {
+					Console.Error.WriteLine($"DirectML acceleration ready (device index {deviceId}).");
 				}
 			}
 			if (HardwareAcceleration.PreferDirectML)
