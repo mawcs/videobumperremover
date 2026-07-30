@@ -113,6 +113,7 @@ internal static class ScanCommand {
 		cmd.Options.Add(ConsoleInfo);
 		cmd.Options.Add(LogFile);
 		cmd.Options.Add(LogLevel);
+		cmd.Options.Add(HardwareAccel);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
@@ -129,6 +130,7 @@ internal static class ScanCommand {
 			ScanReportLevel? consoleInfoArg = parseResult.GetValue(ConsoleInfo);
 			FileInfo? logFileArg = parseResult.GetValue(LogFile);
 			ScanReportLevel fileLevel = parseResult.GetValue(LogLevel);
+			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 
 			// An explicit --console-info wins; otherwise --verbose is shorthand for "verbose", else
 			// the default is "info" (today's plain x/total counter).
@@ -214,11 +216,7 @@ internal static class ScanCommand {
 			// used to decide alone.
 			bool emitDetailedLogging = consoleLevel >= ScanReportLevel.verbose || fileLevel >= ScanReportLevel.verbose;
 
-			if (!AiComponents.IsReady) {
-				Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
-				await AiComponents.DownloadAsync(progress: null, ct);
-				Console.Error.WriteLine("AI components ready.");
-			}
+			await EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
 
 			LibraryDatabase database;
 			try {

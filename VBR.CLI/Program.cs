@@ -16,6 +16,15 @@
 
 using System.CommandLine;
 using VBR.CLI.Commands;
+using VBR.Core.Extraction;
+
+// Hidden, undocumented entry point: a child-process probe target for
+// HardwareAcceleration.ProbeDirectMlInSubprocess (docs/decisions/0013-gpu-acceleration.md) --
+// checked before any normal CLI parsing so a crash here (the exact failure mode this probe exists
+// to catch: a native access violation that no managed try/catch can contain) never touches
+// System.CommandLine or a real command's state, only this one throwaway invocation.
+if (args.Length >= 2 && args[0] == HardwareAcceleration.DirectMlProbeArgument)
+	return HardwareAcceleration.RunDirectMlProbe(args[1]);
 
 var root = new RootCommand("vbr-cli — Video Bumper Remover command-line interface");
 root.Subcommands.Add(MatchCommand.Build());

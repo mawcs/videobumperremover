@@ -104,6 +104,10 @@ public static class DenseFrameSampler {
 		psi.ArgumentList.Add("-hide_banner");
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-nostdin");
+		if (HardwareAcceleration.Enabled) {
+			psi.ArgumentList.Add("-hwaccel");
+			psi.ArgumentList.Add(HardwareAcceleration.Mode.ToString());
+		}
 		if (keyframeOnly) { psi.ArgumentList.Add("-skip_frame"); psi.ArgumentList.Add("nokey"); }
 		psi.ArgumentList.Add("-an"); psi.ArgumentList.Add("-sn"); psi.ArgumentList.Add("-dn");
 		if (region is { } r) ClipExtractor.AppendSeekArgs(psi.ArgumentList, r);

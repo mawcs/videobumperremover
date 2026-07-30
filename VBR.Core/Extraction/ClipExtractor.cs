@@ -185,6 +185,10 @@ public static class ClipExtractor {
 			CreateNoWindow = true,
 		};
 		psi.ArgumentList.Add("-y");
+		if (HardwareAcceleration.Enabled) {
+			psi.ArgumentList.Add("-hwaccel");
+			psi.ArgumentList.Add(HardwareAcceleration.Mode.ToString());
+		}
 		AppendSeekArgs(psi.ArgumentList, region);
 		psi.ArgumentList.Add("-i");
 		psi.ArgumentList.Add(sourceVideoPath);

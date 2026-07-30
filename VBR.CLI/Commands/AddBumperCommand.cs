@@ -84,6 +84,7 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(CatalogNameOption);
 		cmd.Options.Add(CatalogDbFolder);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(HardwareAccel);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			FileInfo? clipFrom = parseResult.GetValue(ClipFrom);
@@ -95,6 +96,7 @@ internal static class AddBumperCommand {
 			string catalogName = parseResult.GetValue(CatalogNameOption) ?? string.Empty;
 			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
 			bool verbose = parseResult.GetValue(Verbose);
+			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -147,11 +149,7 @@ internal static class AddBumperCommand {
 			string catalogPath = BumperCatalogStore.ResolveCatalogPath(catalogDbFolderArg?.FullName, catalogName);
 			string clipsFolder = Path.Combine(Path.GetDirectoryName(catalogPath)!, "clips");
 
-			if (!AiComponents.IsReady) {
-				Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
-				await AiComponents.DownloadAsync(progress: null, ct);
-				Console.Error.WriteLine("AI components ready.");
-			}
+			await EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
 
 			BumperCatalog catalog;
 			try {

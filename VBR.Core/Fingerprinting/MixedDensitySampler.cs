@@ -133,11 +133,12 @@ public sealed class MixedDensitySampler : IDisposable {
 	// Only called by Sample/SampleWithPHash -- SamplePHash never touches AiComponents/ONNX at all,
 	// the whole point of offering pHash as a lightweight alternate mode.
 	void EnsureEmbedder() {
-		AiComponents.EnsureReady();
+		bool preferDirectML = HardwareAcceleration.PreferDirectML;
+		AiComponents.EnsureReady(preferDirectML);
 		if (embedder is null) {
 			if (verboseLogging)
 				Logger.Instance.Info($"[mixed-density] Loading ONNX model: {AiComponents.ModelPath}");
-			embedder = new OnnxEmbedder(AiComponents.ModelPath);
+			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML);
 			if (verboseLogging)
 				Logger.Instance.Info("[mixed-density] ONNX inference session ready.");
 		}

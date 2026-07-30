@@ -21,6 +21,8 @@ using System.Linq;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
 using VBR.Core.Matching;
+using VDF.Core.AI;
+using VDF.Core.FFTools;
 using VDF.Core.Utils;
 
 namespace VBR.CLI.Commands;
@@ -278,6 +280,21 @@ internal static class SharedOptions {
 			"what's actually happening on a given run, not just the summary line.",
 	};
 
+	// The single knob for every GPU code path (docs/decisions/0013-gpu-acceleration.md): ffmpeg
+	// decode -hwaccel, GPU re-encode (probe-verified NVENC/QSV/AMF for H.264/HEVC), and ONNX
+	// DirectML inference all gate on this one value via VBR.Core.Extraction.HardwareAcceleration.
+	// Reuses VDF's own FFHardwareAccelerationMode enum/--hardware-accel convention (VDF.CLI has
+	// the identical option, defaulting to `none`) -- VBR defaults to `auto` instead, matching this
+	// project's "use GPU wherever possible" goal rather than VDF's own opt-in default.
+	internal static readonly Option<FFHardwareAccelerationMode> HardwareAccel = new("--hardware-accel") {
+		Description = "How much GPU acceleration to use: ffmpeg decode (-hwaccel), GPU re-encode " +
+			"(H.264/HEVC only, probe-verified NVENC/QSV/AMF -- other codecs stay CPU-only), and " +
+			"ONNX inference (DirectML, Windows only). `none` disables all of it; `auto` (the " +
+			"default) lets ffmpeg/ONNX Runtime pick the best available device, with a silent, " +
+			"safe fallback to CPU at every layer if GPU acceleration isn't actually available.",
+		DefaultValueFactory = _ => FFHardwareAccelerationMode.auto,
+	};
+
 	// commit-only, but defined here alongside Verbose/TargetFile/Library rather than in
 	// CommitCommand — SharedOptions is this project's one place option definitions live,
 	// per its own doc comment above, even though this one option isn't shared with match/remove.
@@ -385,5 +402,59 @@ internal static class SharedOptions {
 
 	sealed class Unsubscriber(Action unsubscribe) : IDisposable {
 		public void Dispose() => unsubscribe();
+	}
+
+	/// <summary>
+	/// Downloads whichever AI components (model, and the CPU or DirectML native runtime) aren't
+	/// already present, printing the same "not found -- downloading" / "ready" lines every command
+	/// already prints for the CPU-only case. Centralizes the one place a DirectML acquisition or
+	/// initialization failure gets handled (docs/decisions/0013-gpu-acceleration.md: every GPU
+	/// layer falls back to CPU silently, not just individually per call site) -- on any failure,
+	/// warns once, marks DirectML unavailable for the rest of this process
+	/// (<see cref="HardwareAcceleration.MarkDirectMlUnavailable"/>, so later callers stop
+	/// re-attempting something that already failed), and falls through to ensuring the CPU runtime
+	/// instead, so the run still completes rather than crashing outright over an optional
+	/// acceleration path.
+	/// </summary>
+	/// <returns>Whether DirectML actually ended up ready (false if it wasn't requested, or was
+	/// requested but fell back to CPU) -- callers should re-derive their own
+	/// <c>preferDirectML</c> flag from <see cref="HardwareAcceleration.PreferDirectML"/> afterward
+	/// rather than trusting their own pre-call value, since a fallback here changes it.</returns>
+	internal static async Task<bool> EnsureAiComponentsReadyAsync(bool preferDirectML, CancellationToken ct) {
+		if (preferDirectML) {
+			if (!AiComponents.IsDirectMlReady) {
+				Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB, DirectML)...");
+				try {
+					await AiComponents.DownloadAsync(progress: null, ct, preferDirectML: true);
+					Console.Error.WriteLine("AI components ready.");
+				}
+				catch (Exception ex) when (ex is not OperationCanceledException) {
+					Console.Error.WriteLine($"Warning: DirectML acceleration unavailable ({ex.Message}) — falling back to CPU inference.");
+					HardwareAcceleration.MarkDirectMlUnavailable();
+				}
+			}
+			// Runtime files being present doesn't mean DirectML actually initializes correctly on
+			// this machine -- verified live (2026-07-30) that it can hard-crash the process (a
+			// native access violation no managed try/catch can contain) on a machine with no real
+			// GPU/display driver. Probed out-of-process every time, not just after a fresh
+			// download, since a prior run's already-downloaded files say nothing about whether
+			// this run's driver/hardware state actually supports it.
+			if (HardwareAcceleration.PreferDirectML) {
+				bool safe = HardwareAcceleration.ProbeDirectMlInSubprocess(AiComponents.ModelPath, ct);
+				if (!safe) {
+					Console.Error.WriteLine("Warning: DirectML acceleration did not initialize correctly on this machine — falling back to CPU inference.");
+					HardwareAcceleration.MarkDirectMlUnavailable();
+				}
+			}
+			if (HardwareAcceleration.PreferDirectML)
+				return true;
+		}
+
+		if (!AiComponents.IsReady) {
+			Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
+			await AiComponents.DownloadAsync(progress: null, ct);
+			Console.Error.WriteLine("AI components ready.");
+		}
+		return false;
 	}
 }

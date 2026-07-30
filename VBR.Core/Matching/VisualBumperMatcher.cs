@@ -127,11 +127,12 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	/// (the false-positive mode the filter exists to prevent), so this is an input error, not a
 	/// "no match" result.</exception>
 	public void PrepareClip(string referenceClipPath, CancellationToken ct = default) {
-		AiComponents.EnsureReady();
+		bool preferDirectML = HardwareAcceleration.PreferDirectML;
+		AiComponents.EnsureReady(preferDirectML);
 		if (embedder is null) {
 			if (verboseLogging)
 				Logger.Instance.Info($"[visual] Loading ONNX model: {AiComponents.ModelPath}");
-			embedder = new OnnxEmbedder(AiComponents.ModelPath);
+			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML);
 			if (verboseLogging)
 				Logger.Instance.Info("[visual] ONNX inference session ready.");
 		}

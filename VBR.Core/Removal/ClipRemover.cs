@@ -133,9 +133,9 @@ public static class ClipRemover {
 		if (!File.Exists(sourcePath))
 			throw new FileNotFoundException("Source video not found.", sourcePath);
 
-		TimeSpan sourceDuration = ProbeDuration(sourcePath, verbose);
+		(TimeSpan sourceDuration, string? sourceCodecName, string? sourcePixelFormat, string? sourceHdrFormat) = ProbeSourceInfo(sourcePath, verbose);
 		if (verbose)
-			Logger.Instance.Info($"[remove] '{Path.GetFileName(sourcePath)}': duration={sourceDuration.TotalSeconds:0.###}s, region={region}, bumperLength={bumperLength.TotalSeconds:0.###}s, mode={mode}.");
+			Logger.Instance.Info($"[remove] '{Path.GetFileName(sourcePath)}': duration={sourceDuration.TotalSeconds:0.###}s, region={region}, bumperLength={bumperLength.TotalSeconds:0.###}s, mode={mode}, codec={sourceCodecName ?? "unknown"}.");
 		if (bumperLength >= sourceDuration)
 			throw new ArgumentOutOfRangeException(nameof(bumperLength),
 				$"Bumper length ({bumperLength.TotalSeconds:0.###}s) must be shorter than the " +
@@ -157,15 +157,27 @@ public static class ClipRemover {
 			}
 		}
 		else {
+			// Only the re-encode path can lose HDR color metadata (stream-copy never touches
+			// stream contents at all) -- see docs/decisions/0013-gpu-acceleration.md: bit depth is
+			// matched, but full color-metadata passthrough is deferred, so warn rather than
+			// silently produce a technically-10-bit-but-wrong-looking (or SDR-flattened) output.
+			if (!string.IsNullOrEmpty(sourceHdrFormat))
+				Console.Error.WriteLine($"Warning: '{Path.GetFileName(sourcePath)}' source is {sourceHdrFormat} -- " +
+					"re-encoding preserves bit depth but not HDR color metadata yet (docs/decisions/0013-gpu-acceleration.md). " +
+					"The output may not display correctly as HDR.");
+			VideoEncoderChoice encoder = SelectVideoEncoder(sourceCodecName, sourcePixelFormat, verbose, ct);
+			if (verbose)
+				Logger.Instance.Info($"[remove] Re-encode video codec: {encoder.Encoder}{(encoder.IsGpu ? " (GPU)" : " (CPU)")}.");
+
 			// Re-encoding removes the keyframe constraint entirely — no safety margin needed;
 			// the cut point is the exact arithmetic value.
 			if (region == ClipEdge.begin) {
 				cutPointSeconds = bumperLength.TotalSeconds;
-				RunFfmpegOutputSeekReEncode(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(sourceDuration.TotalSeconds - cutPointSeconds), onProgress, verbose, ct);
+				RunFfmpegOutputSeekReEncode(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(sourceDuration.TotalSeconds - cutPointSeconds), encoder, onProgress, verbose, ct);
 			}
 			else {
 				cutPointSeconds = sourceDuration.TotalSeconds - bumperLength.TotalSeconds;
-				RunFfmpegDurationReEncode(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(cutPointSeconds), onProgress, verbose, ct);
+				RunFfmpegDurationReEncode(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(cutPointSeconds), encoder, onProgress, verbose, ct);
 			}
 		}
 
@@ -204,11 +216,18 @@ public static class ClipRemover {
 		return dir is { Length: > 0 } ? Path.Combine(dir, fileName) : fileName;
 	}
 
-	static TimeSpan ProbeDuration(string path, bool verbose) {
+	/// <summary>Duration plus the video stream's codec/pixel-format/HDR info in one ffprobe call —
+	/// all of it already parsed by <see cref="FFProbeEngine"/>/<c>MediaInfo</c>, no new ffprobe
+	/// parsing needed (docs/decisions/0013-gpu-acceleration.md). <c>CodecName</c>/<c>PixelFormat</c>/
+	/// <c>HdrFormat</c> are null when no video stream was found at all (never expected in
+	/// practice, but not fatal — <see cref="SelectVideoEncoder"/> falls back to the universal CPU
+	/// default when the codec name is unknown).</summary>
+	static (TimeSpan Duration, string? CodecName, string? PixelFormat, string? HdrFormat) ProbeSourceInfo(string path, bool verbose) {
 		var info = FFProbeEngine.GetMediaInfo(path, extendedLogging: verbose);
 		if (info is null || info.Duration <= TimeSpan.Zero)
 			throw new InvalidOperationException($"Could not determine duration for '{Path.GetFileName(path)}' (ffprobe failed or reported no duration).");
-		return info.Duration;
+		var video = info.Streams.FirstOrDefault(s => s.CodecType == "video");
+		return (info.Duration, video?.CodecName, video?.PixelFormat, video?.HdrFormat);
 	}
 
 	// Finds the largest keyframe timestamp k such that k + EndCutOvershootSafetyMarginSeconds <=
@@ -292,17 +311,62 @@ public static class ClipRemover {
 		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
-	/// <summary>
-	/// Placeholder v1 re-encode settings — ADR 0007 explicitly defers "codec choice, container
-	/// handling, CRF/bitrate defaults, GPU (NVENC) vs. CPU encode" to future work; this is a
-	/// single fixed, broadly-compatible choice, not a considered one. Notably: 10-bit/HDR source
-	/// content gets downgraded to 8-bit libx264 output — a known v1 limitation, not yet handled.
-	/// </summary>
-	const string ReEncodeVideoCodec = "libx264";
-	const string ReEncodeCrf = "18"; // visually near-lossless
-	const string ReEncodePreset = "medium";
+	/// <summary>One chosen video encoder for a re-encode cut, per
+	/// docs/decisions/0012-removal-reencode-defaults.md (CPU codec matching) and
+	/// docs/decisions/0013-gpu-acceleration.md (the GPU tier on top). <see cref="QualityArgs"/> is
+	/// whatever quality-control flags that specific encoder wants (<c>-crf N -preset P</c> for a
+	/// CPU x264/x265/vp9 encoder; <c>-cq N</c>/<c>-global_quality N</c>/<c>-qp_i N -qp_p N</c> for
+	/// NVENC/QSV/AMF respectively) — deliberately opaque to the caller, which just appends them
+	/// verbatim after <c>-c:v</c>.</summary>
+	internal readonly record struct VideoEncoderChoice(string Encoder, IReadOnlyList<string> QualityArgs, bool Is10Bit, bool IsGpu);
+
+	const string ReEncodePreset = "medium"; // CPU x264/x265 preset -- ADR 0012 leans "slow" but leaves this specific value not yet finalized
 	const string ReEncodeAudioCodec = "aac";
 	const string ReEncodeAudioBitrate = "192k";
+
+	/// <summary>
+	/// Picks the video encoder for a re-encode cut. GPU-first when hardware acceleration is
+	/// enabled and the source is H.264/HEVC (the only two families <see cref="GpuEncoderProbe"/>
+	/// covers — VP9/AV1 stay CPU-only/deferred, per docs/decisions/0013-gpu-acceleration.md);
+	/// falls back to the CPU codec-matched table (docs/decisions/0012-removal-reencode-defaults.md)
+	/// otherwise, or when no GPU encoder actually probes as working. An unrecognized/unknown source
+	/// codec falls all the way through to the universal <c>libx264</c> fallback row, matching this
+	/// project's existing behavior for anything it doesn't specifically recognize.
+	/// </summary>
+	internal static VideoEncoderChoice SelectVideoEncoder(string? sourceCodecName, string? sourcePixelFormat, bool verbose, CancellationToken ct) {
+		bool is10Bit = sourcePixelFormat is not null &&
+			(sourcePixelFormat.Contains("10le", StringComparison.OrdinalIgnoreCase) || sourcePixelFormat.Contains("10be", StringComparison.OrdinalIgnoreCase));
+		string family = sourceCodecName switch {
+			"h264" => "h264",
+			"hevc" or "h265" => "hevc",
+			_ => "other",
+		};
+
+		if (HardwareAcceleration.Enabled && family is "h264" or "hevc") {
+			string? gpu = GpuEncoderProbe.TryGetEncoder(family, verbose, ct);
+			if (gpu is not null) {
+				// GPU quality knobs aren't CRF -- roughly mirrored at the same numeric target as
+				// the adjacent CPU row below (not a verified equivalence, a reasonable starting
+				// point -- see docs/decisions/0013-gpu-acceleration.md).
+				string quality = family == "h264" ? "22" : "24";
+				IReadOnlyList<string> qualityArgs = gpu switch {
+					"h264_nvenc" or "hevc_nvenc" => new[] { "-cq", quality, "-preset", "p5" },
+					"h264_qsv" or "hevc_qsv" => new[] { "-global_quality", quality, "-preset", "slow" },
+					"h264_amf" or "hevc_amf" => new[] { "-qp_i", quality, "-qp_p", quality, "-quality", "quality" },
+					_ => new[] { "-cq", quality },
+				};
+				return new VideoEncoderChoice(gpu, qualityArgs, is10Bit, IsGpu: true);
+			}
+		}
+
+		return sourceCodecName switch {
+			"h264" => new VideoEncoderChoice("libx264", new[] { "-crf", "22", "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
+			"hevc" or "h265" => new VideoEncoderChoice("libx265", new[] { "-crf", "24", "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
+			"vp9" => new VideoEncoderChoice("libvpx-vp9", new[] { "-crf", "31", "-b:v", "0" }, is10Bit, IsGpu: false),
+			// Universal fallback -- matches today's existing default, so an old/unrecognized source doesn't break.
+			_ => new VideoEncoderChoice("libx264", new[] { "-crf", "22", "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
+		};
+	}
 
 	// -ss placed BEFORE -i ("input seeking"): fast (seeks near the target via the container
 	// index) and, combined with an actual re-encode (not stream copy), frame-accurate — ffmpeg
@@ -319,7 +383,7 @@ public static class ClipRemover {
 	// the transcode pipeline once the muxer stops running long: a synthetic SRT with cues at
 	// 6s/15s/25s, cut with a 5s begin-region bumper length, came out at exactly 1s/10s/20s.
 	static void RunFfmpegOutputSeekReEncode(string sourcePath, double cutPointSeconds, string outputPath,
-			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
+			TimeSpan totalKeptDuration, VideoEncoderChoice encoder, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -331,9 +395,13 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
 		psi.ArgumentList.Add("-progress"); psi.ArgumentList.Add("pipe:1");
+		if (HardwareAcceleration.Enabled) {
+			psi.ArgumentList.Add("-hwaccel");
+			psi.ArgumentList.Add(HardwareAcceleration.Mode.ToString());
+		}
 		psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
-		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: false);
+		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: false, encoder);
 		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
@@ -342,7 +410,7 @@ public static class ClipRemover {
 	// requested cut point). Re-encoding removes the ~1s+ safety margin Mode A pays for GOP
 	// safety, at zero audio quality cost since copy is safe here.
 	static void RunFfmpegDurationReEncode(string sourcePath, double cutPointSeconds, string outputPath,
-			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
+			TimeSpan totalKeptDuration, VideoEncoderChoice encoder, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -354,17 +422,24 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
 		psi.ArgumentList.Add("-progress"); psi.ArgumentList.Add("pipe:1");
+		if (HardwareAcceleration.Enabled) {
+			psi.ArgumentList.Add("-hwaccel");
+			psi.ArgumentList.Add(HardwareAcceleration.Mode.ToString());
+		}
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
-		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: true);
+		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: true, encoder);
 		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
-	static void AddFfmpegReEncodeTail(ProcessStartInfo psi, string outputPath, bool copyAudio) {
+	static void AddFfmpegReEncodeTail(ProcessStartInfo psi, string outputPath, bool copyAudio, VideoEncoderChoice encoder) {
 		psi.ArgumentList.Add("-map"); psi.ArgumentList.Add("0");
-		psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add(ReEncodeVideoCodec);
-		psi.ArgumentList.Add("-crf"); psi.ArgumentList.Add(ReEncodeCrf);
-		psi.ArgumentList.Add("-preset"); psi.ArgumentList.Add(ReEncodePreset);
+		psi.ArgumentList.Add("-c:v"); psi.ArgumentList.Add(encoder.Encoder);
+		foreach (string arg in encoder.QualityArgs)
+			psi.ArgumentList.Add(arg);
+		if (encoder.Is10Bit) {
+			psi.ArgumentList.Add("-pix_fmt"); psi.ArgumentList.Add("yuv420p10le");
+		}
 		if (copyAudio) {
 			psi.ArgumentList.Add("-c:a"); psi.ArgumentList.Add("copy");
 		}
@@ -394,6 +469,13 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
 		psi.ArgumentList.Add("-progress"); psi.ArgumentList.Add("pipe:1");
+		if (HardwareAcceleration.Enabled) {
+			// A no-op with the stream-copy tail these two callers append (-c copy never decodes),
+			// but harmless to include unconditionally -- matches VDF's own FfmpegEngine convention
+			// and means switching either caller to a re-encode path later needs no new wiring here.
+			psi.ArgumentList.Add("-hwaccel");
+			psi.ArgumentList.Add(HardwareAcceleration.Mode.ToString());
+		}
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		return psi;
 	}
@@ -409,10 +491,11 @@ public static class ClipRemover {
 
 	static readonly TimeSpan StreamCopyTimeout = TimeSpan.FromMinutes(5);
 	// Re-encoding is decode+encode over the ENTIRE kept portion of the file — for an end-region
-	// cut that's essentially the whole episode, not just the trimmed few seconds. CPU x264 at a
-	// "medium" preset is genuinely slow; this is a generous ceiling against a truly wedged
-	// process, not a real expectation of how long a legitimate encode should take. GPU (NVENC)
-	// encode is exactly the unaddressed lever noted in removal-pipeline.md and deferred by ADR 0007.
+	// cut that's essentially the whole episode, not just the trimmed few seconds. Even with a GPU
+	// encoder/hwaccel decode (docs/decisions/0013-gpu-acceleration.md) this stays a generous
+	// ceiling against a truly wedged process, not a real expectation of how long a legitimate
+	// encode should take -- CPU x264 at a "medium" preset (still the fallback whenever no GPU
+	// encoder is available) is genuinely slow on a long file.
 	static readonly TimeSpan ReEncodeTimeout = TimeSpan.FromHours(4);
 
 	static void RunFfmpeg(ProcessStartInfo psi, string sourcePath, TimeSpan timeout,

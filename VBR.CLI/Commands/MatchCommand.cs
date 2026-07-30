@@ -70,6 +70,7 @@ internal static class MatchCommand {
 		cmd.Options.Add(Output);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(HardwareAccel);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			var clipFrom = parseResult.GetValue(ClipFrom);
@@ -115,6 +116,7 @@ internal static class MatchCommand {
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
+			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 

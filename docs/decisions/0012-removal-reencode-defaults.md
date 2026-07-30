@@ -1,15 +1,18 @@
 # ADR 0012: Removal re-encode defaults — match output codec to source codec
 
-- **Status:** accepted (decision only) — **not yet implemented.** `ClipRemover`'s re-encode path
-  still uses the fixed `libx264 CRF 18 preset medium` placeholder ADR 0007 shipped with; this ADR
-  is the design to build against, next.
+- **Status:** accepted — **CPU codec-matched table implemented (2026-07-30, as part of
+  [ADR 0013](0013-gpu-acceleration.md)'s GPU-encode work — same code region, built together).**
+  Bit-depth matching implemented too. Full HDR color-metadata passthrough and the AV1/GPU-bundling
+  open questions below remain not built.
 - **Date:** 2026-07-27 (retroactively promoted to an ADR 2026-07-30 — see the note on
   [ADR 0009](0009-library-scan-database.md), same situation)
 - **Related:** [`0007-removal-command.md`](0007-removal-command.md) (Open Questions already
   pointed here, but never incorporated the decision), [`../design/removal-pipeline.md`](../design/removal-pipeline.md)
   (updated encoding-defaults section), [`../iterativeplan.md`](../iterativeplan.md) → "Removal
   re-encode defaults" (full reasoning, the codec/CRF table, and the HDR analysis this ADR
-  summarizes)
+  summarizes), [`0013-gpu-acceleration.md`](0013-gpu-acceleration.md) (implements this ADR's CPU
+  table as the fallback tier under a new GPU-encoder-first layer — supersedes this ADR's own "GPU
+  (NVENC) vs. CPU encode" open question)
 
 ## Context
 
@@ -108,8 +111,9 @@ worse than no HDR handling at all (silently-wrong metadata vs. an honestly-SDR f
 
 ## Open questions
 
-- **GPU (NVENC) vs. CPU encode** — not addressed by this ADR at all; a real future lever for
-  re-encode throughput, noted but not designed.
+- ~~**GPU (NVENC) vs. CPU encode**~~ **Resolved — see [ADR 0013](0013-gpu-acceleration.md)
+  (2026-07-30):** H.264/HEVC get a probe-verified GPU tier (NVENC/QSV/AMF) on top of this ADR's
+  own CPU table; VP9/AV1 stay CPU-only/deferred as this ADR already specified.
 - **Whether VBR should bundle its own ffmpeg** (guaranteeing `libsvtav1` and known-good encoder
   availability generally) rather than relying on the user's system ffmpeg — raised, not
   investigated or decided.

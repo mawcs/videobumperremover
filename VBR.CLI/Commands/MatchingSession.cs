@@ -118,11 +118,8 @@ internal sealed class MatchingSession : IDisposable {
 				session.sampler = new MixedDensitySampler(verbose);
 				session.visualForPresence = new VisualBumperMatcher(presenceThreshold: presenceThreshold);
 
-				if (session.WantsVisual && !AiComponents.IsReady) {
-					Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
-					await AiComponents.DownloadAsync(progress: null, ct);
-					Console.Error.WriteLine("AI components ready.");
-				}
+				if (session.WantsVisual)
+					await SharedOptions.EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
 
 				int usableCount;
 				if (session.WantsVisual) {

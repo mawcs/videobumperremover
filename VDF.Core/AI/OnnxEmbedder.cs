@@ -13,10 +13,15 @@
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
+// Modifications Copyright (C) 2026 mawcs — optional DirectML execution provider
+// (docs/decisions/0013-gpu-acceleration.md): appended to SessionOptions when requested, with a
+// safe fallback to the original CPU-only path if DirectML init fails for any reason (no native
+// support, no compatible GPU, driver issue).
 
 using System.Linq;
 using Microsoft.ML.OnnxRuntime;
 using Microsoft.ML.OnnxRuntime.Tensors;
+using VDF.Core.Utils;
 
 namespace VDF.Core.AI {
 	/// <summary>
@@ -39,14 +44,30 @@ namespace VDF.Core.AI {
 		readonly string outputName;
 		readonly bool clsFromHiddenState;
 
-		public OnnxEmbedder(string modelPath) {
-			AiComponents.EnsureResolverInstalled();
+		/// <param name="preferDirectML">Requests the DirectML execution provider
+		/// (docs/decisions/0013-gpu-acceleration.md) — Windows only, and only meaningful when the
+		/// DirectML-enabled native runtime is actually the one <see cref="AiComponents.EnsureResolverInstalled"/>
+		/// resolved (i.e. <see cref="AiComponents.IsDirectMlReady"/>, checked by the caller before
+		/// constructing this). If DirectML can't actually be appended for any reason (wrong native
+		/// build resolved, no compatible GPU, driver issue), silently falls back to the exact same
+		/// CPU-only <see cref="SessionOptions"/> this class has always used — never a hard
+		/// failure just because GPU inference wasn't available.</param>
+		public OnnxEmbedder(string modelPath, bool preferDirectML = false) {
+			AiComponents.EnsureResolverInstalled(preferDirectML);
 			// InferenceSession does NOT take ownership of caller-supplied options —
 			// without the using this native handle waited for its finalizer.
 			using var options = new SessionOptions();
 			// The embedder shares the machine with the decode workers during hashing;
 			// give inference a portion of the cores, not all of them.
 			options.IntraOpNumThreads = Math.Clamp(Environment.ProcessorCount / 2, 1, 8);
+			if (preferDirectML) {
+				try {
+					options.AppendExecutionProvider_DML();
+				}
+				catch (Exception ex) {
+					Logger.Instance.Warn($"[onnx] DirectML execution provider unavailable ({ex.Message}) -- falling back to CPU inference.");
+				}
+			}
 			session = new InferenceSession(modelPath, options);
 			inputName = session.InputMetadata.Keys.First();
 			// DINOv2 exports emit last_hidden_state (CLS token = the image embedding);

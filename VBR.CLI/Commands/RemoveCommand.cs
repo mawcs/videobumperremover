@@ -145,6 +145,7 @@ internal static class RemoveCommand {
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(ReEncode);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(HardwareAccel);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			bool reEncode = parseResult.GetValue(ReEncode);
@@ -179,6 +180,7 @@ internal static class RemoveCommand {
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
+			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -347,11 +349,8 @@ internal static class RemoveCommand {
 
 			// ---- AI-component readiness: only needed where something still gets freshly sampled ----
 			bool wantsVisual = mode is DetectionMode.visual or DetectionMode.both or DetectionMode.all;
-			if (wantsVisual && (!catalogRefGiven || !hasLibraryDb) && !AiComponents.IsReady) {
-				Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
-				await AiComponents.DownloadAsync(progress: null, ct);
-				Console.Error.WriteLine("AI components ready.");
-			}
+			if (wantsVisual && (!catalogRefGiven || !hasLibraryDb))
+				await EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
 
 			(MatchingSession? session, string? prepareError) = catalogEntry is not null
 				? MatchingSession.PrepareFromCatalogEntry(mode, catalogEntry, profile, presenceThreshold,
