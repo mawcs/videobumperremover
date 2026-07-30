@@ -108,6 +108,14 @@ from every match, non-destructively: writes a sibling `name.vbr.ext` beside the 
 JSON manifest (`name.json`, named after the *original*, not the output), never touching the
 original. See [ADR 0007](decisions/0007-removal-command.md) for the full design.
 
+**Prints progress as it goes** (docs/iterativeplan.md, "CLI feedback during remove") — `[i/N]
+Checking: <file>` before each candidate is compared, `Match found (...) — removing bumper
+(re-encode|stream-copy)...` before a matched file's cut starts, and a live `NN%  (Xs / Ys, Z.ZZx
+realtime)` line while the cut itself runs — a re-encode removal can take as long as encoding the
+whole file normally would, and previously printed nothing at all in the meantime. All of this goes
+to stderr; stdout still carries exactly one line per candidate, so `--output`'s report file and any
+script piping stdout are unaffected.
+
 ```sh
 dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 20.5s --sample-interval 0.2s --library "D:\Media\Show"
 ```

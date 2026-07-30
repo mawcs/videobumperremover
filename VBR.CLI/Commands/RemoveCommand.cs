@@ -368,11 +368,18 @@ internal static class RemoveCommand {
 				int removedCount = 0;
 				int comparedCount = 0;
 				int dumpIndex = 0;
+				int fileIndex = 0;
 				var rows = new List<RemoveRow>(candidatePaths.Count);
 				foreach (string file in candidatePaths) {
 					ct.ThrowIfCancellationRequested();
 					string display = candidateDbEntries is not null ? Path.GetFileName(file) : DisplayName(file, libraryRoots);
 					string dumpLabel = $"{++dumpIndex:000}-{Path.GetFileNameWithoutExtension(file)}";
+					// Printed unconditionally, before any comparison/removal work starts on this file
+					// -- comparing (an ad hoc candidate's fresh decode+embed) and especially removing
+					// (a re-encode can take as long as encoding the whole file normally would) can
+					// both run for a long time with nothing else to show for it otherwise, which reads
+					// as "hung," not "working" (docs/iterativeplan.md, "CLI feedback during remove").
+					Console.Error.WriteLine($"[{++fileIndex}/{candidatePaths.Count}] Checking: {display}");
 					RemoveRow row;
 					try {
 						SignalResult result = candidateDbEntries is not null
@@ -383,13 +390,26 @@ internal static class RemoveCommand {
 						string? removalError = null;
 						if (result.Present) {
 							matchCount++;
+							string modeDescription = removalMode == RemovalMode.ReEncode
+								? "re-encode -- this may take a while for large files"
+								: "stream-copy -- fast";
+							Console.Error.WriteLine($"  Match found ({result.Visual?.Detail ?? result.Audio?.Detail ?? result.PHash?.Detail}) — removing bumper ({modeDescription})...");
+							bool printedProgress = false;
+							void OnRemovalProgress(RemovalProgress p) {
+								printedProgress = true;
+								double fraction = p.Total > TimeSpan.Zero ? Math.Clamp(p.Processed.TotalSeconds / p.Total.TotalSeconds, 0, 1) : 0;
+								string speedText = p.SpeedMultiplier is { } s ? $"{s:0.##}x" : "?";
+								Console.Error.Write($"\r    {fraction:P0}  ({FormatSeconds(p.Processed)} / {FormatSeconds(p.Total)}, {speedText} realtime)   ");
+							}
 							try {
 								var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
-									result.Visual?.Detail ?? result.Audio?.Detail ?? result.PHash?.Detail, verbose, ct);
+									result.Visual?.Detail ?? result.Audio?.Detail ?? result.PHash?.Detail, verbose, OnRemovalProgress, ct);
+								if (printedProgress) Console.Error.WriteLine();
 								outputPath = removed.OutputPath;
 								removedCount++;
 							}
 							catch (Exception ex) {
+								if (printedProgress) Console.Error.WriteLine();
 								removalError = ex.Message;
 							}
 						}

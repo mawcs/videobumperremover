@@ -68,6 +68,14 @@ public sealed record RemovalResult(
 	TimeSpan CutPoint,
 	RemovalMode Mode);
 
+/// <summary>One periodic progress update from an in-flight ffmpeg cut (docs/iterativeplan.md,
+/// "CLI feedback during remove" entry) — <see cref="Processed"/>/<see cref="Total"/> are both
+/// measured against the *kept* portion being written, not the source file's own full duration
+/// (for an end-region cut that's the same thing; for a begin-region cut it's the shorter
+/// post-bumper remainder). <see cref="SpeedMultiplier"/> is ffmpeg's own reported encode speed
+/// relative to realtime (null if ffmpeg didn't report one yet, e.g. the very first update).</summary>
+public readonly record struct RemovalProgress(TimeSpan Processed, TimeSpan Total, double? SpeedMultiplier);
+
 /// <summary>
 /// Cuts a bumper from one edge of a video file, non-destructively (ADR 0007:
 /// docs/decisions/0007-removal-command.md). The cut point is <b>arithmetic, not detected per
@@ -105,6 +113,12 @@ public static class ClipRemover {
 	/// <param name="verbose">Logs duration probing, the computed cut point and its rationale,
 	/// the exact ffmpeg command run, and the manifest write, via <see cref="Logger"/> — for
 	/// <c>--verbose</c>.</param>
+	/// <param name="onProgress">Invoked periodically (from a background read of ffmpeg's own
+	/// <c>-progress</c> stream, not this thread) while the cut runs — the CLI's only way to show
+	/// the user something is actually happening during a potentially multi-minute re-encode
+	/// (docs/iterativeplan.md, "CLI feedback during remove" entry). Never invoked for a
+	/// stream-copy cut's near-instant duration isn't a concern, but the plumbing is uniform across
+	/// both modes rather than a re-encode-only special case.</param>
 	/// <exception cref="FileNotFoundException"><paramref name="sourcePath"/> does not exist.</exception>
 	/// <exception cref="InvalidOperationException">Duration probing or the ffmpeg cut failed, or
 	/// (stream-copy only) no safe keyframe could be found before the computed end-region cut
@@ -112,7 +126,8 @@ public static class ClipRemover {
 	/// <exception cref="ArgumentOutOfRangeException"><paramref name="bumperLength"/> is not
 	/// positive, or is not shorter than the source file's duration.</exception>
 	public static RemovalResult Remove(string sourcePath, ClipEdge region, TimeSpan bumperLength,
-			RemovalMode mode, string? matchDetail = null, bool verbose = false, CancellationToken ct = default) {
+			RemovalMode mode, string? matchDetail = null, bool verbose = false,
+			Action<RemovalProgress>? onProgress = null, CancellationToken ct = default) {
 		if (bumperLength <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(bumperLength), "Bumper length must be positive.");
 		if (!File.Exists(sourcePath))
@@ -131,14 +146,14 @@ public static class ClipRemover {
 		if (mode == RemovalMode.StreamCopy) {
 			if (region == ClipEdge.begin) {
 				cutPointSeconds = bumperLength.TotalSeconds;
-				RunFfmpegOutputSeekCopy(sourcePath, cutPointSeconds, outputPath, verbose, ct);
+				RunFfmpegOutputSeekCopy(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(sourceDuration.TotalSeconds - cutPointSeconds), onProgress, verbose, ct);
 			}
 			else {
 				double naiveCutPoint = sourceDuration.TotalSeconds - bumperLength.TotalSeconds;
 				cutPointSeconds = FindSafeEndCutPoint(sourcePath, naiveCutPoint, ct);
 				if (verbose)
 					Logger.Instance.Info($"[remove] End-cut safety margin: arithmetic point {naiveCutPoint:0.###}s -> nearest safe keyframe {cutPointSeconds:0.###}s ({naiveCutPoint - cutPointSeconds:0.###}s extra trimmed).");
-				RunFfmpegDurationCopy(sourcePath, cutPointSeconds, outputPath, verbose, ct);
+				RunFfmpegDurationCopy(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(cutPointSeconds), onProgress, verbose, ct);
 			}
 		}
 		else {
@@ -146,11 +161,11 @@ public static class ClipRemover {
 			// the cut point is the exact arithmetic value.
 			if (region == ClipEdge.begin) {
 				cutPointSeconds = bumperLength.TotalSeconds;
-				RunFfmpegOutputSeekReEncode(sourcePath, cutPointSeconds, outputPath, verbose, ct);
+				RunFfmpegOutputSeekReEncode(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(sourceDuration.TotalSeconds - cutPointSeconds), onProgress, verbose, ct);
 			}
 			else {
 				cutPointSeconds = sourceDuration.TotalSeconds - bumperLength.TotalSeconds;
-				RunFfmpegDurationReEncode(sourcePath, cutPointSeconds, outputPath, verbose, ct);
+				RunFfmpegDurationReEncode(sourcePath, cutPointSeconds, outputPath, TimeSpan.FromSeconds(cutPointSeconds), onProgress, verbose, ct);
 			}
 		}
 
@@ -259,20 +274,22 @@ public static class ClipRemover {
 
 	// Begin-region: keep [cutPointSeconds, EOF). -ss placed AFTER -i (output seeking) — verified
 	// empirically to snap FORWARD to the next keyframe, never backward into the bumper.
-	static void RunFfmpegOutputSeekCopy(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
+	static void RunFfmpegOutputSeekCopy(string sourcePath, double cutPointSeconds, string outputPath,
+			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		var psi = StartFfmpegArgs(sourcePath);
 		psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		AddFfmpegCopyTail(psi, outputPath);
-		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, verbose, ct);
+		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
 	// End-region: keep [0, cutPointSeconds). No seek needed — the kept segment always starts at
 	// the file's own beginning.
-	static void RunFfmpegDurationCopy(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
+	static void RunFfmpegDurationCopy(string sourcePath, double cutPointSeconds, string outputPath,
+			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		var psi = StartFfmpegArgs(sourcePath);
 		psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		AddFfmpegCopyTail(psi, outputPath);
-		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, verbose, ct);
+		RunFfmpeg(psi, sourcePath, StreamCopyTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
 	/// <summary>
@@ -301,7 +318,8 @@ public static class ClipRemover {
 	// there) resolved it, and as a side effect confirmed subtitle cues shift correctly through
 	// the transcode pipeline once the muxer stops running long: a synthetic SRT with cues at
 	// 6s/15s/25s, cut with a 5s begin-region bumper length, came out at exactly 1s/10s/20s.
-	static void RunFfmpegOutputSeekReEncode(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
+	static void RunFfmpegOutputSeekReEncode(string sourcePath, double cutPointSeconds, string outputPath,
+			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -312,17 +330,19 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-hide_banner");
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
+		psi.ArgumentList.Add("-progress"); psi.ArgumentList.Add("pipe:1");
 		psi.ArgumentList.Add("-ss"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: false);
-		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, verbose, ct);
+		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
 	// End-region: keep [0, cutPointSeconds). No seek needed — no seek, no bug (verified: audio
 	// copy alongside a re-encoded, -t-bounded video stream landed within 28ms of the exact
 	// requested cut point). Re-encoding removes the ~1s+ safety margin Mode A pays for GOP
 	// safety, at zero audio quality cost since copy is safe here.
-	static void RunFfmpegDurationReEncode(string sourcePath, double cutPointSeconds, string outputPath, bool verbose, CancellationToken ct) {
+	static void RunFfmpegDurationReEncode(string sourcePath, double cutPointSeconds, string outputPath,
+			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,
@@ -333,10 +353,11 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-hide_banner");
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
+		psi.ArgumentList.Add("-progress"); psi.ArgumentList.Add("pipe:1");
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		psi.ArgumentList.Add("-t"); psi.ArgumentList.Add(cutPointSeconds.ToString(CultureInfo.InvariantCulture));
 		AddFfmpegReEncodeTail(psi, outputPath, copyAudio: true);
-		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, verbose, ct);
+		RunFfmpeg(psi, sourcePath, ReEncodeTimeout, totalKeptDuration, onProgress, verbose, ct);
 	}
 
 	static void AddFfmpegReEncodeTail(ProcessStartInfo psi, string outputPath, bool copyAudio) {
@@ -372,6 +393,7 @@ public static class ClipRemover {
 		psi.ArgumentList.Add("-hide_banner");
 		psi.ArgumentList.Add("-loglevel"); psi.ArgumentList.Add("error");
 		psi.ArgumentList.Add("-y");
+		psi.ArgumentList.Add("-progress"); psi.ArgumentList.Add("pipe:1");
 		psi.ArgumentList.Add("-i"); psi.ArgumentList.Add(sourcePath);
 		return psi;
 	}
@@ -393,7 +415,8 @@ public static class ClipRemover {
 	// encode is exactly the unaddressed lever noted in removal-pipeline.md and deferred by ADR 0007.
 	static readonly TimeSpan ReEncodeTimeout = TimeSpan.FromHours(4);
 
-	static void RunFfmpeg(ProcessStartInfo psi, string sourcePath, TimeSpan timeout, bool verbose, CancellationToken ct) {
+	static void RunFfmpeg(ProcessStartInfo psi, string sourcePath, TimeSpan timeout,
+			TimeSpan totalKeptDuration, Action<RemovalProgress>? onProgress, bool verbose, CancellationToken ct) {
 		if (verbose)
 			Logger.Instance.Info($"[remove] {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
 		var stopwatch = verbose ? Stopwatch.StartNew() : null;
@@ -415,9 +438,14 @@ public static class ClipRemover {
 		// output goes to stderr, which is large enough to fill the OS pipe buffer — reading one
 		// stream to completion first, while nothing drains the other, risks deadlocking ffmpeg
 		// against this process (same bug class hit and fixed in VBR.Tests's synthetic-clip
-		// helper, 2026-07-20).
+		// helper, 2026-07-20). stdout carries structured `-progress pipe:1` key=value lines (every
+		// caller passes `-progress pipe:1` -- see StartFfmpegArgs/the two re-encode builders) —
+		// read line-by-line as they arrive, not ReadToEndAsync, so onProgress fires while ffmpeg is
+		// still running rather than only once the whole cut is already done (docs/iterativeplan.md,
+		// "CLI feedback during remove" entry: a multi-minute re-encode with zero console output in
+		// the meantime read as "hung," not "working").
 		Task<string> stderrTask = process.StandardError.ReadToEndAsync();
-		Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
+		Task stdoutTask = ReadProgressAsync(process.StandardOutput, totalKeptDuration, onProgress, ct);
 		bool exited = process.WaitForExit((int)timeout.TotalMilliseconds);
 		if (!exited || ct.IsCancellationRequested) {
 			try { process.Kill(entireProcessTree: true); } catch { }
@@ -429,5 +457,41 @@ public static class ClipRemover {
 			throw new InvalidOperationException($"ffmpeg failed (exit {process.ExitCode}) removing the bumper from '{Path.GetFileName(sourcePath)}': {stderrTask.Result.Trim()}");
 		if (verbose)
 			Logger.Instance.Info($"[remove] ffmpeg completed in {stopwatch!.Elapsed.TotalSeconds:0.#}s.");
+	}
+
+	/// <summary>
+	/// Parses ffmpeg's <c>-progress pipe:1</c> output (a repeating block of <c>key=value</c> lines,
+	/// each block terminated by <c>progress=continue</c> or <c>progress=end</c>) and invokes
+	/// <paramref name="onProgress"/> once per block with the accumulated <c>out_time</c> and, when
+	/// ffmpeg reported one, the current <c>speed</c> multiplier. Reads via <c>out_time=</c> (an
+	/// <c>HH:MM:SS.ffffff</c> string) rather than the confusingly-named <c>out_time_ms</c> key
+	/// (actually microseconds, a long-standing ffmpeg naming quirk) — parsing the human string
+	/// sidesteps that unit ambiguity entirely. Silently no-ops (still drains the stream, so the
+	/// process can't deadlock on a full pipe buffer) when <paramref name="onProgress"/> is null.
+	/// </summary>
+	static async Task ReadProgressAsync(StreamReader stdout, TimeSpan total, Action<RemovalProgress>? onProgress, CancellationToken ct) {
+		TimeSpan lastOutTime = TimeSpan.Zero;
+		double? lastSpeed = null;
+		string? line;
+		while ((line = await stdout.ReadLineAsync(ct).ConfigureAwait(false)) is not null) {
+			int eq = line.IndexOf('=');
+			if (eq < 0) continue;
+			string key = line[..eq];
+			string value = line[(eq + 1)..];
+			switch (key) {
+				case "out_time":
+					// A brief "N/A" is possible right at startup, before the first real timestamp.
+					if (TimeSpan.TryParse(value, CultureInfo.InvariantCulture, out TimeSpan t))
+						lastOutTime = t;
+					break;
+				case "speed":
+					string trimmed = value.TrimEnd('x');
+					lastSpeed = double.TryParse(trimmed, NumberStyles.Float, CultureInfo.InvariantCulture, out double s) ? s : null;
+					break;
+				case "progress":
+					onProgress?.Invoke(new RemovalProgress(lastOutTime, total, lastSpeed));
+					break;
+			}
+		}
 	}
 }

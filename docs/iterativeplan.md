@@ -4,6 +4,81 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## CLI feedback during remove — implemented (2026-07-29)
+
+**Status: implemented and live-verified against real media, both removal modes.**
+
+Raised by the maintainer: `vbr remove` gave zero console feedback between starting work on a
+candidate and printing its final result row — worst during a re-encode removal, which can run as
+long as encoding the whole file normally would, with nothing printed in the meantime. A user with no
+way to distinguish "still working" from "hung" understandably loses confidence partway through a
+long library run. Three asks: (1) show which video is currently being checked, (2) indicate when a
+removal is actually in progress (not just matching), (3) show progress on that removal if possible.
+
+### What changed
+
+**`VBR.Core.Removal.ClipRemover`** gained a `RemovalProgress` record (`Processed`/`Total`/
+`SpeedMultiplier`) and an optional `Action<RemovalProgress>? onProgress` parameter on `Remove`,
+threaded through all four `RunFfmpeg*` cut paths (both stream-copy and both re-encode variants) down
+into the one shared `RunFfmpeg` method. Every ffmpeg invocation now passes `-progress pipe:1`
+(previously nothing consumed stdout at all — `ReadToEndAsync` just drained and discarded it, purely
+to avoid the pipe-buffer deadlock the class's own doc comment already warns about for stderr). The
+old `ReadToEndAsync()` on stdout was replaced with a new `ReadProgressAsync` that reads
+`-progress`'s repeating `key=value` block line-by-line *while ffmpeg is still running*, invoking
+`onProgress` once per block (ffmpeg's own default stats cadence, roughly twice a second — no
+client-side throttling needed, confirmed live). Parses `out_time=` (the `HH:MM:SS.ffffff` string)
+rather than the same-block `out_time_ms` key — that key is actually **microseconds**, a
+long-standing ffmpeg naming quirk; the human-readable string sidesteps the unit ambiguity entirely.
+`speed=` is parsed too, when ffmpeg has reported one yet (it can be briefly absent right at start).
+Wired uniformly across both stream-copy and re-encode (not a re-encode-only special case) — cheap,
+and stream-copy's near-instant completion means it's a non-issue there either way (confirmed live: a
+5.5s stream-copy cut reported exactly one progress tick at "100%").
+
+**`VBR.CLI.Commands.RemoveCommand`**'s per-candidate loop now prints, unconditionally, before any
+work starts on a file: `[i/N] Checking: <name>` — direct answer to ask (1), and also a running
+library-wide progress counter (ask 3's other half: not just per-file ffmpeg progress, but "how far
+through the whole library are we"). When a match is found, before calling `ClipRemover.Remove`, it
+prints a "Match found (...) — removing bumper (...)..." line naming which of the two (very
+differently paced) removal mechanisms is about to run — direct answer to ask (2), and means a slow
+re-encode reads as expected, not alarming. `onProgress` renders a single `\r`-updated line showing
+percent complete, processed/total time, and encode speed — live during
+the cut; a trailing newline is only emitted if at least one progress tick actually printed (so a
+near-instant stream-copy that only got one or zero ticks doesn't leave a stray blank line). All of
+this goes to stderr, same convention as this project's existing "Note:"/error lines — stdout keeps
+carrying exactly one line per candidate (the existing `RemoveRow.ToLine()`), so `--output`'s report
+file (built from the `rows` list, not console text) and any script piping stdout are both unaffected.
+
+### Live-verified (2026-07-29)
+
+Against the same real Daredevil Netflix end-card setup used throughout this project's verification
+(`daredevil-end20.mkv` + `caprica-end5.mkv` distractor), both `--re-encode` values:
+
+```sh
+[1/2] Checking: caprica-end5.mkv
+     caprica-end5.mkv                                  visual: present=0/6  bestCos=65%  win=3
+[2/2] Checking: daredevil-end20.mkv
+  Match found (present=5/6  bestCos=98%  win=14) — removing bumper (re-encode -- this may take a while for large files)...
+    44%  (3.921s / 9s, 7.64x realtime)
+    99%  (8.926s / 9s, 10.1x realtime)
+REMOVED  daredevil-end20.mkv                               visual: present=5/6  bestCos=98%  win=14  -> daredevil-end20.vbr.mkv
+
+1/2 file(s) matched, 1 removed.
+```
+
+Stream-copy mode showed the same shape, completing in one tick (`100%  (5.755s / 5.506s, 2250x
+realtime)` — over 100% of the raw seconds is expected and correctly not clamped in the displayed
+raw values, only the percentage itself is clamped to 100%, since stream-copy's own overshoot
+behavior — see `EndCutOvershootSafetyMarginSeconds`'s doc comment — means the actual cut can run
+very slightly past the arithmetic target). `dotnet build`/`dotnet test VBR.Tests` clean throughout
+(72 passed, unaffected — this is CLI/reporting behavior, no test asserts on console output shape).
+
+### Not done here
+
+No `--quiet`/verbosity-level flag for this new output (unlike `vbr scan`'s five-tier
+`--console-info`) — not requested, and `remove`'s existing `--verbose` bool convention stays as the
+one existing lever; revisit if a future request wants it toned down for scripted/piped use (where it
+currently always prints, but on stderr, so stdout scripting is unaffected either way).
+
 ## Utilizing Databases — implemented (2026-07-29)
 
 **Status: implemented and live-verified against real media, all four combinations.**
