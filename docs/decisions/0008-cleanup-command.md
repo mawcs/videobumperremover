@@ -5,12 +5,12 @@
 - **Renamed (2026-07-29): `vbr cleanup` → `vbr commit`**, `clean` alias dropped. Purely a CLI-surface
   rename — every decision below, `VBR.Core.Cleanup.LibraryCleaner`, and all of this ADR's content
   are otherwise unchanged and still describe the command accurately, just under its new name. Freed
-  "cleanup"/"clean"/"prune" for future VDF-style database-maintenance commands (see
-  `docs/iterativeplan.md`'s "CLI terminology & multi-folder libraries" entry for the full reasoning
-  and what those future commands are expected to be). This document's body is left as originally
-  written, calling the command `cleanup` throughout — an accurate historical record of what was
-  decided and built on 2026-07-20, same convention `iterativeplan.md` follows for its own
-  dated entries.
+  "cleanup"/"clean"/"prune" for future VDF-style database-maintenance commands — see
+  [`0011-cli-library-terminology.md`](0011-cli-library-terminology.md) for the full reasoning and
+  what those future commands are expected to be (written 2026-07-30, retroactively covering this
+  same 2026-07-29 rename). This document's body is left as originally written, calling the command
+  `cleanup` throughout — an accurate historical record of what was decided and built on 2026-07-20,
+  same convention `iterativeplan.md` follows for its own dated entries.
 - **Date:** 2026-07-20
 - **Implementation status (2026-07-20):** built and verified. `VBR.Core.Cleanup.LibraryCleaner` +
   `VBR.CLI.Commands.CleanupCommand`. 18 unit tests (temp-directory-based, no curated real-media
@@ -25,7 +25,10 @@
   command inverts; records the "already-cut `.vbr.` as `--clip-from`" risk this command's existence
   resolves), [`../AGENTS.md`](../AGENTS.md) (standing "never modify source videos in place" /
   "verification before destruction" rules this command operationalizes), [`../ROADMAP.md`](../ROADMAP.md),
-  [`../PROGRESS.md`](../PROGRESS.md)
+  [`../PROGRESS.md`](../PROGRESS.md), [`0009-library-scan-database.md`](0009-library-scan-database.md)
+  (Decision 10's "once a library database/index exists" open point), [`0011-cli-library-terminology.md`](0011-cli-library-terminology.md)
+  (the rename above, and the vocabulary it frees for a future phase of this command's own
+  database-maintenance siblings)
 
 ## Context
 

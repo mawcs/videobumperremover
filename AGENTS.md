@@ -175,9 +175,15 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - [`docs/design/matcher-spec.md`](docs/design/matcher-spec.md) — **the matcher "definition of
   done"** (visual-primary, audio-accelerator, edge-focused, port the probe, standalone CLI). Read
   before writing any matcher code; it overrides other docs on *how matching works*.
-- [`docs/iterativeplan.md`](docs/iterativeplan.md) — the 2026-07-18 black-frame false-positive
-  diagnosis + staged fix plan, **all sections implemented and validated** (§A correctness fixes,
-  §B CLI features, §C re-validation matrix with recorded numbers, §D doc updates).
+- [`docs/iterativeplan.md`](docs/iterativeplan.md) — the running chronological planning/decision
+  log (newest entry at the top of the file, under its own heading; older entries kept below,
+  never deleted). This is where day-to-day design discussion and implementation write-ups happen
+  first; **durable, broad-topic decisions belong in a `docs/decisions/` ADR too** (see "Decisions"
+  below), not only here — a 2026-07-30 audit found several real architectural decisions (scanning,
+  database-backed removal, CLI terminology, re-encode defaults) had accumulated here across
+  multiple entries with no ADR ever written, which ADRs 0009-0012 now backfill. Don't let it
+  happen again: when a planning-log entry settles something durable and broad (not just "how this
+  one function is implemented"), promote it to an ADR in the same pass, not later.
 - [`docs/design/bumper-catalog.md`](docs/design/bumper-catalog.md) — catalog data model + workflows.
 - [`docs/design/removal-pipeline.md`](docs/design/removal-pipeline.md) — trim modes (stream-copy
   vs. re-encode) + per-video enhancements + output options.
@@ -190,7 +196,12 @@ Past the risk-retirement spike; about to begin real product build. What's establ
 - [`docs/design/ux-issues.md`](docs/design/ux-issues.md) — VDF UX traps to fix in our redesign.
 - [`docs/glossary.md`](docs/glossary.md) — fingerprinting / embeddings / cosine, plain-language.
 - [`docs/decisions/`](docs/decisions/) — ADRs: 0001 stack (superseded by 0002), 0002 stack
-  (accepted), 0003 repo structure (fork VDF), 0004 bumper catalog, 0005 code organization.
+  (accepted; see its own 2026-07-17 amendment), 0003 repo structure (fork VDF), 0004 bumper
+  catalog (see its 2026-07-28 amendment for the as-built storage format), 0005 code organization,
+  0006 edge-focused fingerprinting (see its 2026-07-21 amendment), 0007 removal command (see its
+  2026-07-30 amendment), 0008 cleanup command (renamed `vbr commit`, 2026-07-29), 0009 library
+  scan/database, 0010 database-backed removal, 0011 CLI/library terminology & multi-folder
+  libraries, 0012 removal re-encode codec/HDR defaults (decided, not yet implemented).
 - [`docs/development.md`](docs/development.md) — environment setup (SDK, VS Code; use base C#
   extension, skip C# Dev Kit) + troubleshooting.
 - [`docs/running_and_building.md`](docs/running_and_building.md) — command reference: build,

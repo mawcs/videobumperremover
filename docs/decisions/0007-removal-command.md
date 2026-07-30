@@ -13,7 +13,29 @@
   fields), [`0004-bumper-catalog.md`](0004-bumper-catalog.md), [`0006-edge-focused-fingerprinting.md`](0006-edge-focused-fingerprinting.md),
   [`../research/vdf-evaluation.md`](../research/vdf-evaluation.md) (duration-consistency finding),
   [`../ROADMAP.md`](../ROADMAP.md) Phase 5, [`../iterativeplan.md`](../iterativeplan.md) (the
-  matcher-fix session this design discussion followed)
+  matcher-fix session this design discussion followed), [`0008-cleanup-command.md`](0008-cleanup-command.md),
+  [`0009-library-scan-database.md`](0009-library-scan-database.md),
+  [`0010-database-backed-removal.md`](0010-database-backed-removal.md),
+  [`0012-removal-reencode-defaults.md`](0012-removal-reencode-defaults.md)
+
+> **Amendment (2026-07-30) — three Decision/Open-Question items below are now superseded by their
+> own dedicated ADRs; recorded here so this ADR doesn't keep pointing at raw planning-log entries.**
+>
+> - **Decision 4's "future `cleanup` command (name reserved, not built)"** is built, and was
+>   renamed `vbr commit` on 2026-07-29 — see [ADR 0008](0008-cleanup-command.md) (which itself
+>   carries the rename note) and [ADR 0011](0011-cli-library-terminology.md) (the terminology
+>   reasoning behind the rename). Wherever "`cleanup`" appears below, read it as this project's
+>   historical name for what is now `vbr commit` — the body is left as originally written, same
+>   convention this project uses throughout its dated ADRs and `iterativeplan.md` entries.
+> - **Decision 1's "Catalog-aware and index-aware variants ... are explicitly future work"** is
+>   built — see [ADR 0010](0010-database-backed-removal.md): `--bumper-label`/`--catalog-name`
+>   (catalog-backed reference bumper) and `--library-name`/`--library-db-folder` (database-backed
+>   candidates, reading from the library database [ADR 0009](0009-library-scan-database.md)
+>   defines), freely mixable, four combinations, all live-verified.
+> - **The Open Questions' "Re-encode algorithm specifics" bullet**, which already pointed at
+>   `iterativeplan.md`'s "Removal re-encode defaults" entry for the codec/CRF table and HDR policy,
+>   now has a proper home: [ADR 0012](0012-removal-reencode-defaults.md). That decision is still
+>   **not yet implemented** — `ClipRemover` still uses the fixed placeholder this ADR shipped with.
 
 ## Context
 
