@@ -1,13 +1,17 @@
 # ADR 0013: GPU acceleration — ffmpeg decode/encode and ONNX inference
 
-- **Status:** accepted, implemented and live-verified on a real machine with a working GPU
-  (RTX 3080, 2026-07-30). GPU re-encode (Decision 3) is now confirmed actually engaging, not just
-  falling back — see the second "Live-verified" section below. DirectML inference (Decision 5)
-  still does not actually engage on this machine even though decode/encode GPU paths both do on
-  the same hardware; it falls back to CPU safely and correctly, but the underlying cause (a DXGI
-  adapter handle that validates in a probe subprocess but is rejected in the real process) remains
-  unresolved — see "Open questions."
-- **Date:** 2026-07-30
+- **Status:** accepted, implemented and live-verified on multiple real machines with working GPUs
+  (2026-07-30 to 2026-07-31). GPU re-encode (Decision 3) is confirmed actually engaging, not just
+  falling back. **DirectML inference (Decision 5) is confirmed broken by a genuine cross-process
+  DXGI adapter handle lifetime issue, not a stale package version (unlike CUDA, where that was the
+  entire explanation) and not device-index selection (a real, shipped DXGI-adapter-filtering fix —
+  see "Live-verified (2026-07-31, real DXGI adapter filtering)" — did not resolve it).** DirectML
+  falls back to CPU safely and correctly everywhere it's been tried, but does not actually engage
+  anywhere it's been tried, across two unrelated GPUs and two different DirectML package versions.
+  Root cause narrowed but still open — see "Open questions."
+- **Date:** 2026-07-30 (cross-machine DirectML finding added 2026-07-31, CUDA diagnostic +
+  DirectML version-bump added 2026-07-31, DXGI adapter filtering implemented and ruled out as the
+  fix 2026-07-31)
 - **Related:** [`0009-library-scan-database.md`](0009-library-scan-database.md) (scanning speed),
   [`0010-database-backed-removal.md`](0010-database-backed-removal.md) (matching speed),
   [`0012-removal-reencode-defaults.md`](0012-removal-reencode-defaults.md) (the CPU codec table
@@ -244,21 +248,175 @@ proven, two still open.
   and AMF still report probe failures on this machine at 256×256 too — expected and correct, since
   this machine has no Intel/AMD GPU for those encoders to run on at all.)
 
+## Live-verified (2026-07-31, cross-machine — DirectML confirmed broken, not RDP-specific)
+
+Using the standalone `test-onnx-directml.ps1` script (independent of VBR entirely — see ADR 0014)
+and the `-Layout Loose` redistributable package, the maintainer tested DirectML on several
+additional real machines, each with a discrete GPU, **none of them RDP sessions** — directly
+testing whether the dev machine's RDP/phantom-adapter theory was the actual cause. Results from
+one such machine (RTX 5080, native/local session, `directml_test_machine.txt`), trying every
+device index the probe range covers:
+
+| Device index | Result |
+| --- | --- |
+| 0 | **Uncatchable crash** (`AccessViolationException` in `InferenceSession.Init`) |
+| 1 | **Uncatchable crash** (same) |
+| 2 | Catchable `RuntimeException`: `C0262002 Specified display adapter handle is invalid` — **the exact same error and error code as the original RDP dev machine** |
+| 3 | Catchable `RuntimeException`: `887A0002 The object was not found... no adapter with the specified ordinal` (this machine simply has fewer DXGI adapters than the index tried) |
+| 4 | Same as 3 |
+
+**This falsifies the working theory that the original failure was specific to the dev machine's
+RDP session or its phantom "Microsoft Remote Display Adapter."** A completely different machine —
+local session, no RDP, a current-generation GPU — fails at *every* device index tried, including
+two hard crashes and a repeat of the identical "invalid adapter handle" error code at index 2. The
+maintainer's assessment, which the evidence supports: **DirectML is not being invoked correctly by
+this project, full stop** — this is a bug in how VBR/VDF calls the DirectML execution provider
+(API usage, version pairing, or missing setup step), not an environment quirk of any one machine.
+The device-index-probing mechanism (Decision "Root cause found for DirectML device selection"
+above) still provides real value — it avoids the phantom-adapter case and the crash-safety
+subprocess isolation still works exactly as designed on every machine tested, including this one —
+but it was treating a symptom, not the actual defect.
+
+Not yet investigated: whether `AppendExecutionProvider_DML(deviceId)` (the simple index-based
+overload, what this project uses throughout) is the wrong API to use at all — ONNX Runtime also
+exposes device-explicit overloads (e.g. passing a pre-created `ID3D12Device`/command queue rather
+than an index for the DML EP to enumerate itself) that may be the actually-supported path for this
+ORT/DirectML version pairing; whether the redistributed `DirectML.dll` (pinned to
+`Microsoft.AI.DirectML 1.15.4`, the *minimum* version `Microsoft.ML.OnnxRuntime.DirectML 1.23.0`
+declares, not necessarily a version Microsoft actually validated that combination against) is
+itself the mismatch, versus using the DirectML.dll that ships in the Windows OS itself (Windows 10
+1903+) instead of a redistributed one; and whether a newer/older `Microsoft.ML.OnnxRuntime.DirectML`
+pin behaves differently. CUDA is being tested next (separately, diagnostic-only per Decision 5 —
+not a reconsideration of the DirectML-only shipping decision) as a further data point on whether
+GPU ONNX inference works at all via any execution provider on these machines, which would help
+isolate whether this is DirectML-specific or a broader pattern in how this project drives ONNX
+Runtime's GPU execution providers generally.
+
+## Live-verified (2026-07-31, CUDA diagnostic + DirectML version-bump — DirectML ruled NOT stale)
+
+Two more data points, using `test-onnx-directml.ps1`'s new `-Mode Cuda` and `-NativeFolder`/
+`-ManagedDllPath` override flags (diagnostic-only, no VBR/VDF code involved — isolates whether
+*this project's code* is at fault versus something about the pinned package versions):
+
+- **CUDA, diagnostic-only per Decision 5, tested on the maintainer's RTX 5080 machine (a
+  completely different, non-RDP machine with other GPU-accelerated tools — Ollama, AnythingLLM,
+  ChatRTX, etc. — already working correctly on the same hardware).** First attempt
+  (`Microsoft.ML.OnnxRuntime.Gpu.Windows 1.23.0`, matching this project's pinned CPU/DirectML
+  version) failed with `cudaErrorNoKernelImageForDevice: no kernel image is available for
+  execution on the device` — a real, well-documented, widely-reported gap: official ONNX Runtime
+  CUDA builds historically lagged behind brand-new NVIDIA architectures (RTX 50-series /
+  "Blackwell" / compute capability sm_120), confirmed against multiple external reports
+  ([microsoft/onnxruntime#26181](https://github.com/microsoft/onnxruntime/issues/26181),
+  [#27600](https://github.com/microsoft/onnxruntime/issues/27600), and a
+  [third-party Blackwell-targeted rebuild](https://github.com/Natfii/onnxruntime-gpu-blackwell)
+  that exists specifically because of this gap). **Re-tested with
+  `Microsoft.ML.OnnxRuntime.Gpu.Windows 1.28.0` (current latest stable) — succeeded outright, no
+  error, real inference ran on the CUDAExecutionProvider.** This is a clean, fully-explained
+  failure with a known cause and a known fix (a newer pinned version) — not evidence of anything
+  wrong in how this project invokes ONNX Runtime's GPU execution providers.
+- **DirectML, re-tested with the newest available `Microsoft.ML.OnnxRuntime.DirectML` release
+  (`1.24.4` — that package's version list tops out well below the CPU/CUDA packages' `1.28.0`,
+  confirmed against NuGet directly) on the original RTX 3080 dev machine, which already reproduces
+  the failure.** Identical results to `1.23.0` at every device index: uncatchable
+  `AccessViolationException` at 0 and 1, `C0262002 Specified display adapter handle is invalid` at
+  2, `887A0002 ... no adapter with the specified ordinal` at 3 and 4 — same error codes, same
+  messages, same crash/no-crash pattern. **This rules out a stale DirectML package version as the
+  cause**, in direct contrast to the CUDA result above: DirectML's failure is not explained by
+  "needs a newer release," which narrows the real cause to either the specific API call this
+  project uses (`AppendExecutionProvider_DML(int deviceId)`, the simple index-based overload) or
+  something about the `.NET`/DXGI hosting environment both test runs share.
+- **Grounded against ONNX Runtime's own DirectML documentation**: `device_id` is documented to
+  "correspond to the enumeration order of hardware adapters as given by `IDXGIFactory::EnumAdapters`"
+  and "a `device_id` of 0 always corresponds to the default adapter" — meaning index 0 crashing on
+  *two unrelated real machines* (one RDP with a known phantom adapter, one a plain local RTX 5080
+  desktop with no obvious reason to have a non-functional adapter at the default slot) is
+  genuinely anomalous, not expected behavior for "index 0." The docs also mention a
+  device-explicit alternative, `SessionOptionsAppendExecutionProvider_DML1` (taking a caller-created
+  `IDMLDevice`/`ID3D12CommandQueue` instead of an index for the EP to enumerate itself), without
+  detailed guidance on when the index-based overload is known to be insufficient. Separately,
+  [microsoft/onnxruntime#9708](https://github.com/microsoft/onnxruntime/issues/9708) documents a
+  real (if not fully resolved) issue class where DirectML mishandles software/WARP adapters
+  encountered during enumeration — a plausible explanation for low indices behaving badly if a
+  non-hardware adapter happens to sit there, though this hasn't been directly confirmed on either
+  of this project's two test machines yet (would need a raw DXGI adapter enumeration dump,
+  independent of ONNX Runtime, cross-referenced against which index crashes/fails on that specific
+  machine).
+
+## Live-verified (2026-07-31, real DXGI adapter filtering — phantom-adapter theory ruled OUT as root cause)
+
+Confirmed the phantom-adapter finding was real by finding the *same* class of virtual adapter on
+the maintainer's separate RTX 5080 test machine: `dxdiag /t` there shows a `Meta Virtual Monitor`
+(`Manufacturer: Meta Inc.`, `Chip type: Unknown`, `Device Type: Display-Only Device`,
+`Adapter Attributes: Unknown`, driver `virtualscreendriver.dll`) — structurally identical to the
+dev machine's `Microsoft Remote Display Adapter` (same "Display-Only Device, Chip type Unknown,
+falsely-advertised full Feature Levels" shape), left behind by Meta Quest Link software despite no
+headset being attached (confirmed with the maintainer — not currently connected, hasn't been for
+years, yet the virtual display driver persists). Windows' Indirect Display Driver (IDD) framework
+is the common mechanism — used by RDP, VR/AR headset software, and most screen-streaming tools —
+so this isn't specific to either RDP or Meta; any such software can produce this class of phantom
+adapter.
+
+**Built and shipped a real fix for this class of problem**: `VBR.Core.Extraction.DirectMlAdapterEnumerator`
+(new file), using `Vortice.DXGI` (a thin, actively-maintained managed DXGI wrapper — new
+`PackageReference` in `VBR.Core.csproj`, chosen over hand-rolled COM interop) to enumerate real
+DXGI adapters directly via `IDXGIFactory1.EnumAdapters1`, filtering out anything flagged
+`AdapterFlags.Software` (catches WARP) *and* anything whose `VendorId` isn't a known real GPU
+vendor (NVIDIA/AMD/Intel/Qualcomm — catches IDD virtual adapters, which live-verified are **not**
+flagged `AdapterFlags.Software` even though they're not real hardware, so that flag alone
+wouldn't have caught either the RDP or Meta phantom adapter). `HardwareAcceleration.ProbeDirectMlInSubprocess`
+now tries only these filtered real-GPU indices instead of blindly trying 0 through 4, falling back
+to the old blind range only if enumeration itself fails for any reason.
+
+**Live-verified this change is correct but does NOT fix the actual observed failure.** Re-ran
+`vbr match --hardware-accel auto --verbose` on the dev machine after the fix: the probe still
+selects device index 2 (now via real filtering, not luck), and the real `OnnxEmbedder`
+construction in the actual `vbr` process **still fails at that same index 2 with the identical
+`C0262002 Specified display adapter handle is invalid` error** — unchanged from before this fix.
+This is an important negative result, not a wasted effort: it **rules out the phantom-adapter
+theory as the root cause of the specific "invalid handle" failure**, even though the underlying
+phantom-adapter problem is real and worth having fixed defensively (it still protects against
+literally handing `AppendExecutionProvider_DML` a virtual adapter's index, which — per
+`AccessViolationException`s observed at low indices on both test machines — can crash outright,
+not just fail cleanly). The actual blocking defect is specifically that **a DXGI adapter handle
+obtained by the probe subprocess does not remain valid by the time a separate, later process (the
+real `vbr` run) opens "the same" index moments after** — a cross-process handle-lifetime issue,
+not an index-selection issue. This creates a real architectural tension: crash safety requires
+process isolation (a native access violation can't be caught any other way — see the earlier
+"Fixed with real process isolation" finding), but DXGI adapter handles apparently don't survive
+that isolation boundary reliably in this environment. Probing and constructing the real embedder
+in the *same* process would sidestep the handle-lifetime issue but reintroduce the uncaught-crash
+risk the subprocess design exists to prevent — not a decision to make unilaterally; the two
+matter differently depending on how much running-out-of-process overhead this project is willing
+to accept for real DirectML acceleration.
+
 ## Open questions
 
-- **Why DirectML's real (non-probe) `OnnxEmbedder` construction fails with "invalid adapter
-  handle" at the same device index its own probe subprocess just confirmed works** — the single
-  open item blocking actual DirectML acceleration on this machine. Candidate next step: re-probe
-  inside the *same* process immediately before constructing the real embedder, rather than trusting
-  a result from an earlier, separate probe process, to test whether the handle instability is
-  specifically a cross-process phenomenon.
+- **Root cause of DirectML's cross-process "invalid adapter handle" failure** — see "Live-verified
+  (2026-07-31, real DXGI adapter filtering)" above. Ruled out: stale package version (unlike CUDA),
+  RDP/phantom-adapter specificity (fails identically on a non-RDP machine), and now also ruled out:
+  picking the wrong (virtual/non-hardware) device index — real DXGI-filtered adapter selection
+  still hits the identical failure at the correct, real-GPU index. The remaining live hypothesis is
+  a genuine cross-process DXGI/D3D12 adapter handle lifetime problem: a handle valid in the probe
+  subprocess is not valid in the real process moments later. Candidate next steps, none attempted
+  yet: (a) run the *entire* DirectML-accelerated embedding pipeline in a long-lived subprocess
+  (not just a go/no-go probe), communicating results back via stdout/pipes — a real architectural
+  change, trading process-per-call overhead for actually keeping the handle alive in the process
+  that created it; (b) whether `AppendExecutionProvider_DML(deviceId)`'s simple index-based
+  overload is simply unsuited to this repeated-short-lived-process usage pattern versus the
+  explicit `SessionOptionsAppendExecutionProvider_DML1` (caller-created `IDMLDevice`/`ID3D12CommandQueue`)
+  alternative, which sidesteps ORT's own internal DXGI enumeration entirely; (c) whether the
+  redistributed `DirectML.dll` (pinned to `Microsoft.AI.DirectML 1.15.4`, unchanged across both
+  tested ORT DirectML versions) is itself implicated, versus the DirectML.dll that ships in the
+  Windows OS itself (Windows 10 1903+).
 - GPU quality-flag numeric values (Decision 3) — starting guesses, not tuned.
 - Whether `-preset`/`-global_quality`/`-quality` choices for the three GPU encoder families are
   well-chosen — same "not yet finalized" status ADR 0012 left its own CPU preset value in.
 - win-arm64 DirectML support — not attempted.
-- CUDA execution provider for ONNX inference — explicitly rejected for this pass (Decision 5); the
-  maintainer's own RTX 3080 would benefit from it, but the "download-free for every user" goal won
-  out. Revisit only if DirectML's measured performance turns out meaningfully insufficient.
+- CUDA execution provider for ONNX inference — explicitly rejected for this pass (Decision 5),
+  reaffirmed even after confirming CUDA 1.28.0 works on a real machine: the "download-free for
+  every user" goal is unrelated to whether CUDA *can* work, and CUDA still requires a
+  multi-GB, version-pinned toolkit install most users won't have. The maintainer's own machines
+  would benefit from it, but this remains a diagnostic finding, not grounds to revisit Decision 5.
 - Whether the GPU re-encode quality target should be independently exposed/configurable at all —
   no CLI surface for it exists (matches ADR 0012's own "no user-facing configuration in v1"
   stance), inherited here without re-litigating it.

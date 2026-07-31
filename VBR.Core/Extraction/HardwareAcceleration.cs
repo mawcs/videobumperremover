@@ -15,6 +15,7 @@
 //
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -121,8 +122,19 @@ public static class HardwareAcceleration {
 	/// exited cleanly with an error, or a note that it crashed/timed out when there's no such text
 	/// to read (a real native crash exits via the OS, not this process's own error-reporting path).</returns>
 	public static (bool Success, int DeviceId, string? Detail) ProbeDirectMlInSubprocess(string modelPath, CancellationToken ct = default) {
+		IReadOnlyList<DirectMlAdapterEnumerator.AdapterInfo> realAdapters = DirectMlAdapterEnumerator.GetRealGpuAdapters();
+		List<int> candidates = new();
+		if (realAdapters.Count > 0) {
+			foreach (DirectMlAdapterEnumerator.AdapterInfo adapter in realAdapters)
+				candidates.Add(adapter.Index);
+		}
+		else {
+			for (int deviceId = 0; deviceId <= MaxDirectMlDeviceIdToTry; deviceId++)
+				candidates.Add(deviceId);
+		}
+
 		string? lastDetail = null;
-		for (int deviceId = 0; deviceId <= MaxDirectMlDeviceIdToTry; deviceId++) {
+		foreach (int deviceId in candidates) {
 			(bool success, string? detail) = ProbeOneDevice(modelPath, deviceId, ct);
 			if (success) {
 				DirectMlDeviceId = deviceId;

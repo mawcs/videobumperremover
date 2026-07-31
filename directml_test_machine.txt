@@ -1,0 +1,115 @@
+
+PS D:\Programs\vbr-cli-win-x64-loose> pwsh -File test-onnx-directml.ps1 -Mode DirectML -DeviceId 3
+Loaded onnxruntime.dll from: D:\Programs\vbr-cli-win-x64-loose\ai\directml\onnxruntime.dll
+Mode: DirectML (device index 3)
+Native runtime folder: D:\Programs\vbr-cli-win-x64-loose\ai\directml
+AppendExecutionProvider_DML FAILED (device 3) -- catchable, not a crash:
+Exception calling "AppendExecutionProvider_DML" with "1" argument(s): "[ErrorCode:RuntimeException] E:\_work\1\s\onnxruntime\core\providers\dml\dml_provider_factory.cc(502)\onnxruntime.dll!00007FF8EA2E87D8: (caller: 00007FF8EA2E8AFA) Exception(1) tid(cfc) 887A0002 The object was not found. If calling IDXGIFactory::EnumAdaptes, there is no adapter with the specified ordinal.
+"
+Continuing to construct the session anyway, WITHOUT DirectML attached (CPU only) -- this tells you nothing about DirectML working, only that plain CPU inference still does.
+Constructing InferenceSession...
+Session ready in 147 ms -- but running on CPU, NOT DirectML (the execution provider failed to attach above).
+30 inferences: 685 ms total, 22.83 ms/call
+PS D:\Programs\vbr-cli-win-x64-loose> pwsh -File test-onnx-directml.ps1 -Mode DirectML -DeviceId 4
+Loaded onnxruntime.dll from: D:\Programs\vbr-cli-win-x64-loose\ai\directml\onnxruntime.dll
+Mode: DirectML (device index 4)
+Native runtime folder: D:\Programs\vbr-cli-win-x64-loose\ai\directml
+AppendExecutionProvider_DML FAILED (device 4) -- catchable, not a crash:
+Exception calling "AppendExecutionProvider_DML" with "1" argument(s): "[ErrorCode:RuntimeException] E:\_work\1\s\onnxruntime\core\providers\dml\dml_provider_factory.cc(502)\onnxruntime.dll!00007FF8EA2E87D8: (caller: 00007FF8EA2E8AFA) Exception(1) tid(829c) 887A0002 The object was not found. If calling IDXGIFactory::EnumAdaptes, there is no adapter with the specified ordinal.
+"
+Continuing to construct the session anyway, WITHOUT DirectML attached (CPU only) -- this tells you nothing about DirectML working, only that plain CPU inference still does.
+Constructing InferenceSession...
+Session ready in 144 ms -- but running on CPU, NOT DirectML (the execution provider failed to attach above).
+30 inferences: 635 ms total, 21.17 ms/call
+PS D:\Programs\vbr-cli-win-x64-loose> pwsh -File test-onnx-directml.ps1 -Mode DirectML -DeviceId 2
+Loaded onnxruntime.dll from: D:\Programs\vbr-cli-win-x64-loose\ai\directml\onnxruntime.dll
+Mode: DirectML (device index 2)
+Native runtime folder: D:\Programs\vbr-cli-win-x64-loose\ai\directml
+AppendExecutionProvider_DML FAILED (device 2) -- catchable, not a crash:
+Exception calling "AppendExecutionProvider_DML" with "1" argument(s): "[ErrorCode:RuntimeException] E:\_work\1\s\onnxruntime\core\providers\dml\dml_provider_factory.cc(509)\onnxruntime.dll!00007FF8EA2E87F0: (caller: 00007FF8EA2E8AFA) Exception(1) tid(d150) C0262002 Specified display adapter handle is invalid.
+"
+Continuing to construct the session anyway, WITHOUT DirectML attached (CPU only) -- this tells you nothing about DirectML working, only that plain CPU inference still does.
+Constructing InferenceSession...
+Session ready in 140 ms -- but running on CPU, NOT DirectML (the execution provider failed to attach above).
+30 inferences: 691 ms total, 23.03 ms/call
+PS D:\Programs\vbr-cli-win-x64-loose> pwsh -File test-onnx-directml.ps1 -Mode DirectML -DeviceId 1
+Loaded onnxruntime.dll from: D:\Programs\vbr-cli-win-x64-loose\ai\directml\onnxruntime.dll
+Mode: DirectML (device index 1)
+Native runtime folder: D:\Programs\vbr-cli-win-x64-loose\ai\directml
+Constructing InferenceSession...
+Fatal error. System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt.
+   at Microsoft.ML.OnnxRuntime.InferenceSession.Init(System.String, Microsoft.ML.OnnxRuntime.SessionOptions, Microsoft.ML.OnnxRuntime.PrePackedWeightsContainer)
+   at Microsoft.ML.OnnxRuntime.InferenceSession..ctor(System.String, Microsoft.ML.OnnxRuntime.SessionOptions)
+   at System.RuntimeMethodHandle.InvokeMethod(System.Object, Void**, System.Signature, Boolean)
+   at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(System.Object, System.Span`1<System.Object>, System.Reflection.BindingFlags)
+   at System.Reflection.MethodBaseInvoker.InvokeWithFewArgs(System.Object, System.Reflection.BindingFlags, System.Reflection.Binder, System.Object[], System.Globalization.CultureInfo)
+   at System.Reflection.RuntimeConstructorInfo.Invoke(System.Reflection.BindingFlags, System.Reflection.Binder, System.Object[], System.Globalization.CultureInfo)
+   at System.Reflection.ConstructorInfo.Invoke(System.Object[])
+   at System.Management.Automation.DotNetAdapter.AuxiliaryConstructorInvoke(System.Management.Automation.MethodInformation, System.Object[], System.Object[])
+   at System.Management.Automation.DotNetAdapter.ConstructorInvokeDotNet(System.Type, System.Reflection.ConstructorInfo[], System.Object[])
+   at Microsoft.PowerShell.Commands.NewObjectCommand.CallConstructor(System.Type, System.Reflection.ConstructorInfo[], System.Object[])
+   at Microsoft.PowerShell.Commands.NewObjectCommand.BeginProcessing()
+   at System.Management.Automation.Cmdlet.DoBeginProcessing()
+   at System.Management.Automation.CommandProcessorBase.DoBegin()
+   at System.Management.Automation.CommandProcessor.DoBegin()
+   at System.Management.Automation.Internal.PipelineProcessor.Start(Boolean)
+   at System.Management.Automation.Internal.PipelineProcessor.SynchronousExecuteEnumerate(System.Object)
+   at System.Management.Automation.PipelineOps.InvokePipeline(System.Object, Boolean, System.Management.Automation.CommandParameterInternal[][], System.Management.Automation.Language.CommandBaseAst[], System.Management.Automation.CommandRedirection[][], System.Management.Automation.Language.FunctionContext)
+   at System.Management.Automation.Interpreter.ActionCallInstruction`6[[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Boolean, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]].Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.Interpreter.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.LightLambda.RunVoid1[[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]](System.__Canon)
+   at System.Management.Automation.DlrScriptCommandProcessor.RunClause(System.Action`1<System.Management.Automation.Language.FunctionContext>, System.Object, System.Object)
+   at System.Management.Automation.DlrScriptCommandProcessor.Complete()
+   at System.Management.Automation.CommandProcessorBase.DoComplete()
+   at System.Management.Automation.Internal.PipelineProcessor.DoCompleteCore(System.Management.Automation.CommandProcessorBase)
+   at System.Management.Automation.Internal.PipelineProcessor.SynchronousExecuteEnumerate(System.Object)
+   at System.Management.Automation.Runspaces.LocalPipeline.InvokeHelper()
+   at System.Management.Automation.Runspaces.LocalPipeline.InvokeThreadProc()
+   at System.Management.Automation.Runspaces.PipelineThread.WorkerProc()
+   at System.Threading.ExecutionContext.RunInternal(System.Threading.ExecutionContext, System.Threading.ContextCallback, System.Object)
+PS D:\Programs\vbr-cli-win-x64-loose> pwsh -File test-onnx-directml.ps1 -Mode DirectML -DeviceId 0
+Loaded onnxruntime.dll from: D:\Programs\vbr-cli-win-x64-loose\ai\directml\onnxruntime.dll
+Mode: DirectML (device index 0)
+Native runtime folder: D:\Programs\vbr-cli-win-x64-loose\ai\directml
+Constructing InferenceSession...
+Fatal error. System.AccessViolationException: Attempted to read or write protected memory. This is often an indication that other memory is corrupt.
+   at Microsoft.ML.OnnxRuntime.InferenceSession.Init(System.String, Microsoft.ML.OnnxRuntime.SessionOptions, Microsoft.ML.OnnxRuntime.PrePackedWeightsContainer)
+   at Microsoft.ML.OnnxRuntime.InferenceSession..ctor(System.String, Microsoft.ML.OnnxRuntime.SessionOptions)
+   at System.RuntimeMethodHandle.InvokeMethod(System.Object, Void**, System.Signature, Boolean)
+   at System.Reflection.MethodBaseInvoker.InvokeDirectByRefWithFewArgs(System.Object, System.Span`1<System.Object>, System.Reflection.BindingFlags)
+   at System.Reflection.MethodBaseInvoker.InvokeWithFewArgs(System.Object, System.Reflection.BindingFlags, System.Reflection.Binder, System.Object[], System.Globalization.CultureInfo)
+   at System.Reflection.RuntimeConstructorInfo.Invoke(System.Reflection.BindingFlags, System.Reflection.Binder, System.Object[], System.Globalization.CultureInfo)
+   at System.Reflection.ConstructorInfo.Invoke(System.Object[])
+   at System.Management.Automation.DotNetAdapter.AuxiliaryConstructorInvoke(System.Management.Automation.MethodInformation, System.Object[], System.Object[])
+   at System.Management.Automation.DotNetAdapter.ConstructorInvokeDotNet(System.Type, System.Reflection.ConstructorInfo[], System.Object[])
+   at Microsoft.PowerShell.Commands.NewObjectCommand.CallConstructor(System.Type, System.Reflection.ConstructorInfo[], System.Object[])
+   at Microsoft.PowerShell.Commands.NewObjectCommand.BeginProcessing()
+   at System.Management.Automation.Cmdlet.DoBeginProcessing()
+   at System.Management.Automation.CommandProcessorBase.DoBegin()
+   at System.Management.Automation.CommandProcessor.DoBegin()
+   at System.Management.Automation.Internal.PipelineProcessor.Start(Boolean)
+   at System.Management.Automation.Internal.PipelineProcessor.SynchronousExecuteEnumerate(System.Object)
+   at System.Management.Automation.PipelineOps.InvokePipeline(System.Object, Boolean, System.Management.Automation.CommandParameterInternal[][], System.Management.Automation.Language.CommandBaseAst[], System.Management.Automation.CommandRedirection[][], System.Management.Automation.Language.FunctionContext)
+   at System.Management.Automation.Interpreter.ActionCallInstruction`6[[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.Boolean, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e],[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]].Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.EnterTryCatchFinallyInstruction.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.Interpreter.Run(System.Management.Automation.Interpreter.InterpretedFrame)
+   at System.Management.Automation.Interpreter.LightLambda.RunVoid1[[System.__Canon, System.Private.CoreLib, Version=8.0.0.0, Culture=neutral, PublicKeyToken=7cec85d7bea7798e]](System.__Canon)
+   at System.Management.Automation.DlrScriptCommandProcessor.RunClause(System.Action`1<System.Management.Automation.Language.FunctionContext>, System.Object, System.Object)
+   at System.Management.Automation.DlrScriptCommandProcessor.Complete()
+   at System.Management.Automation.CommandProcessorBase.DoComplete()
+   at System.Management.Automation.Internal.PipelineProcessor.DoCompleteCore(System.Management.Automation.CommandProcessorBase)
+   at System.Management.Automation.Internal.PipelineProcessor.SynchronousExecuteEnumerate(System.Object)
+   at System.Management.Automation.Runspaces.LocalPipeline.InvokeHelper()
+   at System.Management.Automation.Runspaces.LocalPipeline.InvokeThreadProc()
+   at System.Management.Automation.Runspaces.PipelineThread.WorkerProc()
+   at System.Threading.ExecutionContext.RunInternal(System.Threading.ExecutionContext, System.Threading.ContextCallback, System.Object)
+PS D:\Programs\vbr-cli-win-x64-loose>

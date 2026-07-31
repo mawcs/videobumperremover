@@ -21,4 +21,11 @@
     <ProjectReference Include="..\VDF.Core\VDF.Core.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- DXGI adapter enumeration only (docs/decisions/0013-gpu-acceleration.md), picking a real
+         GPU's device index for DirectML, not touching D3D11/D3D12 rendering at all. A thin,
+         actively-maintained managed wrapper beats hand-rolled COM interop for this. -->
+    <PackageReference Include="Vortice.DXGI" Version="3.8.3" />
+  </ItemGroup>
+
 </Project>

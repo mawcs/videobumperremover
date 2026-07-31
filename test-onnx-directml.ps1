@@ -35,17 +35,41 @@ param(
     [ValidateSet("Cpu", "DirectML", "Cuda")]
     [string]$Mode = "Cpu",
     [int]$DeviceId = 0,
-    [int]$Iterations = 30
+    [int]$Iterations = 30,
+    # Defaults to the folder this script itself lives in -- when copied alongside the "loose"
+    # publish layout (publish-vbr-cli.ps1 -Layout Loose), Microsoft.ML.OnnxRuntime.dll, ai\, and
+    # this script all sit in the same folder, so no path needs to be passed on another machine.
+    # Override explicitly for local dev use straight from a build output folder.
+    [string]$Root = $PSScriptRoot,
+    # Overrides for testing a DIFFERENT ONNX Runtime version than whatever's under ai\ -- e.g. a
+    # newer Microsoft.ML.OnnxRuntime.Gpu.Windows package to check whether a GPU-architecture kernel
+    # gap (a real, well-documented thing: official ORT CUDA builds have historically lagged behind
+    # brand-new NVIDIA architectures -- see the cudaErrorNoKernelImageForDevice note below) is fixed
+    # in a later release, without needing yet another -Mode value or folder-naming convention for
+    # every version anyone might want to try. Both must point at files built for the SAME ORT
+    # version as each other (mismatched managed/native versions is its own separate failure mode --
+    # already ruled out as this project's root cause on the original dev machine, but still a real
+    # thing to avoid introducing by accident here).
+    [string]$NativeFolder,
+    [string]$ManagedDllPath
 )
 
-$root = "D:\Data\dev\git\videobumperremover\VBR.CLI\bin\Debug\net10.0"
+$root = $Root
+
+$env:Path += ";D:\Data\InvokeML\bin\.venv\Lib\site-packages\torch\lib"
+
 $aiFolder = Join-Path $root "ai"
-$managedDll = Join-Path $root "Microsoft.ML.OnnxRuntime.dll"
+$managedDll = if ($ManagedDllPath) { $ManagedDllPath } else { Join-Path $root "Microsoft.ML.OnnxRuntime.dll" }
 $modelPath = Join-Path $aiFolder "dinov2-small-int8.onnx"
-$nativeFolder = switch ($Mode) {
-    "DirectML" { Join-Path $aiFolder "directml" }
-    "Cuda"     { Join-Path $aiFolder "cuda" }
-    default    { $aiFolder }
+$nativeFolder = if ($NativeFolder) {
+    $NativeFolder
+}
+else {
+    switch ($Mode) {
+        "DirectML" { Join-Path $aiFolder "directml" }
+        "Cuda"     { Join-Path $aiFolder "cuda" }
+        default    { $aiFolder }
+    }
 }
 
 $onnxRuntimeDllPath = Join-Path $nativeFolder "onnxruntime.dll"
@@ -54,6 +78,11 @@ if (-not (Test-Path $modelPath))   { throw "Model not found at $modelPath -- run
 if (-not (Test-Path $managedDll))  { throw "Managed wrapper not found at $managedDll." }
 if (-not (Test-Path $nativeFolder)) { throw "Native runtime folder not found at $nativeFolder." }
 if (-not (Test-Path $onnxRuntimeDllPath)) { throw "onnxruntime.dll not found at $onnxRuntimeDllPath." }
+
+# Resolve to absolute before comparing against the loaded module's path below -- Process.Modules
+# always reports an absolute path, so a relative -NativeFolder (e.g. "ai\cuda128") would otherwise
+# always "mismatch" a perfectly correct load and print a false "not trustworthy" warning.
+$onnxRuntimeDllPath = (Resolve-Path $onnxRuntimeDllPath).Path
 
 # Adding the folder to PATH is NOT enough on its own: a bare-name LoadLibrary("onnxruntime")
 # checks the loading process's own directory and System32 BEFORE PATH, so whichever
@@ -84,14 +113,39 @@ Write-Host "Mode: $Mode$(if ($Mode -in @('DirectML', 'Cuda')) { " (device index 
 Write-Host "Native runtime folder: $nativeFolder"
 
 $options = New-Object Microsoft.ML.OnnxRuntime.SessionOptions
+$epAttached = $true
 if ($Mode -eq "DirectML") {
-    # Same two settings VBR's own OnnxEmbedder sets -- documented DirectML EP requirement.
-    $options.EnableMemoryPattern = $false
-    $options.ExecutionMode = [Microsoft.ML.OnnxRuntime.ExecutionMode]::ORT_SEQUENTIAL
-    $options.AppendExecutionProvider_DML($DeviceId)
+    # Same two settings VBR's own OnnxEmbedder sets -- documented DirectML EP requirement. Wrapped
+    # in try/catch exactly like OnnxEmbedder.cs does, deliberately: AppendExecutionProvider_DML can
+    # throw a catchable RuntimeException on its own (live-verified: "invalid adapter handle" at
+    # this exact call, on this exact machine) WITHOUT that exception ever reaching the
+    # InferenceSession construction below. PowerShell treats an uncaught .NET exception from a
+    # method call as a non-terminating error by default -- the script would otherwise print it and
+    # sail on to construct a plain CPU-only session (no DML attached at all) and misreport that as
+    # "no crash, no exception for DirectML", which is what this script actually did before this
+    # fix was added.
+    try {
+        $options.EnableMemoryPattern = $false
+        $options.ExecutionMode = [Microsoft.ML.OnnxRuntime.ExecutionMode]::ORT_SEQUENTIAL
+        $options.AppendExecutionProvider_DML($DeviceId)
+    }
+    catch {
+        $epAttached = $false
+        Write-Host "AppendExecutionProvider_DML FAILED (device $DeviceId) -- catchable, not a crash:"
+        Write-Host $_.Exception.Message
+        Write-Host "Continuing to construct the session anyway, WITHOUT DirectML attached (CPU only) -- this tells you nothing about DirectML working, only that plain CPU inference still does."
+    }
 }
 elseif ($Mode -eq "Cuda") {
-    $options.AppendExecutionProvider_CUDA($DeviceId)
+    try {
+        $options.AppendExecutionProvider_CUDA($DeviceId)
+    }
+    catch {
+        $epAttached = $false
+        Write-Host "AppendExecutionProvider_CUDA FAILED (device $DeviceId) -- catchable, not a crash:"
+        Write-Host $_.Exception.Message
+        Write-Host "Continuing to construct the session anyway, WITHOUT CUDA attached (CPU only) -- this tells you nothing about CUDA working, only that plain CPU inference still does."
+    }
 }
 
 Write-Host "Constructing InferenceSession..."
@@ -106,7 +160,12 @@ catch {
     exit 1
 }
 $sw.Stop()
-Write-Host "Session ready in $($sw.ElapsedMilliseconds) ms -- no crash, no exception for $Mode$(if ($Mode -eq 'DirectML') { " device $DeviceId" })."
+if ($Mode -ne "Cpu" -and -not $epAttached) {
+    Write-Host "Session ready in $($sw.ElapsedMilliseconds) ms -- but running on CPU, NOT $Mode (the execution provider failed to attach above)."
+}
+else {
+    Write-Host "Session ready in $($sw.ElapsedMilliseconds) ms -- no crash, no exception for $Mode$(if ($Mode -in @('DirectML', 'Cuda')) { " device $DeviceId" })."
+}
 
 # --- Optional: timing comparison (dummy zeroed input -- fine for raw throughput, DINOv2 has
 #     no data-dependent branching, but it is NOT a correctness test) ---
