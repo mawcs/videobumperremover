@@ -201,7 +201,11 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   0006 edge-focused fingerprinting (see its 2026-07-21 amendment), 0007 removal command (see its
   2026-07-30 amendment), 0008 cleanup command (renamed `vbr commit`, 2026-07-29), 0009 library
   scan/database, 0010 database-backed removal, 0011 CLI/library terminology & multi-folder
-  libraries, 0012 removal re-encode codec/HDR defaults (decided, not yet implemented).
+  libraries, 0012 removal re-encode codec/HDR defaults (implemented 2026-07-30, as part of 0013's
+  GPU-encode work), 0013 GPU acceleration (ffmpeg decode/encode + ONNX DirectML inference —
+  decode/encode confirmed live; DirectML inference still falls back to CPU on the maintainer's own
+  machine, see its Open questions), 0014 VBR.CLI redistribution (self-contained single-file
+  publish for cross-machine benchmarking).
 - [`docs/development.md`](docs/development.md) — environment setup (SDK, VS Code; use base C#
   extension, skip C# Dev Kit) + troubleshooting.
 - [`docs/running_and_building.md`](docs/running_and_building.md) — command reference: build,

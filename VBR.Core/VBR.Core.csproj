@@ -4,6 +4,13 @@
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
     <RootNamespace>VBR.Core</RootNamespace>
+    <!-- Single-file/AOT publish: IL3000 flags HardwareAcceleration.ProbeOneDevice's
+         Assembly.GetEntryAssembly()?.Location call. That call only executes inside the
+         "processPath's filename is literally dotnet" branch (the `dotnet run`/`dotnet exec`
+         shared-host case), unreachable once VBR.CLI is published single-file, since there
+         Environment.ProcessPath already IS the app's own exe and that branch is skipped
+         entirely. The trimmer can't prove that statically; our usage is covered. -->
+    <NoWarn>$(NoWarn);IL3000</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
