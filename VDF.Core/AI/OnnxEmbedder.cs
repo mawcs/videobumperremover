@@ -44,6 +44,19 @@ namespace VDF.Core.AI {
 		readonly string outputName;
 		readonly bool clsFromHiddenState;
 
+		/// <summary>True only when <c>AppendExecutionProvider_DML</c> actually succeeded — false
+		/// both when <paramref name="preferDirectML"/> was never requested AND when it was
+		/// requested but silently fell back to CPU (the documented, deliberate behavior of this
+		/// constructor). Exists because "the constructor didn't throw" is NOT proof DirectML
+		/// attached: a caught DirectML failure falls back to a working CPU session with no
+		/// exception at all, so any caller that needs to know whether GPU inference is actually
+		/// happening (not just "did we get a working session") must check this, not just watch for
+		/// an exception. Live-verified (2026-08-02) this distinction was missing from
+		/// <c>HardwareAcceleration</c>'s own probe, which had been reporting every non-crashing
+		/// device index as "success" even when DirectML itself failed and silently fell back
+		/// underneath — see docs/decisions/0013-gpu-acceleration.md.</summary>
+		internal bool UsedDirectML { get; private set; }
+
 		/// <param name="preferDirectML">Requests the DirectML execution provider
 		/// (docs/decisions/0013-gpu-acceleration.md) — Windows only, and only meaningful when the
 		/// DirectML-enabled native runtime is actually the one <see cref="AiComponents.EnsureResolverInstalled"/>
@@ -81,6 +94,7 @@ namespace VDF.Core.AI {
 					options.EnableMemoryPattern = false;
 					options.ExecutionMode = ExecutionMode.ORT_SEQUENTIAL;
 					options.AppendExecutionProvider_DML(directMlDeviceId);
+					UsedDirectML = true;
 				}
 				catch (Exception ex) {
 					Logger.Instance.Warn($"[onnx] DirectML execution provider unavailable ({ex.Message}) -- falling back to CPU inference.");

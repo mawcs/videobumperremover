@@ -1,14 +1,17 @@
 # ADR 0013: GPU acceleration — ffmpeg decode/encode and ONNX inference
 
 - **Status:** accepted, implemented and live-verified on multiple real machines with working GPUs
-  (2026-07-30 to 2026-07-31). GPU re-encode (Decision 3) is confirmed actually engaging, not just
-  falling back. **DirectML inference (Decision 5) is confirmed broken by a genuine cross-process
-  DXGI adapter handle lifetime issue, not a stale package version (unlike CUDA, where that was the
-  entire explanation) and not device-index selection (a real, shipped DXGI-adapter-filtering fix —
-  see "Live-verified (2026-07-31, real DXGI adapter filtering)" — did not resolve it).** DirectML
-  falls back to CPU safely and correctly everywhere it's been tried, but does not actually engage
-  anywhere it's been tried, across two unrelated GPUs and two different DirectML package versions.
-  Root cause narrowed but still open — see "Open questions."
+  (2026-07-30 to 2026-08-02). GPU re-encode (Decision 3) is confirmed actually engaging, not just
+  falling back. **DirectML inference (Decision 5): a measurement bug in this project's own probe
+  was found and fixed (2026-08-02) that invalidates most of the "cross-process handle instability"
+  narrative below — see "Live-verified (2026-08-02, the probe itself was lying)".** The corrected,
+  honest signal is simpler and worse than previously believed: DirectML has not been confirmed to
+  actually attach on ANY device index, on EITHER real machine tested, at any point in this whole
+  investigation — every earlier "device index N works" report was a false positive caused by
+  `OnnxEmbedder` catching DirectML's own failure internally and falling back to CPU with no
+  exception, which the probe mistook for success since it only checked "did construction throw."
+  DirectML now falls back to CPU safely, correctly, and (as of the fix) *transparently* — but a
+  real, still-unexplained DirectML-level failure remains: it does not actually engage anywhere.
 - **Date:** 2026-07-30 (cross-machine DirectML finding added 2026-07-31, CUDA diagnostic +
   DirectML version-bump added 2026-07-31, DXGI adapter filtering implemented and ruled out as the
   fix 2026-07-31)
@@ -389,25 +392,65 @@ risk the subprocess design exists to prevent — not a decision to make unilater
 matter differently depending on how much running-out-of-process overhead this project is willing
 to accept for real DirectML acceleration.
 
+## Live-verified (2026-08-02, the probe itself was lying — corrected)
+
+Investigating a specific question ("does the probe finding index N really mean N is safe to trust
+later, or does adapter ordering change between the probe and real use?") led to systematically
+testing every plausible mechanism difference between "the probe subprocess" (reports success) and
+"the real embedder construction" (reports failure) — repeated same-process construction, spawning
+a child probe then constructing in the parent, `dotnet run` vs the muxer vs the apphost `.exe`,
+PowerShell vs a compiled console app, elapsed delay, thread-pool vs main thread, the full VBR.CLI
+dependency graph loaded, and invocation through `System.CommandLine`'s real `InvokeAsync()`
+pipeline. **Every single one of these succeeded when reproduced in isolation** — a result that
+kept getting more suspicious as each hypothesis was ruled out, until testing the *actual* production
+method (`VisualBumperMatcher.PrepareClip`/`MixedDensitySampler.EnsureEmbedder`) directly revealed
+why: a diagnostic call reported "SUCCESS" (no exception) in the same breath as a logged DirectML
+failure warning.
+
+**Root cause of the whole confusing pattern: `OnnxEmbedder`'s constructor catches a DirectML
+attach failure internally and falls back to a working CPU session with NO exception at all** —
+by design, so a caller never hard-fails just because GPU inference wasn't available. But
+`HardwareAcceleration.RunDirectMlProbe` (and therefore `ProbeDirectMlInSubprocess`, and therefore
+every device-index-selection decision this ADR has been chasing since 2026-07-30) only ever
+checked "did construction throw" as its success signal — never whether DirectML actually attached.
+Since CPU fallback ALSO doesn't throw, **the probe had been reporting every non-crashing device
+index as a false "success," on every machine, this entire investigation.** The "probe succeeds at
+index 2, real construction fails at index 2" pattern that drove the cross-process-handle-lifetime
+theory above was never actually a cross-process inconsistency — the probe was never testing the
+right thing to begin with.
+
+**Fixed**: `OnnxEmbedder` now exposes `UsedDirectML` (true only when `AppendExecutionProvider_DML`
+itself succeeded, set right after that call, before the catch could ever run). `RunDirectMlProbe`
+now returns nonzero when `UsedDirectML` is false, even though construction didn't throw — turning
+"gracefully did not attach" into a real, distinguishable probe failure. Re-ran the real `vbr match`
+command after this fix: it now correctly and honestly exhausts every candidate device index,
+finds that DirectML does not attach at any of them, and falls back to CPU **before ever
+constructing a real embedder** — one clean `Warning: DirectML acceleration did not initialize
+correctly on this machine ... falling back to CPU inference` message, no more false "DirectML
+acceleration ready" followed by a confusing mid-run failure. Build clean, `VBR.Tests` (72) and
+`VDF.Core.Tests` (480) both pass.
+
+This does not identify *why* DirectML fails to attach — that remains exactly as unexplained as
+before. What it changes is confidence in the data: the "cross-process handle instability" theory,
+the "same index behaves differently in different processes" observation, and the implied
+architectural tension between crash-safety and handle lifetime (all in the section above) were
+built on a false signal and should not be trusted as accurate characterizations of the underlying
+DirectML failure. The only things that survive this correction as solid, re-confirmed facts: GPU
+re-encode via ffmpeg genuinely works (verified independently of ONNX entirely); a real DirectML
+init failure can crash the whole process uncatchably at some device indices (this is a hard crash,
+not a false positive — a crashed process can't have printed a false "success"); and DirectML, at
+every index tried so far, on both real machines tested, has never been confirmed to actually
+attach.
+
 ## Open questions
 
-- **Root cause of DirectML's cross-process "invalid adapter handle" failure** — see "Live-verified
-  (2026-07-31, real DXGI adapter filtering)" above. Ruled out: stale package version (unlike CUDA),
-  RDP/phantom-adapter specificity (fails identically on a non-RDP machine), and now also ruled out:
-  picking the wrong (virtual/non-hardware) device index — real DXGI-filtered adapter selection
-  still hits the identical failure at the correct, real-GPU index. The remaining live hypothesis is
-  a genuine cross-process DXGI/D3D12 adapter handle lifetime problem: a handle valid in the probe
-  subprocess is not valid in the real process moments later. Candidate next steps, none attempted
-  yet: (a) run the *entire* DirectML-accelerated embedding pipeline in a long-lived subprocess
-  (not just a go/no-go probe), communicating results back via stdout/pipes — a real architectural
-  change, trading process-per-call overhead for actually keeping the handle alive in the process
-  that created it; (b) whether `AppendExecutionProvider_DML(deviceId)`'s simple index-based
-  overload is simply unsuited to this repeated-short-lived-process usage pattern versus the
-  explicit `SessionOptionsAppendExecutionProvider_DML1` (caller-created `IDMLDevice`/`ID3D12CommandQueue`)
-  alternative, which sidesteps ORT's own internal DXGI enumeration entirely; (c) whether the
-  redistributed `DirectML.dll` (pinned to `Microsoft.AI.DirectML 1.15.4`, unchanged across both
-  tested ORT DirectML versions) is itself implicated, versus the DirectML.dll that ships in the
-  Windows OS itself (Windows 10 1903+).
+- **Whether DirectML can attach at all, on any machine, given a probe that finally measures this
+  correctly** — the entire premise of "device index 2 sort-of works" is retired per "Live-verified
+  (2026-08-02)" above; no device index has been confirmed to actually engage DirectML anywhere.
+  Re-running the corrected probe on the RTX 5080 machine (and any other future test machine) is the
+  natural next step — it may reveal a genuinely different picture now that the signal is honest,
+  rather than continuing to chase theories (cross-process handle lifetime, wrong API overload,
+  redistributed vs. OS-provided `DirectML.dll`) built on the old, misleading "success" reports.
 - GPU quality-flag numeric values (Decision 3) — starting guesses, not tuned.
 - Whether `-preset`/`-global_quality`/`-quality` choices for the three GPU encoder families are
   well-chosen — same "not yet finalized" status ADR 0012 left its own CPU preset value in.

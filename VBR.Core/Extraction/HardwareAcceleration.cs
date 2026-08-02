@@ -202,11 +202,24 @@ public static class HardwareAcceleration {
 	/// <paramref name="deviceId"/>; a clean 0 means that index is safe to trust after the parent
 	/// reads this exit code. On failure, writes the caught exception's type and message to stderr
 	/// before returning nonzero — the parent's <see cref="ProbeDirectMlInSubprocess"/> surfaces
-	/// this text so a failure is diagnosable instead of a bare "didn't work."</summary>
+	/// this text so a failure is diagnosable instead of a bare "didn't work."
+	///
+	/// <b>Returns nonzero (1) when DirectML silently falls back to CPU, not just when construction
+	/// throws.</b> Live-verified (2026-08-02) this distinction was missing: <see cref="VDF.Core.AI.OnnxEmbedder"/>'s
+	/// constructor catches a DirectML attach failure internally and falls back to a working CPU
+	/// session with NO exception at all — so a probe that only checked "did construction throw"
+	/// reported every non-crashing device index as "success" even when DirectML itself failed and
+	/// silently fell back underneath, on every machine this was tested on, the whole time. Checking
+	/// <see cref="VDF.Core.AI.OnnxEmbedder.UsedDirectML"/> is what actually distinguishes "DirectML
+	/// attached" from "gracefully did not."</summary>
 	public static int RunDirectMlProbe(string modelPath, int deviceId) {
 		try {
 			VDF.Core.AI.AiComponents.EnsureResolverInstalled(preferDirectML: true);
 			using var embedder = new VDF.Core.AI.OnnxEmbedder(modelPath, preferDirectML: true, deviceId);
+			if (!embedder.UsedDirectML) {
+				Console.Error.WriteLine("DirectML did not attach (fell back to CPU inside OnnxEmbedder) -- see log.txt for the caught exception's own message.");
+				return 1;
+			}
 			return 0;
 		}
 		catch (Exception ex) {
