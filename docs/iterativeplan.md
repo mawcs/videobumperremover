@@ -4,6 +4,185 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Native FFmpeg binding for scanning/sampling — planned (2026-08-02)
+
+**Status: planned, not yet implemented — do not start implementation until the maintainer has
+reviewed and approved this plan.** See [`docs/decisions/0015-native-ffmpeg-binding.md`](decisions/0015-native-ffmpeg-binding.md)
+for the accompanying ADR.
+
+### Context
+
+Comparing VDF's own GUI settings against VBR's scanning/matching pipeline (screenshots reviewed
+2026-08-02) surfaced a real, already-built, currently-unused optimization: VDF.Core ships a native
+FFmpeg binding (`FFmpeg.AutoGen` calling `libavformat`/`libavcodec` directly) that decodes frames
+in-process, never spawning `ffmpeg.exe`. VDF's own settings text is explicit about the payoff:
+*"For scan speed this is usually the biggest win, bigger than GPU decoding."* VBR's own sampling
+code (`VBR.Core/Fingerprinting/DenseFrameSampler.cs`, the single choke point every sampler —
+`MixedDensitySampler`, `WholeFileSampler`, and `VisualBumperMatcher` indirectly — funnels through)
+exclusively spawns `ffmpeg.exe` via `ProcessStartInfo` for every sampling call, with zero use of
+this native path — confirmed by grep: zero `FFmpeg.AutoGen` references anywhere in `VBR.Core`.
+Since `VDF.Core` is already a direct dependency of `VBR.Core` (not a separate app to integrate),
+this is reuse of code already sitting in our own dependency tree, not a forklift from an unrelated
+project.
+
+### What already exists in VDF.Core to build on
+
+- **`VDF.Core/FFTools/FFmpegNative/VideoStreamDecoder.cs`** — opens a file (`avformat_open_input`),
+  finds the best video stream, and exposes `TryDecodeFrame(out AVFrame, TimeSpan position)`: seeks
+  (`av_seek_frame`) to a position and decodes forward to the target PTS, handling keyframe seek
+  fallback, bad-packet tolerance (up to 64, issue #731), still-image draining (issue #801's native
+  analogue), and an interrupt-callback timeout (re-armed per call, not per decoder lifetime — a
+  single 15s budget across a whole batch previously starved later positions on slow files).
+  Optionally takes an `AVHWDeviceType` for hardware decode (`av_hwdevice_ctx_create`), deferring
+  pixel-format detection until after the first frame when hardware decode is active (10-bit content
+  correctness).
+- **`VDF.Core/FFTools/FFmpegNative/VideoFrameConverter.cs`** — thin `sws_scale` wrapper: source
+  size/format → destination size/format (e.g. 32×32 GRAY8 for pHash, or 224×224 RGB24 — exactly
+  `OnnxEmbedder.InputSide`, VBR's own AI input size — for embeddings), reusable across frames when
+  the source layout is unchanged.
+- **`VDF.Core/FFTools/FfmpegEngine.cs`** (`internal static class` — reachable from `VBR.Core` via
+  the existing `InternalsVisibleTo` grant, ADR 0005, same as every other VDF.Core bridge this
+  project has already built) — orchestrates the above with production-grade fallback behavior
+  already built and battle-tested in VDF:
+  - `UseNativeBinding` (public property on the internal class) is the master toggle.
+  - `ShouldUseNativeBinding` additionally gates on `FFmpegHelper.CanLoadNativeLibraries` and a
+    per-scan session circuit breaker: `RecordNativeFailure`/`RecordNativeSuccess` track
+    consecutive per-file failures, disabling native for the rest of that scan after
+    `NativeFailureThreshold` (5) consecutive failures — one summary warning instead of a
+    stack-trace storm, with a `BuildNativeFailureDetail` helper that captures FFmpeg's own log
+    output plus a classified plain-language hint.
+  - `TryGetGrayBytesFromVideoNativeBatch` (line ~225) is the reference pattern for multi-position
+    batch decode: **one** `VideoStreamDecoder` open per file, looping over requested positions,
+    reusing **one** `VideoFrameConverter` across positions (rebuilt only if hardware decode hands
+    back a different `sw_format` mid-file), producing both the 32×32 gray/pHash output and a
+    224×224 RGB24 AI-embedding output from the *same* decoded frame when both are wanted. This is
+    structurally very close to what `DenseFrameSampler` needs, with one important caveat — see
+    Step 5 below.
+  - `GetConfiguredHardwareDeviceType()` maps `FFHardwareAccelerationMode` → `AVHWDeviceType`
+    directly (already `internal`, already reachable) — including an explicit Vulkan guard (forces
+    software decode under native binding; Vulkan hardware decode segfaults the whole process
+    uncatchably on some NVIDIA setups under this specific native path, issue #799).
+  - `GetDenseAiFrames` (line ~995) already does a **keyframe-only sequential native decode at an
+    interval** with CLI fallback built in — this is architecturally near-identical to what
+    `DenseFrameSampler.SampleKeyframes` reimplements by hand via `-skip_frame nokey` + an `fps=`
+    filter. Likely the single most direct reuse opportunity in this whole plan (see Step 4) —
+    but its exact return shape (pixel format/size) needs verifying against what
+    `WholeFileSampler`'s sparse pass actually needs before assuming a clean swap.
+
+### Explicit scope boundary: decode-only, not encode/mux
+
+VDF's native binding never writes an output video file — every native call reads frames for
+in-process analysis (hashing, embedding) only. `VBR.Core/Extraction/ClipExtractor.cs` (writes a
+real `.mkv` via stream-copy or re-encode, for the bumper catalog) and
+`VBR.Core/Removal/ClipRemover.cs` (writes the actual `.vbr.` cut output) both mux/encode real
+output files — outside this native path's scope entirely. **Both stay on the `ffmpeg.exe` CLI
+path unconditionally.** This is a deliberate scope boundary, not an oversight: only
+`DenseFrameSampler`'s two internal decode methods (`SampleFrames`, `SampleKeyframes` — both
+already funnel every sampling caller through one file) are in scope.
+
+### Step-by-step implementation plan
+
+1. **Extend the existing `HardwareAcceleration` bridge** (`VBR.Core/Extraction/HardwareAcceleration.cs`)
+   with a new `NativeFfmpegBinding` bool property forwarding to `FfmpegEngine.UseNativeBinding` —
+   same bridge pattern already used for `Mode`/`HardwareAccelerationMode` (VBR.CLI has no
+   `InternalsVisibleTo` grant from VDF.Core; VBR.Core does).
+2. **Add a `--native-ffmpeg-binding` CLI flag** in `VBR.CLI/Commands/SharedOptions.cs`, wired the
+   same way `--hardware-accel` already is: set once at the start of each command handler
+   (`scan`/`match`/`remove`/`add-bumper`) that samples frames. **Defaults to `true`** (on by
+   default, opt-out via the flag) — decided 2026-08-03, overriding this plan's original
+   "default off" recommendation. VDF's own circuit breaker (5-consecutive-failure-per-scan
+   disable, already reused as-is per Step 6) covers *repeated* native failures; it does not
+   prevent a first uncaught native crash taking down the process, which remains the real risk a
+   default-on posture accepts more broadly than an opt-in one would have. Live verification
+   (Step 9) carries more weight under this posture, not less.
+3. **Verify `GetDenseAiFrames`'s actual return shape** (pixel format, frame size, whether it
+   already matches what `WholeFileSampler`'s sparse whole-file pass needs, or needs a wrapping
+   conversion) before assuming step 4 is a clean swap.
+4. **Rewrite `DenseFrameSampler.SampleKeyframes`** to call `FfmpegEngine.GetDenseAiFrames` when
+   `HardwareAcceleration.NativeFfmpegBinding` is set (falling back to the existing CLI
+   implementation otherwise, or on any native exception) — the most direct, lowest-risk reuse in
+   this plan, since VDF has already built and hardened almost exactly this method.
+5. **Add a new sequential-decode method** purpose-built for `DenseFrameSampler.SampleFrames`'s
+   actual access pattern: **dense, closely-spaced positions across a short window** (e.g. every
+   0.2–1s). This is *not* a drop-in use of `TryDecodeFrame(position)` per requested position —
+   that method seeks (`av_seek_frame`) on every call, which is the right behavior for VDF's own
+   sparse, spread-out positions (its batch method's actual use case) but would mean reseeking on
+   every single closely-spaced position here, likely *slower* than the current CLI approach (which
+   decodes the window forward once and picks frames via an `fps=` filter — no repeated seeking at
+   all). **Resolved 2026-08-03 (see Open Questions below)**: split into (a) a new
+   `TryDecodeNextFrame(out AVFrame frame)` primitive on `VideoStreamDecoder` — decodes forward
+   *without* seeking, reusing the exact same packet-read/bad-packet/draining loop
+   `TryDecodeFrame` already has, just skipping the seek-and-target-PTS part — and (b) a new
+   orchestration method in `FfmpegEngine.cs`, matching `TryGetGrayBytesFromVideoNativeBatch`'s
+   existing shape: seek **once** to the region start (or not at all, for the whole-file overload),
+   then loop `TryDecodeNextFrame`, converting to 224×224 RGB24 via `VideoFrameConverter` whenever
+   a frame's PTS crosses the next `intervalSeconds` threshold — mirroring exactly what the current
+   `fps=1/{intervalSeconds}` filter chain does, just in-process. Keeps VDF's own established
+   low-level-primitive-vs-orchestration layering rather than introducing a second convention.
+6. **Wire the new method into both `DenseFrameSampler.SampleFrames` overloads** (the region-seeking
+   one `MixedDensitySampler` uses, and the whole-file one `VisualBumperMatcher` uses directly),
+   gated by `HardwareAcceleration.NativeFfmpegBinding`, falling back to the existing CLI
+   implementation on any native failure. **Resolved 2026-08-03**: share `FfmpegEngine`'s existing
+   static per-scan health-tracking/circuit-breaker state directly rather than maintaining a
+   separate instance — zero new tracking code, and more correct, since Step 4's `GetDenseAiFrames`
+   reuse and this new method both run in the same VBR.CLI process during a single scan, so a
+   native failure in one very likely shares a root cause with the other.
+7. **GPU decode wiring for the native path**: reuse `FfmpegEngine.GetConfiguredHardwareDeviceType()`
+   directly rather than reimplementing the `FFHardwareAccelerationMode` → `AVHWDeviceType` mapping.
+   `auto` has no `AVHWDeviceType` equivalent (matches VDF's own settings UI disallowing "auto" with
+   native binding). **Resolved 2026-08-03**: since `--hardware-accel` defaults to `auto` (ADR 0013)
+   and `--native-ffmpeg-binding` now also defaults to `true` (Step 2), this combination is the
+   default experience, not an edge case — rejecting it was ruled out. When `auto` is requested
+   under native binding, probe-by-attempting a platform-appropriate list of `AVHWDeviceType`
+   candidates (`d3d11va`/`dxva2` on Windows, `vaapi` on Linux, `videotoolbox` on macOS), falling
+   back to `none` if none work — reusing the same probe-by-attempting pattern `GpuEncoderProbe`
+   (ADR 0013) and DirectML device selection already established in this codebase, rather than
+   inventing a new detection mechanism.
+8. **`ClipExtractor`/`ClipRemover` stay on the CLI path — no changes.** Confirm this explicitly in
+   code review; don't let native-binding wiring creep into either file.
+9. **Testing and live verification**:
+   - `dotnet build` clean, `dotnet test VBR.Tests`/`dotnet test VDF.Core.Tests` clean throughout.
+   - **Correctness parity is non-negotiable — speed is the only thing allowed to differ.** Live
+     run the same real media (the established Daredevil/Caprica verification set) through both
+     `--native-ffmpeg-binding` on and off, confirm byte-identical or equivalent-within-tolerance
+     sampled frames and identical match results (`present=N/M`, `bestCos=`) either way.
+   - Time a real multi-file library scan/match run before and after, to quantify the actual win —
+     don't just trust VDF's own settings text applies at the same magnitude to VBR's edge-focused,
+     shorter-window sampling pattern (VDF's own win is measured on its own whole-file/keyframe
+     sampling pattern, not necessarily identical to VBR's).
+   - Deliberately trigger a native failure (e.g. a corrupt or unusual file) and confirm the
+     graceful per-file fallback actually engages and the scan continues, rather than aborting.
+10. **Docs**: update `docs/decisions/0006-edge-focused-fingerprinting.md` and/or
+    `docs/design/matcher-spec.md` if the new native sequential-decode method changes any previously
+    documented sampling-behavior nuance; update `AGENTS.md`'s ADR index for the new ADR 0015.
+
+### Not done here — native encode/mux (deferred, separate effort)
+
+Deliberately out of scope for this plan, not an oversight: **VDF.Core has no native encode/mux
+code to build on at all.** `FFmpegNative/JpegFrameEncoder.cs` encodes single still-image
+thumbnails only; nothing in VDF.Core writes video output natively, because VDF (a duplicate
+finder) never needs to. Unlike decode — where this plan reuses hardened, already-shipped code —
+a native encode path for `ClipRemover`'s re-encode step would mean building an entirely new
+`avcodec_send_frame`/`avcodec_receive_packet`/muxer/audio-passthrough/GPU-encoder-interop
+subsystem from scratch, with no head start from the fork. It's also not obviously the same class
+of win: `vbr remove` does one (or a handful of) ffmpeg invocations per file, not the many small
+per-position calls where process-spawn overhead dominates a scan — the "biggest win" rationale
+motivating the decode-side work doesn't obviously carry over. Revisit as its own separate
+ADR/plan, informed by real timing data from this decode-side work, once it's live-verified and
+shipped — not folded into this effort.
+
+### Open questions — all resolved with the maintainer, 2026-08-03
+
+All four real open questions from this plan's first draft are now resolved (see the inline
+"Resolved 2026-08-03" notes in Steps 2, 5, 6, and 7 above for the decisions and reasoning) — only
+one implementation-time verification task remains, not a decision:
+
+- Exact `GetDenseAiFrames` return shape (Step 3) — verify before treating the Step 4 swap as a
+  given; not something to decide, just to check.
+
+Nothing else is blocking implementation on the planning side. Still waiting on explicit
+maintainer go-ahead before any code is written, per the original request.
+
 ## CLI feedback during remove — implemented (2026-07-29)
 
 **Status: implemented and live-verified against real media, both removal modes.**

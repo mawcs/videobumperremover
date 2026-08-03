@@ -205,7 +205,9 @@ Past the risk-retirement spike; about to begin real product build. What's establ
   GPU-encode work), 0013 GPU acceleration (ffmpeg decode/encode + ONNX DirectML inference —
   decode/encode confirmed live; DirectML inference still falls back to CPU on the maintainer's own
   machine, see its Open questions), 0014 VBR.CLI redistribution (self-contained single-file
-  publish for cross-machine benchmarking).
+  publish for cross-machine benchmarking), 0015 native FFmpeg binding for scanning/sampling
+  (proposed, not yet implemented — see its own doc and `docs/iterativeplan.md`'s matching entry
+  for the step-by-step plan under review).
 - [`docs/development.md`](docs/development.md) — environment setup (SDK, VS Code; use base C#
   extension, skip C# Dev Kit) + troubleshooting.
 - [`docs/running_and_building.md`](docs/running_and_building.md) — command reference: build,
