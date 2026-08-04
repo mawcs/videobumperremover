@@ -71,6 +71,7 @@ internal static class MatchCommand {
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
 		cmd.Options.Add(HardwareAccel);
+		cmd.Options.Add(NoNativeFfmpegBinding);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			var clipFrom = parseResult.GetValue(ClipFrom);
@@ -117,6 +118,7 @@ internal static class MatchCommand {
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
+			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 

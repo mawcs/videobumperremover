@@ -54,6 +54,18 @@ public static class HardwareAcceleration {
 	/// "what counts as GPU-enabled" rule lives in exactly one place.</summary>
 	public static bool Enabled => Mode != FFHardwareAccelerationMode.none;
 
+	/// <summary>Forwards to <see cref="FfmpegEngine.UseNativeBinding"/> — VBR's own knob for the
+	/// native FFmpeg.AutoGen decode path (docs/decisions/0015-native-ffmpeg-binding.md), separate
+	/// from <see cref="Mode"/>/<see cref="Enabled"/> (GPU device acceleration): this is about
+	/// avoiding a spawned <c>ffmpeg.exe</c> process per sampling call, not about which device does
+	/// the decoding. **Defaults to <c>true</c>** (decided 2026-08-03, an explicit reversal of that
+	/// ADR's original "default off" draft) — every command sets this once at startup regardless of
+	/// whether the user passed the CLI flag, same convention as <see cref="Mode"/>.</summary>
+	public static bool NativeFfmpegBinding {
+		get => FfmpegEngine.UseNativeBinding;
+		set => FfmpegEngine.UseNativeBinding = value;
+	}
+
 	static bool directMlUnavailable;
 
 	/// <summary>Which DXGI adapter index actually initializes DirectML successfully on this

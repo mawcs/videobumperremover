@@ -1,11 +1,14 @@
 # ADR 0015: Native FFmpeg binding for scanning/sampling
 
-- **Status:** proposed — design fully resolved with the maintainer (2026-08-03), all open questions
-  answered. **Not yet implemented; no code has been written for this decision.** Still waiting on
-  explicit maintainer go-ahead before implementation starts. See
-  [`docs/iterativeplan.md`](../iterativeplan.md)'s "Native FFmpeg binding for scanning/sampling"
-  entry for the detailed step-by-step implementation plan this ADR accompanies.
-- **Date:** 2026-08-02 (design finalized 2026-08-03)
+- **Status:** accepted, implemented and live-verified (2026-08-03). `SampleFrames` (the dense,
+  closely-spaced case) has real native decode wired in with CLI fallback; `SampleKeyframes` was
+  deliberately left CLI-only during implementation (see "Live-verified" below — not the plan's
+  original assumption). A real bug was found and fixed during live verification (a double-EOF-flush
+  crash-to-fallback on every file's tail end) — see that section for details. **Important caveat
+  found during verification, not anticipated in the original plan: most typical ffmpeg installs
+  (static builds — e.g. Chocolatey's, this project's own dev machine) have no shared libraries at
+  all, so native decode silently never activates for them out of the box** — see "Open questions."
+- **Date:** 2026-08-02 (design finalized 2026-08-03, implemented and live-verified 2026-08-03)
 - **Related:** [`0006-edge-focused-fingerprinting.md`](0006-edge-focused-fingerprinting.md) (the
   sampling strategy this would accelerate, not replace), [`0013-gpu-acceleration.md`](0013-gpu-acceleration.md)
   (ffmpeg `-hwaccel` decode acceleration — a different, already-shipped lever this is additive to,
@@ -62,9 +65,12 @@ letting it accumulate implicitly across commits.
 
 3. **Not a uniform swap — the two `DenseFrameSampler` methods need different treatment.**
    `SampleKeyframes` (the whole-file sparse pass `WholeFileSampler` uses, keyframe-only decode at a
-   multi-second interval) is architecturally near-identical to VDF's own already-built
-   `FfmpegEngine.GetDenseAiFrames` — likely a close-to-direct reuse, pending verification that its
-   return shape (pixel format/size) actually matches what the caller needs. `SampleFrames` (the
+   multi-second interval) looked architecturally near-identical to VDF's own already-built
+   `FfmpegEngine.GetDenseAiFrames`, suggesting a close-to-direct reuse. **Live-verified 2026-08-03
+   this assumption was wrong**: `GetDenseAiFrames` turns out to be CLI-only even with native
+   binding enabled, a deliberate VDF choice (one `ffmpeg.exe` spawn per file is fine when it's a
+   single sequential pass, not many small per-position calls) — the same reasoning applies to
+   `SampleKeyframes`, so it was left CLI-only, unchanged (see "Live-verified" below). `SampleFrames` (the
    dense, closely-spaced full-window decode `MixedDensitySampler`/`VisualBumperMatcher` use) does
    **not** map cleanly onto VDF's existing `TryDecodeFrame(position)`-per-call pattern: that method
    seeks on every call, which suits VDF's own sparse, spread-out sampling positions but would mean
@@ -128,10 +134,78 @@ assumption that "built from the same primitives" means "equally robust." Default
 default, not just people who opt in — the tradeoff this ADR now accepts, in the other direction
 from its original recommendation.
 
+## Live-verified (2026-08-03)
+
+Implemented per the resolved plan (`docs/iterativeplan.md`'s matching entry has the full
+step-by-step). Two findings worth recording that the plan didn't anticipate:
+
+- **`GetDenseAiFrames` (Step 3/4's planned reuse for `SampleKeyframes`) turned out to already be
+  CLI-only, even with native binding enabled — a deliberate VDF design choice** ("a sequential
+  single-pass keyframe sweep rather than seek-heavy" doesn't need native, since it's one
+  `ffmpeg.exe` spawn per file either way, not many small per-position calls). Rewiring
+  `SampleKeyframes` to call it would have gained nothing. Since `SampleKeyframes` has the exact
+  same access-pattern shape (one file, one sequential decode, no per-position seeking), the same
+  reasoning applies — **`SampleKeyframes` was left on its existing CLI implementation, unchanged.**
+  Only `SampleFrames` (the dense, closely-spaced case — the actual target of the "avoid
+  per-position spawn overhead" rationale) got native wiring. This narrows Decision 1/3's scope
+  slightly from the original plan but doesn't change the core goal.
+- **A real bug was found and fixed during verification, not anticipated in the design.** Live
+  testing (after acquiring real shared FFmpeg libraries — see the acquisition-gap note below)
+  showed native decode failing on *every* file's tail end, falling back to CLI every time despite
+  the code appearing correct. Root cause: `DecodeNextRawFrame`'s "draining" flag was a per-call
+  local variable — correct for `TryDecodeFrame` (which always seeks+flushes before decoding,
+  implicitly resetting any prior draining state) but wrong for `TryDecodeNextFrame`'s whole
+  purpose (repeated calls with **no** seek/flush between them): once EOF was reached and the
+  codec entered draining mode in one call, the *next* call's fresh local `draining = false` tried
+  to send FFmpeg's null "start draining" packet a second time to an already-draining codec —
+  which FFmpeg correctly rejects with `AVERROR_EOF`, which `.ThrowExceptionIfError()` then turned
+  into a thrown exception instead of the benign "already draining, nothing more to send" it
+  actually meant. **Fixed** by promoting `draining` to an instance field (`_draining`) that
+  persists across `TryDecodeNextFrame` calls, explicitly reset to `false` only where
+  `TryDecodeFrame` already resets other seek-related state (`avcodec_flush_buffers`). After the
+  fix: native decode completed successfully end-to-end, correct frame count, correct match result.
+- **Frame-level output is not byte-identical between native and CLI, but functionally
+  equivalent.** Same file, same sample positions (confirmed via `--dump-frames`: both produced
+  exactly 5 raw sampled frames at the same index positions before filtering) — but corresponding
+  PNG dumps differed slightly in file size (a few percent), and one run's "low-information" filter
+  dropped a frame the other run kept. Visual inspection of the dumped frames side-by-side showed
+  no discernible difference. Both runs scored the same `bestCos=100%` and reached the same match
+  decision. Likely a minor color-range/rounding difference between ffmpeg's own CLI filter-graph
+  color handling and this project's direct `sws_scale` call — not investigated further, since the
+  plan's own correctness bar ("byte-identical **or equivalent-within-tolerance**") was met, and
+  chasing sub-perceptual pixel differences that don't change any match outcome wasn't judged worth
+  the time against the actual goal (verifying correctness, not chasing bit-exactness for its own
+  sake).
+- **Acquisition gap, not anticipated in the original plan: this project's own dev machine's ffmpeg
+  install (Chocolatey) — very likely representative of most real users' installs — is a *static*
+  build with no separate shared libraries at all (`avformat-*.dll` etc.), so
+  `FFmpegHelper.CanLoadNativeLibraries` returns false and native decode silently never engages,
+  regardless of the new default-on flag.** This was only discovered because live verification
+  required manually downloading a real shared FFmpeg build (BtbN's Windows shared build) to test
+  against at all — confirmed by direct inspection (`ls` on the Chocolatey install directory: only
+  `ffmpeg.exe`/`ffprobe.exe`/`ffplay.exe`, no `av*.dll`/`sw*.dll`). VDF.GUI/VDF.Web have
+  `FfmpegDownloader` (which specifically fetches shared builds) wired in; **VBR.CLI does not, and
+  this ADR/plan didn't build one.** The fallback behavior is completely safe (silent, correct CLI
+  fallback, exactly as designed) — but it means the default-on native binding currently provides
+  **zero benefit for most real-world installs** until either VBR.CLI gains its own shared-FFmpeg
+  acquisition path, or this requirement is documented clearly enough that users can self-serve it
+  (e.g. pointing `--hardware-accel`-adjacent docs at a shared build download). Tracked as a new
+  open question below — genuinely out of this pass's original scope, not something to silently
+  patch over.
+
 ## Open questions — being resolved with the maintainer one at a time (2026-08-03)
 
+- **New (found during live verification, not in the original design): VBR.CLI has no way to
+  acquire a shared FFmpeg build, so the default-on native path is a no-op for most real installs**
+  (static builds, e.g. Chocolatey's) — see "Live-verified" above. Candidates for a follow-up, not
+  decided or scoped yet: build a VBR-side equivalent of VDF's own `FfmpegDownloader` (a real,
+  possibly substantial effort — that downloader already exists and is VDF.GUI/Web-specific
+  plumbing, not something VBR.CLI currently has any of); document the shared-build requirement
+  clearly for users willing to self-serve it; or accept native binding as an
+  already-have-the-right-ffmpeg-build bonus for now and revisit acquisition later.
 - Exact `FfmpegEngine.GetDenseAiFrames` return shape — an implementation-time verification task,
-  not a decision; not part of the walkthrough.
+  not a decision; not part of the walkthrough. **Superseded**: `SampleKeyframes` was not rewired
+  to use it at all (see "Live-verified" above), so this question no longer applies.
 - ~~Whether the new dense sequential-decode method belongs as a new instance method on
   `VideoStreamDecoder` itself, or as a separate orchestration function/class~~ — **resolved
   2026-08-03: a small `TryDecodeNextFrame` (no-seek decode) primitive on `VideoStreamDecoder`,

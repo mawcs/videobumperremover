@@ -295,6 +295,21 @@ internal static class SharedOptions {
 		DefaultValueFactory = _ => FFHardwareAccelerationMode.auto,
 	};
 
+	// On by default, opt-out via --no-* -- same convention as NoRecurse above, not a bare
+	// Option<bool> flag (which would offer no way to turn a default-true value back off).
+	// docs/decisions/0015-native-ffmpeg-binding.md: decodes in-process via VDF.Core's FFmpeg.AutoGen
+	// binding instead of spawning ffmpeg.exe per sampling call, falling back to the CLI process
+	// automatically and safely on any native failure (VDF's own per-scan circuit breaker, reused
+	// as-is -- see HardwareAcceleration.NativeFfmpegBinding). Defaults to true, unlike this ADR's
+	// original "default off" draft -- decided 2026-08-03.
+	internal static readonly Option<bool> NoNativeFfmpegBinding = new("--no-native-ffmpeg-binding") {
+		Description = "Disable the native in-process FFmpeg decode path and always spawn ffmpeg.exe " +
+			"for sampling instead (docs/decisions/0015-native-ffmpeg-binding.md). On by default -- " +
+			"this is the opt-out. A native failure already falls back to the CLI process " +
+			"automatically; use this flag to rule out the native path entirely (e.g. while " +
+			"troubleshooting) rather than trust that fallback.",
+	};
+
 	// commit-only, but defined here alongside Verbose/TargetFile/Library rather than in
 	// CommitCommand — SharedOptions is this project's one place option definitions live,
 	// per its own doc comment above, even though this one option isn't shared with match/remove.

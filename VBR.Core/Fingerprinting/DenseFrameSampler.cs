@@ -93,6 +93,25 @@ public static class DenseFrameSampler {
 	static byte[][] SampleFrames(string path, ClipRegion? region, double intervalSeconds, int maxFrames, bool keyframeOnly, CancellationToken ct) {
 		if (intervalSeconds <= 0)
 			throw new ArgumentOutOfRangeException(nameof(intervalSeconds));
+
+		// Native in-process decode (docs/decisions/0015-native-ffmpeg-binding.md) -- not attempted
+		// for the keyframe-only whole-file sweep (SampleKeyframes): that path already funnels
+		// through one ffmpeg.exe spawn per file, the same shape VDF's own GetDenseAiFrames
+		// deliberately keeps CLI-only, so there's no per-position spawn overhead to save there.
+		// TryGetDenseWindowFramesNative returns null (not usable, or a native failure -- its own
+		// per-scan circuit breaker, shared with VDF's, decides how many files that tolerates
+		// before giving up on native for the rest of this run) whenever native isn't the answer,
+		// falling through to the exact same CLI implementation this method always used.
+		if (!keyframeOnly && HardwareAcceleration.NativeFfmpegBinding) {
+			TimeSpan? absoluteStart = region?.Start;
+			TimeSpan? tailOffset = region is { Start: null } tailRegion ? tailRegion.EndOffset : null;
+			TimeSpan? maxDuration = region?.Duration;
+			byte[][]? native = FfmpegEngine.TryGetDenseWindowFramesNative(
+				path, absoluteStart, tailOffset, maxDuration, intervalSeconds, maxFrames, ct);
+			if (native is not null)
+				return native;
+		}
+
 		int frameBytes = OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3;
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,

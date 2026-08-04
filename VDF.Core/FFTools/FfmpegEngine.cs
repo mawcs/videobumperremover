@@ -315,6 +315,166 @@ namespace VDF.Core.FFTools {
 			}
 		}
 
+		// Modifications Copyright (C) 2026 mawcs — VBR's dense-window native decode
+		// (docs/decisions/0015-native-ffmpeg-binding.md): TryGetDenseWindowFramesNative and its
+		// "auto" device-type resolution helper, both new. Does not modify
+		// GetConfiguredHardwareDeviceType or any of VDF.GUI's own existing native call sites above.
+
+		static AVHWDeviceType? _resolvedAutoDeviceType;
+		static bool _autoDeviceTypeResolved;
+
+		/// <summary>
+		/// Resolves the <see cref="AVHWDeviceType"/> VBR's native dense-window decode should use.
+		/// Any explicit <see cref="HardwareAccelerationMode"/> delegates unchanged to
+		/// <see cref="GetConfiguredHardwareDeviceType"/> (shared with VDF.GUI, not modified here).
+		/// <c>auto</c> has no <see cref="AVHWDeviceType"/> equivalent — VDF.GUI's own settings text
+		/// says so explicitly — so for <c>auto</c> specifically, this probes a short,
+		/// platform-appropriate candidate list by actually attempting
+		/// <c>av_hwdevice_ctx_create</c> (the same probe-by-attempting philosophy already used for
+		/// GPU encoders, <see cref="Removal.GpuEncoderProbe"/> in VBR.Core, and DirectML device
+		/// selection), caching the winning type for the rest of this process so later files don't
+		/// re-probe. Falls back to <see cref="AVHWDeviceType.AV_HWDEVICE_TYPE_NONE"/> if nothing
+		/// works — native decode still runs, just without GPU decode acceleration, exactly like
+		/// explicitly passing <c>--hardware-accel none</c> would.
+		/// </summary>
+		internal static unsafe AVHWDeviceType ResolveAutoHardwareDeviceType() {
+			if (HardwareAccelerationMode != FFHardwareAccelerationMode.auto)
+				return GetConfiguredHardwareDeviceType();
+			if (_autoDeviceTypeResolved)
+				return _resolvedAutoDeviceType ?? AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+
+			AVHWDeviceType[] candidates =
+				RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? new[] { AVHWDeviceType.AV_HWDEVICE_TYPE_D3D11VA, AVHWDeviceType.AV_HWDEVICE_TYPE_DXVA2 } :
+				RuntimeInformation.IsOSPlatform(OSPlatform.OSX) ? new[] { AVHWDeviceType.AV_HWDEVICE_TYPE_VIDEOTOOLBOX } :
+				RuntimeInformation.IsOSPlatform(OSPlatform.Linux) ? new[] { AVHWDeviceType.AV_HWDEVICE_TYPE_VAAPI } :
+				Array.Empty<AVHWDeviceType>();
+
+			foreach (AVHWDeviceType candidate in candidates) {
+				AVBufferRef* ctx = null;
+				try {
+					if (ffmpeg.av_hwdevice_ctx_create(&ctx, candidate, null, null, 0) >= 0) {
+						ffmpeg.av_buffer_unref(&ctx);
+						_resolvedAutoDeviceType = candidate;
+						_autoDeviceTypeResolved = true;
+						return candidate;
+					}
+				}
+				catch { /* try the next candidate */ }
+			}
+			_resolvedAutoDeviceType = null;
+			_autoDeviceTypeResolved = true;
+			return AVHWDeviceType.AV_HWDEVICE_TYPE_NONE;
+		}
+
+		/// <summary>
+		/// Native dense-window decode for VBR's edge-focused sampling
+		/// (docs/decisions/0015-native-ffmpeg-binding.md): decodes sequentially from a start
+		/// position, emitting one 224×224 RGB24 frame per <paramref name="intervalSeconds"/> until
+		/// <paramref name="maxDuration"/> has elapsed, <paramref name="maxFrames"/> frames have
+		/// been produced, or the file ends — mirroring exactly what a
+		/// <c>fps=1/{intervalSeconds}</c> CLI filter chain does, just in-process. Unlike
+		/// <see cref="TryGetGrayBytesFromVideoNativeBatch"/> (built for VDF's own sparse,
+		/// spread-out positions), this seeks **at most once** and decodes forward via
+		/// <see cref="VideoStreamDecoder.TryDecodeNextFrame"/> — reseeking per position would be
+		/// wasteful for VBR's closely-spaced (sub-second to a few seconds) access pattern.
+		/// </summary>
+		/// <param name="absoluteStart">Start position measured from the beginning of the file, or
+		/// null to use <paramref name="tailOffset"/> instead. Exactly one of the two should be
+		/// non-null (both null means "start of file," matching <see cref="TryDecodeFrame"/>'s own
+		/// "position 0" convention).</param>
+		/// <param name="tailOffset">Start position measured backward from the true end of the
+		/// file — the native equivalent of the CLI's <c>-sseof</c>
+		/// (<see cref="Extraction.ClipExtractor.AppendSeekArgs"/> in VBR.Core, which this mirrors;
+		/// not referenced directly since VDF.Core cannot depend on VBR.Core). Resolved to an
+		/// absolute position using the newly-opened <see cref="VideoStreamDecoder.Duration"/>,
+		/// since <c>av_seek_frame</c> has no "seek from EOF" primitive of its own — ffmpeg's CLI
+		/// only supports <c>-sseof</c> because it resolves this same subtraction internally.</param>
+		/// <returns>Null when native decode isn't usable or fails for any reason — callers fall
+		/// back to the CLI process, same convention as every other native entry point.</returns>
+		internal static unsafe byte[][]? TryGetDenseWindowFramesNative(
+				string filePath, TimeSpan? absoluteStart, TimeSpan? tailOffset, TimeSpan? maxDuration,
+				double intervalSeconds, int maxFrames, CancellationToken cancelToken = default) {
+			if (!ShouldUseNativeBinding)
+				return null;
+			try {
+				FfmpegLogCapture.Reset();
+				AVHWDeviceType hwType = ResolveAutoHardwareDeviceType();
+				using var vsd = new VideoStreamDecoder(filePath, hwType);
+				var frames = new List<byte[]>();
+				VideoFrameConverter? converter = null;
+				Size converterSourceSize = default;
+				AVPixelFormat converterSrcFmt = AVPixelFormat.AV_PIX_FMT_NONE;
+				try {
+					double windowStartSeconds = absoluteStart?.TotalSeconds
+						?? (tailOffset.HasValue ? Math.Max(0, vsd.Duration.TotalSeconds - tailOffset.Value.TotalSeconds) : 0);
+					double? endSeconds = maxDuration.HasValue ? windowStartSeconds + maxDuration.Value.TotalSeconds : null;
+					double nextEmitSeconds = windowStartSeconds;
+					bool firstFrame = true;
+					while (frames.Count < maxFrames) {
+						cancelToken.ThrowIfCancellationRequested();
+						AVFrame srcFrame;
+						// TryDecodeFrame performs the one allowed seek (a no-op seek for
+						// windowStartSeconds == 0, matching TryDecodeFrame's own documented
+						// behavior); every frame after that decodes forward with no further seeks.
+						bool ok = firstFrame
+							? vsd.TryDecodeFrame(out srcFrame, TimeSpan.FromSeconds(windowStartSeconds))
+							: vsd.TryDecodeNextFrame(out srcFrame);
+						firstFrame = false;
+						if (!ok)
+							break; // EOF or decode ended before filling the window
+
+						double effectiveSeconds = vsd.FramePtsToSeconds(srcFrame.pts) ?? nextEmitSeconds;
+						if (endSeconds.HasValue && effectiveSeconds > endSeconds.Value)
+							break;
+						// Not due yet -- keep decoding forward without emitting (matches fps=
+						// filter semantics: pick frames spaced >= intervalSeconds apart).
+						if (effectiveSeconds + 1e-6 < nextEmitSeconds)
+							continue;
+
+						Size sourceSize = new(
+							srcFrame.width > 0 ? srcFrame.width : vsd.FrameSize.Width,
+							srcFrame.height > 0 ? srcFrame.height : vsd.FrameSize.Height);
+						AVPixelFormat srcPixFmt = vsd.IsHardwareDecode ? (AVPixelFormat)srcFrame.format : vsd.PixelFormat;
+						if (srcPixFmt < 0 || srcPixFmt >= AVPixelFormat.AV_PIX_FMT_NB)
+							throw new Exception($"Invalid source pixel format {srcPixFmt}");
+						if (sourceSize.Width <= 0 || sourceSize.Height <= 0)
+							throw new Exception($"Invalid source frame dimensions {sourceSize.Width}x{sourceSize.Height}");
+
+						if (converter == null || sourceSize != converterSourceSize || srcPixFmt != converterSrcFmt) {
+							converter?.Dispose();
+							converter = new VideoFrameConverter(
+								sourceSize, srcPixFmt,
+								new Size(AI.OnnxEmbedder.InputSide, AI.OnnxEmbedder.InputSide), AVPixelFormat.AV_PIX_FMT_RGB24,
+								VideoFrameConverter.ScaleQuality.Bicubic, bitExact: false);
+							converterSourceSize = sourceSize;
+							converterSrcFmt = srcPixFmt;
+						}
+
+						AVFrame convertedFrame = converter.Convert(srcFrame);
+						frames.Add(ExtractRgb224FromFrame(convertedFrame));
+						nextEmitSeconds += intervalSeconds;
+					}
+				}
+				finally {
+					converter?.Dispose();
+				}
+				RecordNativeSuccess();
+				return frames.ToArray();
+			}
+			catch (OperationCanceledException) {
+				throw;
+			}
+			catch (Exception e) {
+				// Shares FfmpegEngine's existing per-scan circuit breaker with
+				// TryGetGrayBytesFromVideoNativeBatch/etc. (decided 2026-08-03, see
+				// docs/decisions/0015-native-ffmpeg-binding.md): a native failure in one very
+				// likely shares a root cause with the other, so backing off together is the safer
+				// default rather than each independently rediscovering the same problem.
+				RecordNativeFailure(filePath, e);
+				return null;
+			}
+		}
+
 		/// <summary>
 		/// Extracts one 32x32 grayscale frame per position, opening a single decoder and
 		/// reusing one sws context for the whole file instead of paying the open/seek/teardown

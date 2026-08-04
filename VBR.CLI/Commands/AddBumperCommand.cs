@@ -85,6 +85,7 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(CatalogDbFolder);
 		cmd.Options.Add(Verbose);
 		cmd.Options.Add(HardwareAccel);
+		cmd.Options.Add(NoNativeFfmpegBinding);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			FileInfo? clipFrom = parseResult.GetValue(ClipFrom);
@@ -97,6 +98,7 @@ internal static class AddBumperCommand {
 			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
 			bool verbose = parseResult.GetValue(Verbose);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
+			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 

@@ -114,6 +114,7 @@ internal static class ScanCommand {
 		cmd.Options.Add(LogFile);
 		cmd.Options.Add(LogLevel);
 		cmd.Options.Add(HardwareAccel);
+		cmd.Options.Add(NoNativeFfmpegBinding);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
@@ -131,6 +132,7 @@ internal static class ScanCommand {
 			FileInfo? logFileArg = parseResult.GetValue(LogFile);
 			ScanReportLevel fileLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
+			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 
 			// An explicit --console-info wins; otherwise --verbose is shorthand for "verbose", else
 			// the default is "info" (today's plain x/total counter).

@@ -4,11 +4,17 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
-## Native FFmpeg binding for scanning/sampling — planned (2026-08-02)
+## Native FFmpeg binding for scanning/sampling — implemented (2026-08-03)
 
-**Status: planned, not yet implemented — do not start implementation until the maintainer has
-reviewed and approved this plan.** See [`docs/decisions/0015-native-ffmpeg-binding.md`](decisions/0015-native-ffmpeg-binding.md)
-for the accompanying ADR.
+**Status: implemented and live-verified against real media (2026-08-03).** `SampleFrames` (the
+dense, closely-spaced case) has real native decode with CLI fallback; `SampleKeyframes` was
+deliberately left CLI-only (a scope narrowing found during implementation, not the original
+plan — see the ADR's "Live-verified" section). A real bug (a double-EOF-flush crash-to-fallback)
+was found and fixed during verification. One important caveat found during verification: most
+typical ffmpeg installs (static builds — this project's own dev machine included) have no shared
+libraries, so native decode silently never activates for them without a separate acquisition
+step VBR.CLI doesn't have yet. See [`docs/decisions/0015-native-ffmpeg-binding.md`](decisions/0015-native-ffmpeg-binding.md)
+for full details — this entry is kept as a historical record of the original plan.
 
 ### Context
 
@@ -171,17 +177,21 @@ motivating the decode-side work doesn't obviously carry over. Revisit as its own
 ADR/plan, informed by real timing data from this decode-side work, once it's live-verified and
 shipped — not folded into this effort.
 
-### Open questions — all resolved with the maintainer, 2026-08-03
+### Open questions — resolved pre-implementation, plus one found during it
 
-All four real open questions from this plan's first draft are now resolved (see the inline
-"Resolved 2026-08-03" notes in Steps 2, 5, 6, and 7 above for the decisions and reasoning) — only
-one implementation-time verification task remains, not a decision:
+All four real open questions from this plan's first draft were resolved with the maintainer
+before implementation started (see the inline "Resolved 2026-08-03" notes in Steps 2, 5, 6, and 7
+above). The one remaining "verify, don't decide" item (Step 3's `GetDenseAiFrames` return shape)
+turned out moot: `GetDenseAiFrames` is CLI-only even with native binding on, so `SampleKeyframes`
+was never rewired to use it at all — see the ADR's "Live-verified" section.
 
-- Exact `GetDenseAiFrames` return shape (Step 3) — verify before treating the Step 4 swap as a
-  given; not something to decide, just to check.
-
-Nothing else is blocking implementation on the planning side. Still waiting on explicit
-maintainer go-ahead before any code is written, per the original request.
+**New, found only during implementation, not anticipated in this plan**: VBR.CLI has no way to
+acquire a *shared* FFmpeg build (the kind native decode actually needs — most typical installs,
+including this project's own dev machine's Chocolatey ffmpeg, are static builds with no shared
+libraries at all). The fallback is completely safe (silent, correct CLI fallback), but it means
+native decode currently provides no benefit for most real-world installs until this gets a real
+acquisition path (VDF.GUI/Web have `FfmpegDownloader`; VBR.CLI doesn't) or clear user-facing
+documentation. Tracked in the ADR's own Open Questions, not decided or scoped yet.
 
 ## CLI feedback during remove — implemented (2026-07-29)
 

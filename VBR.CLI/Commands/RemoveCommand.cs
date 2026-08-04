@@ -146,6 +146,7 @@ internal static class RemoveCommand {
 		cmd.Options.Add(ReEncode);
 		cmd.Options.Add(Verbose);
 		cmd.Options.Add(HardwareAccel);
+		cmd.Options.Add(NoNativeFfmpegBinding);
 
 		cmd.SetAction(async (parseResult, ct) => {
 			bool reEncode = parseResult.GetValue(ReEncode);
@@ -181,6 +182,7 @@ internal static class RemoveCommand {
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
+			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
