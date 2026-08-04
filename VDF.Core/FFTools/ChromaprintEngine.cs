@@ -13,6 +13,12 @@
 //     along with VideoDuplicateFinder.  If not, see <http://www.gnu.org/licenses/>.
 // */
 //
+// Modifications Copyright (C) 2026 mawcs — ExtractFingerprintProcess's stdout read loop gained a
+// per-read stall timeout (see StallTimeoutMs below), mirroring the stall-not-total-time timeout
+// AudioStreamDecoder (the native path) already had. Found via a real hang: a file that fell back to
+// process mode sat with zero output for 10+ minutes before the maintainer killed it by hand — the
+// blocking `stream.Read` had no timeout of any kind, so a stalled/wedged ffmpeg process (as opposed
+// to one that exited with an error) could never be recovered from.
 
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -29,6 +35,12 @@ namespace VDF.Core.FFTools {
 	/// </summary>
 	internal static class ChromaprintEngine {
 		private const int TimeoutMs = 30_000; // 30 seconds max for process exit after stream ends
+		// Per-read stall timeout for ExtractFingerprintProcess's stdout loop -- matches
+		// AudioStreamDecoder's own per-frame stall timeout default (the native path), so both paths
+		// give a stalled/wedged ffmpeg the same grace period before being killed. Resets on every
+		// successful read, so a long file's total decode time is never capped -- only an individual
+		// hung read is.
+		private const int StallTimeoutMs = 120_000;
 		private const int TargetSampleRate = 11025;
 		private const int TargetChannels = 1;
 		// Read PCM in 32 KB chunks — keeps memory low while giving ChromaContext
@@ -155,7 +167,21 @@ namespace VDF.Core.FFTools {
 						return null;
 					}
 
-					int bytesRead = stream.Read(buf, 0, buf.Length);
+					var readTask = stream.ReadAsync(buf, 0, buf.Length, ct);
+					if (!readTask.Wait(StallTimeoutMs, ct)) {
+						// No bytes for StallTimeoutMs -- ffmpeg is wedged, not just slow (a real,
+						// long file's total decode time is never bounded here, only an individual
+						// hung read). Kill it and give the now-orphaned read a couple seconds to
+						// unwind (mirrors DenseFrameSampler.SampleFrames' own KillQuietly) rather
+						// than leaving it to complete on its own in the background indefinitely.
+						KillProcess(process);
+						try { readTask.Wait(2000, CancellationToken.None); } catch { }
+						Logger.Instance.Warn($"[ChromaprintEngine] Audio extraction stalled on " +
+							$"'{Path.GetFileName(filePath)}' (no data for {StallTimeoutMs / 1000}s) -- " +
+							"aborting process-mode fingerprinting for this file.");
+						return null;
+					}
+					int bytesRead = readTask.Result;
 					if (bytesRead <= 0) break;
 
 					totalBytes += bytesRead;
