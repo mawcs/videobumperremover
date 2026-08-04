@@ -18,6 +18,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VDF.Core;
 using VDF.Core.AI;
@@ -70,9 +71,12 @@ public sealed class WholeFileSampler : IDisposable {
 	/// <exception cref="InvalidOperationException">ffprobe couldn't determine the file's duration,
 	/// or ffmpeg failed sampling one of the three passes.</exception>
 	public Result Sample(string sourcePath, EdgeDensityProfile profile, CancellationToken ct = default) {
+		using var totalScope = ScanTelemetry.Time($"sample '{Path.GetFileName(sourcePath)}' (total)");
 		EnsureEmbedder();
 
-		MediaInfo? info = FFProbeEngine.GetMediaInfo(sourcePath, extendedLogging: verboseLogging);
+		MediaInfo? info;
+		using (ScanTelemetry.Time("ffprobe (duration)"))
+			info = FFProbeEngine.GetMediaInfo(sourcePath, extendedLogging: verboseLogging);
 		if (info is null || info.Duration <= TimeSpan.Zero)
 			throw new InvalidOperationException(
 				$"Could not determine duration for '{Path.GetFileName(sourcePath)}' (ffprobe failed or reported no duration).");
@@ -85,22 +89,29 @@ public sealed class WholeFileSampler : IDisposable {
 		var raw = new List<(double TimestampSeconds, byte[] Rgb24)>();
 
 		int sparseCap = (int)Math.Ceiling(duration.TotalSeconds / profile.SparseInterval.TotalSeconds) + SparseFrameCapMargin;
-		byte[][] sparseFrames = DenseFrameSampler.SampleKeyframes(sourcePath, profile.SparseInterval.TotalSeconds, sparseCap, ct);
+		byte[][] sparseFrames;
+		using (ScanTelemetry.Time("sparse pass (whole-file keyframes)"))
+			sparseFrames = DenseFrameSampler.SampleKeyframes(sourcePath, profile.SparseInterval.TotalSeconds, sparseCap, ct);
 		AppendUsable(sparseFrames, profile.SparseInterval.TotalSeconds, zoneStartSeconds: 0, raw, "whole-file sparse", sourcePath);
 
 		if (edgeBoundary > TimeSpan.Zero) {
-			byte[][] beginFrames = DenseFrameSampler.SampleFrames(
-				sourcePath, ClipRegion.At(TimeSpan.Zero, edgeBoundary), profile.DenseInterval.TotalSeconds, MaxDenseFramesPerZone, ct);
+			byte[][] beginFrames;
+			using (ScanTelemetry.Time("begin-edge dense pass"))
+				beginFrames = DenseFrameSampler.SampleFrames(
+					sourcePath, ClipRegion.At(TimeSpan.Zero, edgeBoundary), profile.DenseInterval.TotalSeconds, MaxDenseFramesPerZone, ct);
 			AppendUsable(beginFrames, profile.DenseInterval.TotalSeconds, zoneStartSeconds: 0, raw, "begin edge", sourcePath);
 
-			byte[][] endFrames = DenseFrameSampler.SampleFrames(
-				sourcePath, ClipRegion.Tail(edgeBoundary), profile.DenseInterval.TotalSeconds, MaxDenseFramesPerZone, ct);
+			byte[][] endFrames;
+			using (ScanTelemetry.Time("end-edge dense pass"))
+				endFrames = DenseFrameSampler.SampleFrames(
+					sourcePath, ClipRegion.Tail(edgeBoundary), profile.DenseInterval.TotalSeconds, MaxDenseFramesPerZone, ct);
 			double endZoneStart = (duration - edgeBoundary).TotalSeconds;
 			AppendUsable(endFrames, profile.DenseInterval.TotalSeconds, zoneStartSeconds: endZoneStart, raw, "end edge", sourcePath);
 		}
 
 		raw.Sort((a, b) => a.TimestampSeconds.CompareTo(b.TimestampSeconds));
 
+		using var inferenceScope = ScanTelemetry.Time("ONNX inference (all batches)");
 		var result = new List<TimedFingerprint>(raw.Count);
 		var batch = new List<byte[]>(OnnxEmbedder.MaxBatch);
 		var batchTimestamps = new List<double>(OnnxEmbedder.MaxBatch);
@@ -144,11 +155,13 @@ public sealed class WholeFileSampler : IDisposable {
 
 	void EnsureEmbedder() {
 		bool preferDirectML = HardwareAcceleration.PreferDirectML;
-		AiComponents.EnsureReady(preferDirectML);
+		using (ScanTelemetry.Time("AiComponents.EnsureReady"))
+			AiComponents.EnsureReady(preferDirectML);
 		if (embedder is null) {
 			if (verboseLogging)
 				Logger.Instance.Info($"[scan] Loading ONNX model: {AiComponents.ModelPath}");
-			embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML, HardwareAcceleration.DirectMlDeviceId);
+			using (ScanTelemetry.Time("OnnxEmbedder construction (model load)"))
+				embedder = new OnnxEmbedder(AiComponents.ModelPath, preferDirectML, HardwareAcceleration.DirectMlDeviceId);
 			if (verboseLogging)
 				Logger.Instance.Info("[scan] ONNX inference session ready.");
 		}

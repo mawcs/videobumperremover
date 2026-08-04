@@ -19,6 +19,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Threading;
+using VBR.Core.Diagnostics;
 using VBR.Core.Fingerprinting;
 using VDF.Core.FFTools;
 using VDF.Core.Utils;
@@ -123,7 +124,9 @@ public sealed class LibraryScanner : IDisposable {
 					continue;
 				}
 
-				LibraryDatabaseEntry entry = SampleFile(path, fileInfo, profile, ct);
+				LibraryDatabaseEntry entry;
+				using (ScanTelemetry.Time($"file: {fileInfo.Name}"))
+					entry = SampleFile(path, fileInfo, profile, ct);
 				database.Entries[key] = entry;
 				scanned++;
 				onFileScanned?.Invoke(new FileScanResult(path, ScanOutcome.Sampled,
@@ -141,7 +144,10 @@ public sealed class LibraryScanner : IDisposable {
 				// the *common* case on a re-scan, so gating checkpoints on "something was actually
 				// sampled" would checkpoint far less often than decision 7 intends.
 				if (DateTime.UtcNow - lastCheckpoint >= checkpointInterval) {
-					if (TrySave(database, databasePath) is null) {
+					string? checkpointSaveError;
+					using (ScanTelemetry.Time("checkpoint save"))
+						checkpointSaveError = TrySave(database, databasePath);
+					if (checkpointSaveError is null) {
 						onCheckpoint?.Invoke(database.Entries.Count);
 						if (verboseLogging)
 							Logger.Instance.Info($"[scan] checkpoint saved ({database.Entries.Count} entries).");
@@ -151,7 +157,9 @@ public sealed class LibraryScanner : IDisposable {
 			}
 		}
 
-		string? databaseSaveError = TrySave(database, databasePath);
+		string? databaseSaveError;
+		using (ScanTelemetry.Time("final database save"))
+			databaseSaveError = TrySave(database, databasePath);
 		if (databaseSaveError is null)
 			onCheckpoint?.Invoke(database.Entries.Count);
 		return new ScanSummary(scanned, skipped, failed, candidatePaths.Count, databaseSaveError);
@@ -196,7 +204,9 @@ public sealed class LibraryScanner : IDisposable {
 
 	LibraryDatabaseEntry SampleFile(string path, FileInfo fileInfo, EdgeDensityProfile profile, CancellationToken ct) {
 		WholeFileSampler.Result sampled = sampler.Sample(path, profile, ct);
-		uint[]? audioFingerprint = ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
+		uint[]? audioFingerprint;
+		using (ScanTelemetry.Time("audio fingerprint (Chromaprint)"))
+			audioFingerprint = ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
 		return new LibraryDatabaseEntry {
 			Path = path,
 			FileSize = fileInfo.Length,

@@ -20,6 +20,7 @@ using System.Globalization;
 using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VDF.Core.AI;
 using VDF.Core.FFTools;
@@ -106,13 +107,16 @@ public static class DenseFrameSampler {
 			TimeSpan? absoluteStart = region?.Start;
 			TimeSpan? tailOffset = region is { Start: null } tailRegion ? tailRegion.EndOffset : null;
 			TimeSpan? maxDuration = region?.Duration;
+			using var nativeScope = ScanTelemetry.Time("native ffmpeg decode attempt");
 			byte[][]? native = FfmpegEngine.TryGetDenseWindowFramesNative(
 				path, absoluteStart, tailOffset, maxDuration, intervalSeconds, maxFrames, ct);
+			nativeScope.Detail = native is null ? "fell back to CLI" : $"{native.Length} frame(s)";
 			if (native is not null)
 				return native;
 		}
 
 		int frameBytes = OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3;
+		using var cliScope = ScanTelemetry.Time(keyframeOnly ? "ffmpeg.exe spawn+decode (keyframes)" : "ffmpeg.exe spawn+decode (dense)");
 		var psi = new ProcessStartInfo {
 			FileName = FfmpegEngine.FFmpegPath,
 			RedirectStandardOutput = true,

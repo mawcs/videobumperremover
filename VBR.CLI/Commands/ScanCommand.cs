@@ -16,6 +16,7 @@
 
 using System.CommandLine;
 using VBR.Core.Database;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
 using VDF.Core.AI;
@@ -25,9 +26,11 @@ namespace VBR.CLI.Commands;
 
 /// <summary>How much reporting detail <c>vbr scan</c> produces, for the console
 /// (<c>--console-info</c>) and the log file (<c>--log-file</c>/<c>--log-level</c>) independently.
-/// Ordered low-to-high so callers can compare with <c>&gt;=</c>. <c>trace</c> is reserved for
-/// finer-grained diagnostic detail than any statement in the codebase emits today — it behaves the
-/// same as <c>verbose</c> until something actually logs at that granularity.</summary>
+/// Ordered low-to-high so callers can compare with <c>&gt;=</c>. <c>trace</c> is one step finer
+/// than <c>verbose</c>: execution timing (<see cref="VBR.Core.Diagnostics.ScanTelemetry"/>) for
+/// every measured phase -- AI/DirectML readiness, per-file ffprobe/sampling/inference, native vs.
+/// CLI ffmpeg decode, database checkpointing -- for diagnosing a slow run by phase instead of
+/// guessing. Off by default (near-zero cost) since most runs don't need it.</summary>
 internal enum ScanReportLevel { quiet, info, debug, verbose, trace }
 
 /// <summary>
@@ -76,10 +79,12 @@ internal static class ScanCommand {
 		Description = "How much progress detail to print to the console: quiet (nothing); info (a " +
 			"running x/total counter -- the default); debug (each file's name+result on its own " +
 			"line, plus an x/total progress line); verbose (debug's lines plus the underlying " +
-			"model-load/frame-count/checkpoint log detail); trace (reserved for finer-grained detail " +
-			"-- same as verbose today). The final summary and any error are always printed regardless " +
-			"of this setting. --verbose is shorthand for '--console-info verbose'; an explicit " +
-			"--console-info wins if both are given.",
+			"model-load/frame-count/checkpoint log detail); trace (verbose's lines plus per-phase " +
+			"execution timing -- AI/DirectML readiness, per-file ffprobe/sampling/inference, native " +
+			"vs. CLI ffmpeg decode, database checkpointing -- for diagnosing a slow run by phase). " +
+			"The final summary and any error are always printed regardless of this setting. " +
+			"--verbose is shorthand for '--console-info verbose'; an explicit --console-info wins " +
+			"if both are given.",
 	};
 
 	static readonly Option<FileInfo> LogFile = new("--log-file") {
@@ -138,6 +143,13 @@ internal static class ScanCommand {
 			// the default is "info" (today's plain x/total counter).
 			ScanReportLevel consoleLevel = consoleInfoArg ?? (verboseFlag ? ScanReportLevel.verbose : ScanReportLevel.info);
 
+			// Trace: one step finer than verbose -- execution timing for diagnosing a slow run by
+			// phase, independently requestable per destination just like every other level here.
+			bool traceConsole = consoleLevel >= ScanReportLevel.trace;
+			bool traceFile = fileLevel >= ScanReportLevel.trace;
+			ScanTelemetry.Enabled = traceConsole || traceFile;
+			var commandStopwatch = System.Diagnostics.Stopwatch.StartNew();
+
 			using IDisposable? consoleLogSubscription = SubscribeVerboseLogging(consoleLevel >= ScanReportLevel.verbose);
 
 			if (libraries.Length == 0) {
@@ -145,7 +157,14 @@ internal static class ScanCommand {
 				return 1;
 			}
 
+			// Console-only here (not the full ScanTelemetry event pipeline) -- the trace subscription
+			// below needs --log-file's resolved path first, which itself needs library/candidate
+			// state this phase produces; not worth reordering the whole action just for file-trace
+			// coverage of one directory-enumeration call.
+			var candidateResolveSw = System.Diagnostics.Stopwatch.StartNew();
 			CandidateSet? resolved = ResolveCandidates(file: null, libraries, excludeFolders, recurse, out string? resolveError);
+			if (traceConsole)
+				Console.Error.WriteLine($"[trace] resolve candidates: {candidateResolveSw.Elapsed.TotalMilliseconds:0}ms");
 			if (resolved is null) {
 				Console.Error.WriteLine(resolveError);
 				return 1;
@@ -193,6 +212,18 @@ internal static class ScanCommand {
 			string logPath = logFileArg?.FullName ??
 				Path.Combine(Path.GetDirectoryName(databasePath)!, Path.GetFileNameWithoutExtension(databasePath) + ".log");
 
+			// The database's own directory is created lazily, inside LibraryDatabaseStore.Save,
+			// which doesn't run until the first checkpoint -- but WriteLogLine below needs its
+			// directory (usually the same folder, for the default --library-db-folder-derived path)
+			// to exist from its very first call. Without this, every WriteLogLine call before the
+			// first successful save throws DirectoryNotFoundException (a subtype of IOException),
+			// which the catch below swallows exactly like a transient antivirus lock -- silently
+			// dropping the start announcement and every per-file line, not just trace detail. Same
+			// guard LibraryDatabaseStore.Save itself uses.
+			string? logDir = Path.GetDirectoryName(logPath);
+			if (logDir is { Length: > 0 })
+				Directory.CreateDirectory(logDir);
+
 			// Open-write-close per line (mirrors VDF.Core.Utils.Logger.Add) rather than holding one
 			// handle open for the whole scan: keeps writes resilient to another process (antivirus, a
 			// tail, another vbr instance) briefly touching the file, and a write failure here must
@@ -211,6 +242,13 @@ internal static class ScanCommand {
 
 			using IDisposable? fileLogSubscription = SubscribeLogging(fileLevel >= ScanReportLevel.verbose, WriteLogLine);
 
+			void EmitTrace(string line) {
+				string formatted = $"[trace] {line}";
+				if (traceConsole) Console.Error.WriteLine(formatted);
+				if (traceFile) WriteLogLine(formatted);
+			}
+			using IDisposable? traceSubscription = ScanTelemetry.Enabled ? ScanTelemetry.Subscribe(EmitTrace) : null;
+
 			// Logger statements gate whether verbose-tier detail (model path, per-file frame counts,
 			// checkpoint saves/failures) is even *raised* as an event at all, independent of whether
 			// either destination is currently listening for it -- so it must be requested if *either*
@@ -222,7 +260,8 @@ internal static class ScanCommand {
 
 			LibraryDatabase database;
 			try {
-				database = LibraryDatabaseStore.Load(databasePath);
+				using (ScanTelemetry.Time("load database"))
+					database = LibraryDatabaseStore.Load(databasePath);
 			}
 			catch (Exception ex) {
 				Console.Error.WriteLine($"Error: {ex.Message}");
@@ -233,6 +272,9 @@ internal static class ScanCommand {
 			database.DenseIntervalSeconds = sampleInterval.TotalSeconds;
 			database.SparseIntervalSeconds = sparseInterval.TotalSeconds;
 			var profile = new EdgeDensityProfile(edgeBoundary, sampleInterval, sparseInterval);
+
+			if (ScanTelemetry.Enabled)
+				EmitTrace($"startup (command entry to first candidate scanned): {commandStopwatch.Elapsed.TotalMilliseconds:0}ms");
 
 			string startAnnouncement = $"Scanning '{string.Join("; ", libraries.Select(l => l.FullName))}' -> database '{databasePath}' ({candidatePaths.Count} candidate file(s))...";
 			Console.Error.WriteLine(startAnnouncement);
@@ -296,6 +338,8 @@ internal static class ScanCommand {
 			Console.WriteLine(databaseLine);
 			WriteLogLine(summaryLine);
 			WriteLogLine(databaseLine);
+			if (ScanTelemetry.Enabled)
+				EmitTrace($"vbr scan total: {commandStopwatch.Elapsed.TotalSeconds:0.0}s");
 
 			if (summary.DatabaseSaveError is not null) {
 				string errorLine1 = $"Error: could not save the database: {summary.DatabaseSaveError}";

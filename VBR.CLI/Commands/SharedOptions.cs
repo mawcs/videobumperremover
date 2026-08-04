@@ -18,6 +18,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
 using System.Linq;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
 using VBR.Core.Matching;
@@ -436,11 +437,13 @@ internal static class SharedOptions {
 	/// <c>preferDirectML</c> flag from <see cref="HardwareAcceleration.PreferDirectML"/> afterward
 	/// rather than trusting their own pre-call value, since a fallback here changes it.</returns>
 	internal static async Task<bool> EnsureAiComponentsReadyAsync(bool preferDirectML, CancellationToken ct) {
+		using var totalScope = ScanTelemetry.Time("EnsureAiComponentsReady (total)");
 		if (preferDirectML) {
 			if (!AiComponents.IsDirectMlReady) {
 				Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB, DirectML)...");
 				try {
-					await AiComponents.DownloadAsync(progress: null, ct, preferDirectML: true);
+					using (ScanTelemetry.Time("download DirectML runtime"))
+						await AiComponents.DownloadAsync(progress: null, ct, preferDirectML: true);
 					Console.Error.WriteLine("AI components ready.");
 				}
 				catch (Exception ex) when (ex is not OperationCanceledException) {
@@ -471,7 +474,8 @@ internal static class SharedOptions {
 
 		if (!AiComponents.IsReady) {
 			Console.Error.WriteLine("AI matching components not found — downloading (one-time, ~100MB)...");
-			await AiComponents.DownloadAsync(progress: null, ct);
+			using (ScanTelemetry.Time("download CPU AI components"))
+				await AiComponents.DownloadAsync(progress: null, ct);
 			Console.Error.WriteLine("AI components ready.");
 		}
 		return false;
