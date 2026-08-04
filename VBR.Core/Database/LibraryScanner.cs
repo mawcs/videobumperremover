@@ -205,8 +205,18 @@ public sealed class LibraryScanner : IDisposable {
 	LibraryDatabaseEntry SampleFile(string path, FileInfo fileInfo, EdgeDensityProfile profile, CancellationToken ct) {
 		WholeFileSampler.Result sampled = sampler.Sample(path, profile, ct);
 		uint[]? audioFingerprint;
+		// verboseLogging (unchanged) still gates ChromaprintEngine's own internal logging exactly as
+		// before -- that stays on VDF's shared Logger bus, which has no per-message tier, so lowering
+		// its threshold to debug would leak whatever the *other* destination's verbose default raises
+		// (see the CLI's own comment on consoleLogSubscription). The debug-tier stats line the
+		// maintainer asked for is built here instead, self-contained, correctly isolated per
+		// destination via ScanTelemetry.NoteDebug like every other debug/trace line.
+		var audioSw = System.Diagnostics.Stopwatch.StartNew();
 		using (ScanTelemetry.Time("audio fingerprint (Chromaprint)"))
 			audioFingerprint = ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
+		if (ScanTelemetry.DebugEnabled)
+			ScanTelemetry.NoteDebug($"'{fileInfo.Name}' audio fingerprint: {audioSw.Elapsed.TotalMilliseconds:0}ms, " +
+				$"{audioFingerprint?.Length ?? 0} block(s).");
 		return new LibraryDatabaseEntry {
 			Path = path,
 			FileSize = fileInfo.Length,

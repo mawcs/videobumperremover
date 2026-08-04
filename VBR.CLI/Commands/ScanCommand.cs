@@ -26,11 +26,15 @@ namespace VBR.CLI.Commands;
 
 /// <summary>How much reporting detail <c>vbr scan</c> produces, for the console
 /// (<c>--console-info</c>) and the log file (<c>--log-file</c>/<c>--log-level</c>) independently.
-/// Ordered low-to-high so callers can compare with <c>&gt;=</c>. <c>trace</c> is one step finer
-/// than <c>verbose</c>: execution timing (<see cref="VBR.Core.Diagnostics.ScanTelemetry"/>) for
-/// every measured phase -- AI/DirectML readiness, per-file ffprobe/sampling/inference, native vs.
-/// CLI ffmpeg decode, database checkpointing -- for diagnosing a slow run by phase instead of
-/// guessing. Off by default (near-zero cost) since most runs don't need it.</summary>
+/// Ordered low-to-high so callers can compare with <c>&gt;=</c>. <c>debug</c> adds per-file
+/// diagnostic detail (frame counts, low-information-filter drops, audio-fingerprint stats --
+/// <see cref="VBR.Core.Diagnostics.ScanTelemetry.NoteDebug"/>) on top of its own per-file
+/// name+result line. <c>verbose</c> adds model path/session lifecycle/checkpoint detail on top of
+/// that. <c>trace</c> is one step finer still: execution timing
+/// (<see cref="VBR.Core.Diagnostics.ScanTelemetry.Time"/>) for every measured phase -- AI/DirectML
+/// readiness, per-file ffprobe/sampling/inference, native vs. CLI ffmpeg decode, database
+/// checkpointing -- for diagnosing a slow run by phase instead of guessing. debug/trace are both
+/// off by default (near-zero cost) since most runs don't need them.</summary>
 internal enum ScanReportLevel { quiet, info, debug, verbose, trace }
 
 /// <summary>
@@ -78,13 +82,14 @@ internal static class ScanCommand {
 	static readonly Option<ScanReportLevel?> ConsoleInfo = new("--console-info") {
 		Description = "How much progress detail to print to the console: quiet (nothing); info (a " +
 			"running x/total counter -- the default); debug (each file's name+result on its own " +
-			"line, plus an x/total progress line); verbose (debug's lines plus the underlying " +
-			"model-load/frame-count/checkpoint log detail); trace (verbose's lines plus per-phase " +
-			"execution timing -- AI/DirectML readiness, per-file ffprobe/sampling/inference, native " +
-			"vs. CLI ffmpeg decode, database checkpointing -- for diagnosing a slow run by phase). " +
-			"The final summary and any error are always printed regardless of this setting. " +
-			"--verbose is shorthand for '--console-info verbose'; an explicit --console-info wins " +
-			"if both are given.",
+			"line, an x/total progress line, plus per-file diagnostic detail -- frame counts, " +
+			"low-information-filter drops, audio-fingerprint stats); verbose (debug's lines plus " +
+			"the underlying model-load/session-lifecycle/checkpoint log detail); trace (verbose's " +
+			"lines plus per-phase execution timing -- AI/DirectML readiness, per-file " +
+			"ffprobe/sampling/inference, native vs. CLI ffmpeg decode, database checkpointing -- " +
+			"for diagnosing a slow run by phase). The final summary and any error are always " +
+			"printed regardless of this setting. --verbose is shorthand for '--console-info " +
+			"verbose'; an explicit --console-info wins if both are given.",
 	};
 
 	static readonly Option<FileInfo> LogFile = new("--log-file") {
@@ -150,6 +155,18 @@ internal static class ScanCommand {
 			ScanTelemetry.Enabled = traceConsole || traceFile;
 			var commandStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
+			// Debug: per-file diagnostic detail (frame counts, low-information-filter drops,
+			// audio-fingerprint stats) -- coarser than trace, doesn't need full verbose to be useful.
+			bool debugConsole = consoleLevel >= ScanReportLevel.debug;
+			bool debugFile = fileLevel >= ScanReportLevel.debug;
+			ScanTelemetry.DebugEnabled = debugConsole || debugFile;
+
+			// Stays >= verbose, not >= debug: VDF's shared Logger bus carries no per-message tier, so
+			// lowering this threshold would leak whatever's raised for verbose (e.g. because the
+			// *other* destination defaults to verbose -- --log-level's own default) into a console
+			// that only asked for debug. ChromaprintEngine's stats line is reported through
+			// ScanTelemetry.NoteDebug instead (see SampleFile), which -- like every other debug/trace
+			// line -- is correctly isolated per destination without touching this subscription.
 			using IDisposable? consoleLogSubscription = SubscribeVerboseLogging(consoleLevel >= ScanReportLevel.verbose);
 
 			if (libraries.Length == 0) {
@@ -248,6 +265,13 @@ internal static class ScanCommand {
 				if (traceFile) WriteLogLine(formatted);
 			}
 			using IDisposable? traceSubscription = ScanTelemetry.Enabled ? ScanTelemetry.Subscribe(EmitTrace) : null;
+
+			void EmitDebug(string line) {
+				string formatted = $"[debug] {line}";
+				if (debugConsole) Console.Error.WriteLine(formatted);
+				if (debugFile) WriteLogLine(formatted);
+			}
+			using IDisposable? debugSubscription = ScanTelemetry.DebugEnabled ? ScanTelemetry.SubscribeDebug(EmitDebug) : null;
 
 			// Logger statements gate whether verbose-tier detail (model path, per-file frame counts,
 			// checkpoint saves/failures) is even *raised* as an event at all, independent of whether

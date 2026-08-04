@@ -120,8 +120,8 @@ public sealed class WholeFileSampler : IDisposable {
 		void Flush() {
 			if (batch.Count == 0) return;
 			byte[][] vectors = embedder!.EmbedBatchQuantized(batch);
-			if (verboseLogging)
-				Logger.Instance.Info($"[scan] ONNX inference: embedded batch #{++batchCount} ({vectors.Length} frames, {vectors[0].Length}-byte quantized vectors).");
+			if (ScanTelemetry.Enabled)
+				ScanTelemetry.Note($"ONNX inference: embedded batch #{++batchCount} ({vectors.Length} frames, {vectors[0].Length}-byte quantized vectors).");
 			for (int k = 0; k < vectors.Length; k++)
 				result.Add(new TimedFingerprint(batchTimestamps[k], vectors[k], batchHashes[k]));
 			batch.Clear();
@@ -148,8 +148,8 @@ public sealed class WholeFileSampler : IDisposable {
 			usableCount++;
 			raw.Add((zoneStartSeconds + i * interval, frames[i]));
 		}
-		if (verboseLogging)
-			Logger.Instance.Info($"[scan] '{Path.GetFileName(sourcePath)}' {zoneName}: {frames.Length} frame(s) sampled @ {interval:0.###}s, " +
+		if (ScanTelemetry.DebugEnabled)
+			ScanTelemetry.NoteDebug($"'{Path.GetFileName(sourcePath)}' {zoneName}: {frames.Length} frame(s) sampled @ {interval:0.###}s, " +
 				$"{usableCount} usable after low-information filtering ({frames.Length - usableCount} dropped).");
 	}
 

@@ -20,17 +20,24 @@ using System.Diagnostics;
 namespace VBR.Core.Diagnostics;
 
 /// <summary>
-/// Execution timing for `vbr scan` (docs/running_and_building.md's <c>--console-info</c>/
-/// <c>--log-level</c> `trace` tier, one step finer than `verbose`) — off by default, near-zero cost
-/// when disabled. Distinct from the existing `verbose` logging tier: verbose explains *what*
-/// happened per file/zone; this measures *how long* each phase took, so a slow run can be diagnosed
-/// by phase (AI component readiness, DirectML probing, ffmpeg spawn vs. native decode, ONNX
-/// inference, database checkpointing, ...) instead of guessed at.
+/// Execution diagnostics for `vbr scan` (docs/running_and_building.md's <c>--console-info</c>/
+/// <c>--log-level</c> `debug`/`trace` tiers) — off by default, near-zero cost when disabled.
+/// Two independent tiers, each with its own gate/event pair so a run can request one without the
+/// other:
+/// <list type="bullet">
+/// <item><c>trace</c> (<see cref="Enabled"/>/<see cref="Time"/>/<see cref="Note"/>/<see cref="Measured"/>):
+/// execution timing -- *how long* each phase took (AI/DirectML readiness, ffmpeg spawn vs. native
+/// decode, ONNX inference, database checkpointing, ...) -- plus any single-line detail too chatty
+/// for `verbose` (per-batch inference counts).</item>
+/// <item><c>debug</c> (<see cref="DebugEnabled"/>/<see cref="NoteDebug"/>/<see cref="DebugNoted"/>):
+/// per-file diagnostic detail (frame counts, low-information-filter drops, audio-fingerprint
+/// stats) that doesn't need full `verbose` (model paths, session lifecycle) to be useful.</item>
+/// </list>
 ///
 /// Call sites use <c>using var scope = ScanTelemetry.Time("label");</c> around the code being
 /// measured — <see cref="Scope.Detail"/> can be set inside the block for a short trailing note
-/// (e.g. which of two code paths actually ran) before it's disposed and the line is emitted.
-/// <see cref="Enabled"/> is set once per command invocation (same convention as
+/// (e.g. which of two code paths actually ran) before it's disposed and the line is emitted. Both
+/// gates are set once per command invocation (same convention as
 /// <see cref="Extraction.HardwareAcceleration.Mode"/>) — not meant to change mid-run.
 /// </summary>
 public static class ScanTelemetry {
@@ -55,6 +62,39 @@ public static class ScanTelemetry {
 	public static IDisposable Subscribe(Action<string> handler) {
 		Measured += handler;
 		return new Unsubscriber(() => Measured -= handler);
+	}
+
+	/// <summary>A one-off trace-tier line with no duration attached (e.g. per-batch ONNX inference
+	/// detail — too chatty for <c>verbose</c>, real diagnostic value only at <c>trace</c>). Routed
+	/// through the same <see cref="Measured"/> event/<see cref="Enabled"/> gate as <see cref="Time"/>,
+	/// so it needs no separate subscription on the CLI side.</summary>
+	public static void Note(string message) {
+		if (!Enabled) return;
+		Measured?.Invoke(message);
+	}
+
+	/// <summary>Debug tier: one step coarser than <see cref="Enabled"/>/trace — per-file diagnostic
+	/// detail (frame counts, low-information-filter drops, audio-fingerprint stats) that's too
+	/// chatty for the default run but doesn't need full <c>verbose</c> (model paths, session
+	/// lifecycle) to be useful. Independent gate/event pair from <see cref="Enabled"/>/<see cref="Measured"/>
+	/// since a run can request one tier without the other (e.g. <c>--console-info debug</c> without
+	/// <c>verbose</c>/<c>trace</c>).</summary>
+	public static bool DebugEnabled { get; set; }
+
+	/// <summary>Raised with one ready-to-print line whenever <see cref="NoteDebug"/> is called while
+	/// <see cref="DebugEnabled"/> is true — same routing contract as <see cref="Measured"/>.</summary>
+	public static event Action<string>? DebugNoted;
+
+	public static void NoteDebug(string message) {
+		if (!DebugEnabled) return;
+		DebugNoted?.Invoke(message);
+	}
+
+	/// <summary>Subscribes <paramref name="handler"/> to <see cref="DebugNoted"/> — same
+	/// unsubscribe-on-dispose contract as <see cref="Subscribe"/>.</summary>
+	public static IDisposable SubscribeDebug(Action<string> handler) {
+		DebugNoted += handler;
+		return new Unsubscriber(() => DebugNoted -= handler);
 	}
 
 	public sealed class Scope : IDisposable {
