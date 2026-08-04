@@ -83,6 +83,21 @@ Key options (run `--help` for the full list):
   the console) to a file.
 - `--dump-frames <dir>` — diagnostic: dump every sampled frame as a PNG (`clip-dense/`/`clip-sparse/`
   plus one numbered folder per candidate) to inspect exactly what the visual/pHash matching compared.
+- `--hardware-accel none|auto|...` (default `auto`) — the single knob for every GPU code path: ffmpeg
+  decode (`-hwaccel`), GPU re-encode (H.264/HEVC only, probe-verified NVENC/QSV/AMF — other codecs
+  stay CPU-only), and ONNX inference (DirectML, Windows only). `none` disables all of it; `auto`
+  lets ffmpeg/ONNX Runtime pick the best available device, with a silent, safe fallback to CPU at
+  every layer if GPU acceleration isn't actually available. See
+  [ADR 0013](decisions/0013-gpu-acceleration.md).
+- `--no-native-ffmpeg-binding` — opt-out: by default (2026-08-03) sampling decodes in-process via
+  VDF.Core's native FFmpeg binding instead of spawning `ffmpeg.exe` per sampling call, falling back
+  to the CLI process automatically and safely on any native failure. Pass this flag to rule out the
+  native path entirely (e.g. while troubleshooting) rather than trust that fallback. **Currently a
+  no-op for most real ffmpeg installs** (e.g. this project's own dev machine's Chocolatey install)
+  — native decode needs shared libraries (`avformat-*.dll` etc.) that typical static ffmpeg builds
+  don't ship; VBR.CLI has no acquisition mechanism for those yet (tracked in
+  [`PROGRESS.md`](PROGRESS.md) → "Open / next steps"). See
+  [ADR 0015](decisions/0015-native-ffmpeg-binding.md).
 - `--verbose` — logs the resolved ONNX model path, per-file sampled/usable frame counts, each
   inference batch call, and the exact ffmpeg command lines run, to the console and to VDF's
   `log.txt` (next to the running executable, or the state folder if that's not writable). VDF's
@@ -303,6 +318,8 @@ Key options:
   levels as `--console-info`, applied separately). Default level `verbose`, default location
   sibling to the database file with the same library name and a `.log` extension — so a quiet console
   plus a fully-detailed log file is the out-of-the-box default, not something you have to ask for.
+- `--hardware-accel` / `--no-native-ffmpeg-binding` — same shared GPU/native-decode options as
+  `match` (see above).
 
 **Verified live (2026-07-26)** against real media: a 49-minute episode scans in ~21s and produces
 197 merged fingerprints; an unchanged re-scan takes 0.16s; a touched-mtime-but-same-content file
@@ -344,6 +361,8 @@ Key options:
   Windows) — a sibling of, not shared with, `vbr scan`'s own database folder.
 - `--verbose` — same logging convention as every other command: model path, sampled/usable frame
   counts, and exact ffmpeg commands run, to the console and `log.txt`.
+- `--hardware-accel` / `--no-native-ffmpeg-binding` — same shared GPU/native-decode options as
+  `match` (see above).
 
 **Verified live (2026-07-28)** against a real Daredevil episode's Netflix end-card (`--region end
 --clip-length 8s`, the same length ADR 0007 independently measured for it): 17 usable fingerprints,
@@ -405,6 +424,101 @@ $env:BUMPER_REMOVE_REGION = "end"
 $env:BUMPER_REMOVE_LENGTH_SECONDS = "20.5"
 dotnet test VBR.Tests --filter "FullyQualifiedName~ClipRemoverTests" -l "console;verbosity=detailed"
 ```
+
+### Publish a redistributable package — `publish-vbr-cli.ps1`
+
+```powershell
+pwsh -File publish-vbr-cli.ps1
+```
+
+Builds a self-contained `VBR.CLI` package for copying to another machine — originally for
+benchmarking GPU/ONNX hardware acceleration across different hardware
+([ADR 0013](decisions/0013-gpu-acceleration.md)); see
+[ADR 0014](decisions/0014-vbr-cli-redistribution.md) for the decisions behind its defaults. It
+only builds `VBR.CLI` and what its own `ProjectReference` chain pulls in
+(`VBR.CLI` → `VBR.Core` → `VDF.Core`) — no other VDF/VBR artifact (`VDF.GUI`, `VDF.Web`, etc.).
+
+Two layouts, for two different purposes:
+
+- **`-Layout SingleFile` (default)** — one `.exe`, nothing else, for running `vbr` commands on
+  another machine. Self-contained + `PublishSingleFile` + `IncludeNativeLibrariesForSelfExtract`
+  (~78MB on win-x64), no .NET install required on the target. `Microsoft.ML.OnnxRuntime.dll` and
+  its native runtimes are bundled *inside* the exe (self-extracting to a temp cache at startup) —
+  there's no loose `Microsoft.ML.OnnxRuntime.dll` on disk for `test-onnx-directml.ps1` to
+  `Add-Type -Path` against, so this layout can't pair with that script.
+- **`-Layout Loose`** — `VBR.CLI.exe` plus its managed DLLs sitting loose next to it (no
+  bundling), for running [`test-onnx-directml.ps1`](#standalone-onnxdirectmlcuda-probe--test-onnx-directmlps1)
+  on another machine. Also copies that script itself, plus this machine's already-downloaded `ai\`
+  folder (model + whichever of the CPU/DirectML/CUDA runtimes are present locally) into the output
+  root, so the pair is immediately self-sufficient on a target machine with no network access and
+  no prior `vbr` run to trigger the normal auto-download.
+
+```powershell
+pwsh -File publish-vbr-cli.ps1                       # SingleFile -> .\publish\vbr-cli-win-x64\
+pwsh -File publish-vbr-cli.ps1 -Layout Loose          # -> .\publish\vbr-cli-win-x64-loose\
+pwsh -File publish-vbr-cli.ps1 -Rid win-arm64
+pwsh -File publish-vbr-cli.ps1 -Zip                   # also produce a .zip of the output
+pwsh -File publish-vbr-cli.ps1 -BundleFfmpeg -FfmpegPath "C:\ffmpeg\bin\ffmpeg.exe" -FfprobePath "C:\ffmpeg\bin\ffprobe.exe"
+```
+
+Key options:
+
+- `-Rid` (default `win-x64`) — target runtime identifier.
+- `-Aot` — Native AOT (smaller/faster-starting exe; SingleFile layout only, errors if combined
+  with `-Layout Loose` since AOT has no loose managed DLLs left for `test-onnx-directml.ps1` to
+  point at). Requires the Visual Studio "Desktop development with C++" workload (the platform
+  linker; see <https://aka.ms/nativeaot-prerequisites>) — not installed on the machine this script
+  was written on, which is why `SingleFile` (non-AOT) is the default rather than requiring it.
+- `-BundleFfmpeg` (with optional `-FfmpegPath`/`-FfprobePath` overrides) — unlike VDF.GUI/VDF.Web,
+  `VBR.CLI` never auto-downloads ffmpeg/ffprobe, only *locates* an existing one (next to the exe,
+  in a `bin\` subfolder next to the exe, or on PATH). Off by default since it copies a third-party
+  binary into the package; on for personal machine-to-machine copying, where it's your own
+  already-licensed local install. Detects and warns on Chocolatey-style PATH shims (tiny redirect
+  exes, ~390KB, that break if copied elsewhere since they locate the real binary relative to their
+  own original location) rather than silently bundling a broken exe — pass `-FfmpegPath`/
+  `-FfprobePath` explicitly pointing at the real binary in that case (e.g. Chocolatey's is under
+  `C:\ProgramData\chocolatey\lib\ffmpeg\tools\ffmpeg\bin\`).
+- `-Zip` — also produce a `.zip` of the output folder.
+- `-OutputRoot` (default `.\publish`) — where the `vbr-cli-<rid>[-loose]\` output folder is
+  created.
+
+The AI/ONNX runtime, DirectML native libraries, and the DINOv2 model itself are **not** bundled
+into the `SingleFile` layout — VBR downloads those into its own state folder on first run, same as
+any other build, so each target machine needs network access once, the first time it runs any
+AI-matching command. The `Loose` layout's `ai\` copy (above) is what avoids that requirement for
+`test-onnx-directml.ps1` specifically.
+
+### Standalone ONNX/DirectML/CUDA probe — `test-onnx-directml.ps1`
+
+```powershell
+.\test-onnx-directml.ps1 -Mode DirectML
+```
+
+A standalone diagnostic script for testing which ONNX Runtime execution providers actually work on
+a given machine — independent of `vbr` itself, so it can be copied to another machine (see
+`-Layout Loose` above) to test hardware before/without a full VBR install. Loads
+`Microsoft.ML.OnnxRuntime.dll` directly via `Add-Type`/P/Invoke and runs real inference, reporting
+whether the requested execution provider actually attached — not just whether the process didn't
+crash (`OnnxEmbedder` itself catches DirectML/CUDA failures internally and silently falls back to
+CPU with no exception, so a naive check here would be a false positive; see
+[ADR 0013](decisions/0013-gpu-acceleration.md)'s live-verification notes).
+
+```powershell
+.\test-onnx-directml.ps1 -Mode Cpu
+.\test-onnx-directml.ps1 -Mode DirectML -DeviceId 0
+.\test-onnx-directml.ps1 -Mode Cuda -Iterations 20
+```
+
+Key options:
+
+- `-Mode Cpu|DirectML|Cuda` — which execution provider to test.
+- `-DeviceId` — GPU adapter index, for `DirectML`/`Cuda`.
+- `-Iterations` (default a small handful) — how many inference passes to time.
+- `-Root` (default `$PSScriptRoot`) — where to find the model/runtime `ai\` folder; matches what
+  `-Layout Loose` above copies alongside the script.
+- `-NativeFolder`/`-ManagedDllPath` — explicit overrides for the native runtime folder and the
+  managed `Microsoft.ML.OnnxRuntime.dll` path, for a layout that doesn't match the script's
+  defaults.
 
 ## VDF — inherited engine (Video Duplicate Finder)
 

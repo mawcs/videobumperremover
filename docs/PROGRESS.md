@@ -405,6 +405,19 @@ was flagged right after the initial scaffold and fixed before anything else was 
   - [ ] Measure "Use native Ffmpeg binding" as a separate, possibly bigger decode-side lever.
   - [ ] Implement GPU decode (NVDEC) + ONNX CUDA execution provider. Code touch-points in
     `research/vdf-evaluation.md`.
+- [ ] **Ffmpeg/ffprobe acquisition — VBR.CLI has no download mechanism (flagged 2026-08-04).**
+  Unlike VDF.GUI/VDF.Web (`FfmpegDownloader`), VBR.CLI only *locates* an existing ffmpeg/ffprobe
+  (next to the exe, a `bin\` subfolder next to the exe, or PATH) — it never fetches one. Two
+  distinct payoffs: (1) baseline usability — a fresh machine needs ffmpeg preinstalled before `vbr`
+  works at all; (2) unlocks the native FFmpeg binding (ADR 0015) — its default-on decode path is
+  currently a no-op for most real installs (e.g. this project's own dev machine's Chocolatey
+  ffmpeg) because typical static builds lack the shared libraries (`avformat-*.dll` etc.) native
+  decode needs, confirmed via live verification. Candidates, not decided/scoped yet: build a
+  VBR-side equivalent of `FfmpegDownloader` (a real, possibly substantial effort — that downloader
+  is VDF.GUI/Web-specific plumbing today, nothing VBR.CLI shares in); document the shared-build
+  requirement clearly enough for users to self-serve it; or leave as-is and treat native binding as
+  an already-have-the-right-build bonus for now. See
+  [ADR 0015](decisions/0015-native-ffmpeg-binding.md) → "Open questions."
 - [x] **Fix the visual matcher's black-frame / keyframe-only-decode defect** (begin-region false
   positives, found 2026-07-18) — **done same day** per [`iterativeplan.md`](iterativeplan.md):
   §A1 `FrameQuality` low-information filter (VDF's dark/duplicate guards + calibrated
