@@ -4,6 +4,234 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Dogfooding fallout: `remove` HW acceleration visibility, and static-image bumpers — sequencing plan (2026-08-05)
+
+**Status: plan for discussion, not yet approved or built.** Raised by the maintainer while
+dogfooding the CLI in a separate environment from the usual dev/test machines: (1) `vbr remove`
+doesn't *seem* to be using ffmpeg hardware acceleration, and (2) static image bumpers held for
+many seconds are a recurring problem case. Both were investigated against the current code before
+writing anything below — issue 2 turns out to already have a real, code-confirmed repro on record
+(`PROGRESS.md`, 2026-08-05 entry, same date as this dogfooding session), and issue 1 turns out to
+be less "missing" than "unverified" once the actual wiring is traced. No implementation yet — this
+entry lays out findings and candidate directions for the maintainer to pick from.
+
+### Issue 1 — `remove` and ffmpeg hardware acceleration
+
+**What's actually already wired, confirmed by reading the code, not assumed:** `--hardware-accel`
+(default `auto`, ADR 0013) drives `VBR.Core.Extraction.HardwareAcceleration.Mode`, and every
+ffmpeg-invoking call site in the `remove` path already adds `-hwaccel <mode>` before `-i`:
+[`ClipRemover.StartFfmpegArgs`](../VBR.Core/Removal/ClipRemover.cs) (stream-copy, a no-op there
+but harmless), both of `ClipRemover`'s re-encode builders
+(`RunFfmpegOutputSeekReEncode`/`RunFfmpegDurationReEncode`), `ClipExtractor`'s extraction of the
+reference clip, and `DenseFrameSampler`'s CLI fallback (used for matching's own sampling within
+`remove`, when the native FFmpeg.AutoGen binding — see the entry below — doesn't apply). Re-encode
+also probes for a real GPU encoder (`GpuEncoderProbe`, H.264/HEVC only) rather than trusting a
+static `ffmpeg -encoders` list, and ADR 0013's "Live-verified (2026-07-30, real RTX 3080 machine)"
+section confirms this actually engages on real hardware: `ClipRemover` logged `Re-encode video
+codec: h264_nvenc (GPU)` and the real command line showed `-c:v h264_nvenc -cq 22 -preset p5`. So
+the infrastructure is not missing — the dogfooding machine is a different environment than that
+RTX 3080 verification machine, and something in it isn't producing the expected result (or isn't
+visibly confirming one).
+
+**The real gap, found by comparing how differently each GPU layer verifies itself:** `GpuEncoderProbe`
+learned (ADR 0013, live-verified) that a compiled-in encoder name proves nothing — it probed by
+attempting a real synthetic encode instead. `HardwareAcceleration`'s DirectML path learned the
+identical lesson twice as hard (ADR 0013's whole "Live-verified" history, culminating in
+2026-08-02: `RunDirectMlProbe` originally treated "construction didn't throw" as success, when
+`OnnxEmbedder` silently falls back to CPU with no exception at all — the probe had been lying on
+every machine tested until `UsedDirectML` was added as the real signal). **Ffmpeg decode
+(`-hwaccel auto`) never got the same treatment.** It's added to the command line unconditionally
+whenever `HardwareAcceleration.Enabled`, with zero verification that it actually selected a working
+hardware path rather than silently decoding in software — a known real-world ffmpeg behavior for
+`-hwaccel auto` specifically (it can fail to attach and fall back with no error, no distinct exit
+code, nothing to catch). Nothing in this codebase currently distinguishes "GPU decode engaged" from
+"GPU decode silently declined" for the one layer that's never had a probe built for it — every
+other layer in ADR 0013's history turned out to need exactly this distinction to trust its own
+"it's working" belief.
+
+**Candidate directions:**
+
+- **A. Make decode acceleration status visible, unconditionally (not just under `--verbose`).**
+  Cheapest option and the most likely to actually answer "is it working on this machine" without
+  guessing further: print one line (stderr, matching this project's existing "Note:"/progress
+  convention) reporting what `-hwaccel` mode was requested and, ideally, what ffmpeg itself reports
+  choosing (`ffmpeg -loglevel verbose` surfaces the selected hwaccel method on stderr today — this
+  project already parses ffmpeg's own text output elsewhere, e.g. `FfmpegErrorClassifier`/the
+  `-progress` parser in `ClipRemover.ReadProgressAsync`). Doesn't fix anything by itself, but turns
+  "does not seem to be" into a concrete yes/no the maintainer (or any future dogfooder) can read off
+  a real run instead of inferring from wall-clock time or Task Manager.
+- **B. A real decode probe, mirroring `GpuEncoderProbe`'s pattern.** Attempt a trivial synthetic
+  decode (or decode a few frames of the real source) under the requested `-hwaccel` mode and confirm
+  it actually ran on the device before trusting it for the real job — the same "prove it, don't
+  infer it from compiled-in support" principle `GpuEncoderProbe` and the (eventually-fixed) DirectML
+  probe both already apply. Real cost: another child-process invocation per run (small, one-time,
+  same class of cost `GpuEncoderProbe` already accepts). Would also let `auto` be resolved to a
+  concrete method up front and logged, rather than staying a black box ffmpeg decides internally —
+  similar in spirit to ADR 0015's Step 7 candidate-list probing (`d3d11va`/`dxva2`/`vaapi`/
+  `videotoolbox`), which today only applies to the *native* FFmpeg.AutoGen binding path, not this
+  CLI `-hwaccel` path `ClipExtractor`/`ClipRemover` are permanently scoped to (ADR 0015's own
+  explicit "decode-only, not encode/mux" boundary keeps native binding out of `remove`'s actual cut
+  entirely — a decode probe here would be new, CLI-path-specific work, not a reuse of that ADR's
+  candidate list).
+- **C. Ffmpeg build/acquisition.** Already tracked separately (`PROGRESS.md`, "Ffmpeg/ffprobe
+  acquisition" item, flagged 2026-08-04) — relevant here only if diagnosis on the dogfooding machine
+  finds a build that lacks the necessary decoder/encoder support at all (a static or minimal build,
+  the same class of gap already documented for native binding's shared-library requirement). Not
+  redone in this entry; just noted as the likely fix if that turns out to be the cause.
+
+**Recommendation:** start with A — it's near-zero effort, ships independently of any decision about
+B, and directly produces the evidence needed to know whether B is actually warranted here or whether
+this machine simply has no working hardware path (in which case correct CPU fallback is already
+happening and there's nothing to fix). Don't build B speculatively before a real run's diagnostic
+output says it's needed — same "don't build speculative surface" preference this document already
+applies elsewhere (e.g. the "Utilizing Databases" entry's `--file`-plus-`--library-name` gap).
+
+**Open question for the maintainer:** is a real decode probe (B) worth its per-run cost and added
+complexity, or is visibility (A) enough for now, deferring B until a concrete run shows `-hwaccel`
+silently declining on real hardware that should support it?
+
+### Issue 2 — static image bumpers held for many seconds
+
+**Not a new finding — already has a real repro on record.** `PROGRESS.md`'s "Static image bumpers
+produce zero usable frames" item (flagged 2026-08-05, the same day as this dogfooding session)
+already documents a live failure: `vbr scan` against a real end-region static bumper produced *"No
+usable frames found in '\<file\>'s end region (5s) -- every sampled frame was filtered out as
+low-information (black/blank/duplicate)."* That entry explicitly calls for "a real design pass now
+that a repro exists" — this section is that pass, informed by tracing exactly how the filtering
+pipeline behaves, including checking both of the maintainer's own proposed directions against the
+actual code before recommending anything.
+
+**How the pipeline actually behaves, traced through the code:**
+
+- `FrameQuality.SelectUsable` ([`VBR.Core/Fingerprinting/FrameQuality.cs`](../VBR.Core/Fingerprinting/FrameQuality.cs))
+  is three filters stacked: VDF's own ≥80%-dark-pixel rejection, VDF's own byte-identical-to-
+  previous-frame drop (`ScanEngine.SelectUsableDenseFrames`), and this project's own calibrated
+  near-uniform rejection (`MinDetail = 1.0`, a mean horizontal luma-delta edge-energy measure).
+  Applied identically to **both** the reference clip and every candidate's search window.
+- This filter is not incidental — it's the direct, deliberately strict fix for a real, previously
+  shipped false-positive bug (the 2026-07-18 "Finding 3" investigation, `docs/design/matcher-spec.md`
+  §"2026-07-18 correction" and `docs/research/vdf-evaluation.md`): before the fix, near-black and
+  near-uniform frames embedded at cosine 0.87–0.97 against *any other frame of the same character*,
+  and duplicate/near-duplicate frames let one coincidental hit masquerade as several independent
+  pieces of evidence (`present=6/14` was six copies of one black frame, not six distinct
+  corroborating detections). Both the dark/duplicate guard and the near-uniform threshold were
+  calibrated against real frame grids before shipping, and the fix was re-validated against a full
+  TP/FP matrix (12/12 true positives, 0/33 false positives). Any change here needs to not reopen
+  that bug.
+- **A static bumper can legitimately fail this filter for reasons that have nothing to do with the
+  2026-07-18 bug.** If the whole bumper is one still image with no fade/motion, dense sampling
+  collapses to ~1 distinct frame (the duplicate guard drops the rest as byte-identical repeats of
+  the first); if *that* one surviving frame is also low-detail (a flat background, minimal
+  text/logo — exactly the "blank-white ident background 0.55–0.68" case `MinDetail`'s own
+  calibration notes recorded), it fails the near-uniform bar too, and the clip is left with zero
+  usable frames.
+- **This is a hard, whole-run-aborting failure, not a soft per-candidate miss** — confirmed by
+  reading `MatchingSession.PrepareAsync` ([`VBR.CLI/Commands/MatchingSession.cs:111-141`](../VBR.CLI/Commands/MatchingSession.cs)):
+  the reference clip is sampled and filtered exactly once, before the per-candidate loop even
+  starts, and `usableCount < 1` returns an error string that `RemoveCommand`/`MatchCommand` print
+  and exit nonzero on. A static-image bumper that trips this doesn't just fail to match some
+  files — `vbr remove`/`vbr match`/`vbr add-bumper` refuse to even start using it as a reference
+  clip at all.
+
+**Checking the maintainer's own two proposed directions against this trace, before proposing
+anything else:**
+
+1. **"Don't discard duplicates, treat as unique — can we get accurate vectors if we do that?"**
+   Traced through `VisualBumperMatcher.Embed`/`MixedDensitySampler.AppendZone`: DINOv2 embeds
+   whatever bytes it's handed, so byte-identical frames necessarily produce byte-identical
+   (cosine=1.0) vectors — there's no "more accurate" vector to gain from embedding the same pixels
+   five times instead of once; it's the same vector five times. Not deduplicating would restore
+   exactly the evidence-inflation shape the 2026-07-18 fix eliminated (`present=N/M` counting
+   repeats of one frame as N independent detections, and the rigid corroborator being trivially
+   satisfied by repeats too) — real regression risk for no accuracy upside. **Recommend against
+   this as a blanket change.** The narrower, useful part of the instinct — "a lone surviving frame
+   shouldn't be thrown away just because it's the only one" — is closer to Option A below, which
+   targets the near-uniform filter, not the duplicate filter.
+2. **"Fall back to pHash or audio when DINO fails."** Traced through
+   `MatchingSession.PrepareAsync` (lines 124–141) and `MixedDensitySampler.GatherFrames`: pHash is
+   **not independent of this failure** as currently wired. `SamplePHash`/`SampleWithPHash` both
+   draw their frames from the identical `GatherFrames` → `FrameQuality.SelectUsable` pipeline DINOv2
+   uses — the exact same `usableCount < 1` check gates pHash-only mode too. A bumper that collapses
+   to zero usable frames for DINO collapses to zero usable frames for pHash as well, for the
+   identical reason, in the same call. **pHash cannot serve as a fallback here without first being
+   decoupled from `FrameQuality`'s filter** (see Option C). Audio (`AudioBumperMatcher`) genuinely
+   is independent — it never touches `FrameQuality` or frame sampling at all — but
+   `docs/design/matcher-spec.md` is explicit that audio is a secondary accelerator specifically
+   because many of this project's actual target bumpers are silent studio/network idents ("the only
+   path validated on the bumpers this project exists to remove ... which audio cannot touch"). A
+   purely visual static end-card is exactly the case most likely to have no distinguishing audio
+   either — falling back to audio may simply trade one silent failure for another on the bumpers
+   this issue actually describes. Worth having as a documented last resort (Option E), not assumed
+   to be a real fix for the common case.
+
+**Candidate solution directions, informed by the above:**
+
+- **A. Relax `MinDetail` specifically for the "collapsed to ~1 distinct frame" case.** Today the
+  same bar (1.0) applies whether there are 20 distinct candidate frames to choose the best of or
+  exactly 1. When duplicate-collapse leaves only a single surviving frame (or a very small handful),
+  trust it rather than discarding the clip's only evidence outright. Doesn't touch the duplicate
+  guard at all, so the Finding-3 evidence-inflation bug stays fixed — this only changes what happens
+  to the one frame that's left after deduplication already ran. Lowest regression risk of the
+  options here, but needs the same kind of calibration pass `MinDetail`'s original 1.0 value got
+  (real frame grids, not a guess) before picking a relaxed bar or a frame-count cutoff.
+- **B. Widen the sampled window to capture more of any fade in/out at the bumper's true boundary.**
+  Helps genuine fades (more chances at a non-uniform frame near the transition); does nothing for a
+  bumper that's flat for its entire real duration, which is exactly the case in the live 2026-08-05
+  repro. **Tried by the maintainer (2026-08-05): no change in outcome.** Consistent with — and
+  further evidence for — the "flat for its entire real duration" read above: if any part of the
+  window had contained a fade or other non-uniform content, widening should have surfaced it, so a
+  null result here is informative, not just a shrug. **Ruled out as sufficient on its own** — an
+  edge-window change can't manufacture detail in a bumper that has none anywhere. Doesn't invalidate
+  A/C/D below, which don't depend on the window containing any non-uniform content in the first
+  place.
+- **C. Give pHash its own, independently-tunable low-information filter, decoupled from
+  `FrameQuality`.** Turns "fall back to pHash" from currently-false (see above) into something that
+  could actually be true — pHash's false-positive risk from near-uniform frames may not be identical
+  to DINOv2's (untested assumption; pHash and cosine-similarity-on-embeddings are different
+  mechanisms and could tolerate different content differently), so a separately-calibrated bar (or
+  none at all, with pHash's own similarity threshold doing the real work instead) is plausible. Real
+  work: needs its own calibration pass, not a mechanical "reuse `FrameQuality` minus one check."
+- **D. Turn the reference-clip "zero usable frames" case from a hard abort into a loud, explicit
+  degraded-evidence path** — e.g., when filtering leaves nothing, fall back to the single least-
+  uniform raw sampled frame despite it failing `MinDetail`, but flag the session (and every
+  resulting match) as lower-confidence so results are legible rather than silently equivalent to a
+  clean match. This is the option that actually closes "this bumper cannot be used as a reference
+  clip at all today," independent of whether A/B/C also ship.
+- **E. Automatic audio fallback when visual AND pHash both produce zero usable reference frames.**
+  Only helps the subset of static bumpers that carry distinguishing audio (per the analysis above,
+  likely a minority of this project's actual target bumpers) and would mean relaxing
+  `matcher-spec.md`'s explicit "must never be the only path consulted" rule for this one degenerate
+  case — a real design-doc change, not just code, so it needs its own maintainer sign-off rather
+  than being bundled into this pass by default.
+
+**Recommendation:** A is the safest first move and most consistent with how this project has fixed
+filtering issues before (narrow, calibrated, doesn't touch the part of the filter that's working
+correctly). D is what actually resolves "I cannot use this bumper at all," and is worth doing
+alongside A rather than instead of it. **B has now been tried and ruled out** — no change in
+outcome, confirming the target bumper has no non-uniform content anywhere in the window, not just
+near the sampled edge — so it's dropped as a candidate fix (not retested further) rather than kept
+open. C is
+only worth it paired with a real calibration pass — not as a blind "reuse the DINO filter minus one
+line" fallback, since that's what made pHash's current "fallback" illusory in the first place. E is
+the most speculative of the five and probably not worth building until A/B/D are shipped and a real
+static bumper is *still* unmatchable after them.
+
+**Before implementing anything here:** this needs the same evidence discipline the original
+2026-07-18 fix and `MinDetail`'s own calibration used — a real static-bumper repro (the 2026-08-05
+file already on record, or a fresh one from this dogfooding session), a `--dump-frames` grid of it,
+and measured detail/duplicate numbers on the actual frames, not a threshold picked by guessing.
+
+**Open questions for the maintainer:**
+
+- How far should `MinDetail` relax under Option A, and by what rule (frame count? something else)?
+  Needs real numbers before picking one.
+- Is Option D's "degraded confidence" soft-fail an acceptable default, or should a genuinely flat
+  bumper keep hard-failing, just with clearer guidance (e.g., pointing at `--dump-frames` up front)?
+- Is decoupling pHash from `FrameQuality` (Option C) in scope for this pass, or a separate,
+  later calibration effort?
+- Is Option E (audio-fallback-of-last-resort) worth building now, given it conflicts with
+  `matcher-spec.md`'s current explicit design rule, or should that rule stand as-is?
+
 ## Native FFmpeg binding for scanning/sampling — implemented (2026-08-03)
 
 **Status: implemented and live-verified against real media (2026-08-03).** `SampleFrames` (the
