@@ -17,6 +17,8 @@
 using System.CommandLine;
 using System.Text;
 using VBR.Core.Cleanup;
+using VBR.Core.Database;
+using VBR.Core.Removal;
 using static VBR.CLI.Commands.SharedOptions;
 
 namespace VBR.CLI.Commands;
@@ -29,8 +31,21 @@ namespace VBR.CLI.Commands;
 /// command permitted to delete video files. Core algorithm lives in
 /// <see cref="VBR.Core.Cleanup.LibraryCleaner"/> (unrenamed — this is a CLI-surface rename only,
 /// not a claim that "cleanup" as an internal engine concept needed to change); this file is just
-/// CLI wiring — resolving <c>--library</c>/<c>--file</c>, walking directories for the former, and
-/// reporting results.
+/// CLI wiring — resolving <c>--library</c>/<c>--file</c>/<c>--library-name</c>, walking directories
+/// or a scanned library database, and reporting results.
+///
+/// Candidates can be an ad hoc folder/file (<c>--library</c>/<c>--file</c>, the original behavior)
+/// or a scanned library database (<c>--library-name</c>/<c>--library-db-folder</c>, added
+/// 2026-08-05 — same option pair <c>vbr remove</c> already supports on its own candidate side, per
+/// docs/iterativeplan.md "Utilizing Databases"). The database only supplies the candidate *paths*
+/// — commit's own pairing/marker logic (filename-derived, per ADR 0008 Decision 1) is unchanged
+/// and untouched by the database either way; a database entry is simply handed to
+/// <see cref="LibraryCleaner.CleanSingleFile"/> one at a time, the same primitive <c>--file</c>
+/// already uses. Skipped entirely, with nothing printed, for any database entry with neither a
+/// <c>.vbr.</c> output nor a stray recovery marker on disk — mirrors <c>CleanDirectory</c>'s own
+/// selectivity (it only ever enumerates <c>.vbr.</c>-suffixed files and markers, never every file
+/// in a directory), so a large scanned library doesn't flood the report with rows for files
+/// <c>vbr remove</c> never touched.
 /// </summary>
 internal static class CommitCommand {
 
@@ -44,11 +59,15 @@ internal static class CommitCommand {
 			"Promote verified '.vbr.' outputs (from a prior 'vbr remove' run) to replace their " +
 			"originals — deletes the pre-cut original and the manifest. The only command that " +
 			"deletes video files (see docs/decisions/0008-cleanup-command.md). Run this between " +
-			"bumper-removal passes, after reviewing the '.vbr.' outputs, not instead of reviewing them.");
+			"bumper-removal passes, after reviewing the '.vbr.' outputs, not instead of reviewing " +
+			"them. Candidates can be an ad hoc folder/file (--library/--file) or a scanned library " +
+			"database (--library-name) — see docs/iterativeplan.md, \"Utilizing Databases\".");
 		cmd.Options.Add(Library);
 		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
+		cmd.Options.Add(LibraryName);
+		cmd.Options.Add(LibraryDbFolder);
 		cmd.Options.Add(ValidateFiles);
 		cmd.Options.Add(Output);
 		cmd.Options.Add(Verbose);
@@ -58,24 +77,42 @@ internal static class CommitCommand {
 			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			var targetFile = parseResult.GetValue(TargetFile);
 			bool recurse = !parseResult.GetValue(NoRecurse);
+			string? libraryNameArg = parseResult.GetValue(LibraryName);
+			DirectoryInfo? libraryDbFolderArg = parseResult.GetValue(LibraryDbFolder);
 			bool validateFiles = parseResult.GetValue(ValidateFiles);
 			FileInfo? output = parseResult.GetValue(Output);
 			bool verbose = parseResult.GetValue(Verbose);
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
-			if (targetFile is null && libraries.Length == 0) {
-				Console.Error.WriteLine("Error: one of --library or --file is required.");
+			bool hasLibrary = libraries.Length > 0;
+			bool hasFile = targetFile is not null;
+			bool hasLibraryDb = !string.IsNullOrWhiteSpace(libraryNameArg);
+			if (libraryDbFolderArg is not null && !hasLibraryDb) {
+				Console.Error.WriteLine("Error: --library-db-folder must be accompanied by --library-name.");
 				return Task.FromResult(1);
 			}
-			if (targetFile is not null && libraries.Length > 0) {
-				Console.Error.WriteLine("Error: specify only one of --library or --file, not both.");
+			int candidateSourceCount = (hasLibrary ? 1 : 0) + (hasLibraryDb ? 1 : 0) + (hasFile ? 1 : 0);
+			if (candidateSourceCount == 0) {
+				Console.Error.WriteLine("Error: one of --library, --library-name, or --file is required.");
 				return Task.FromResult(1);
 			}
+			if (candidateSourceCount > 1) {
+				Console.Error.WriteLine("Error: specify only one of --library, --library-name, or --file.");
+				return Task.FromResult(1);
+			}
+			if (libraryDbFolderArg is not null && File.Exists(libraryDbFolderArg.FullName)) {
+				Console.Error.WriteLine(
+					$"Error: --library-db-folder must be a folder, but a file already exists there: '{libraryDbFolderArg.FullName}'.");
+				return Task.FromResult(1);
+			}
+			if (!recurse && hasLibraryDb)
+				Console.Error.WriteLine("Note: --no-recurse has no effect with --library-name -- the database's own file list is used as-is.");
 
 			var results = new List<CleanupFileResult>();
 			var recoveries = new List<RecoveryAction>();
 			IReadOnlyList<string> libraryRoots = Array.Empty<string>();
+			string? databasePath = null;
 
 			if (targetFile is not null) {
 				if (!targetFile.Exists) {
@@ -91,6 +128,49 @@ internal static class CommitCommand {
 				}
 				results.Add(result);
 				Console.WriteLine(ToLine(result, Array.Empty<string>()));
+			}
+			else if (hasLibraryDb) {
+				string libraryName = libraryNameArg!;
+				databasePath = LibraryDatabaseStore.ResolveDatabasePath(libraryDbFolderArg?.FullName, libraryName);
+				LibraryDatabase database;
+				try {
+					database = LibraryDatabaseStore.Load(databasePath);
+				}
+				catch (Exception ex) {
+					Console.Error.WriteLine($"Error: {ex.Message}");
+					return Task.FromResult(1);
+				}
+
+				var entries = database.Entries.Values
+					.OrderBy(e => e.Path, StringComparer.OrdinalIgnoreCase);
+				foreach (LibraryDatabaseEntry entry in entries) {
+					ct.ThrowIfCancellationRequested();
+					// Tombstoned/missing entries have nothing on disk to commit -- skip rather than
+					// fail the whole run over stale database rows (same convention as vbr remove's
+					// own --library-name handling).
+					if (entry.TombstonedUtc is not null || !File.Exists(entry.Path)) continue;
+					// A .vbr. output's own database entry (only present if the prior scan ran with
+					// --include-vbr-outputs) is never a commit candidate itself -- it's the thing a
+					// real candidate's pairing check looks for, not a pairing target of its own.
+					if (Path.GetFileNameWithoutExtension(entry.Path).EndsWith(".vbr", StringComparison.OrdinalIgnoreCase)) continue;
+					if (IsUnderAny(entry.Path, excludeFolders)) continue;
+
+					// Only a candidate at all if there's a .vbr. output waiting or a stray recovery
+					// marker to reconcile -- see this class's own doc comment for why (mirrors
+					// CleanDirectory's selectivity so a large scanned library doesn't flood the
+					// report with rows for files vbr remove never touched).
+					string vbrPath = ClipRemover.BuildOutputPath(entry.Path);
+					string markedPath = entry.Path + LibraryCleaner.DeletionMarkerSuffix;
+					if (!File.Exists(vbrPath) && !File.Exists(markedPath)) continue;
+
+					var (result, recovery) = LibraryCleaner.CleanSingleFile(entry.Path, validateFiles, verbose, ct);
+					if (recovery is not null) {
+						recoveries.Add(recovery);
+						Console.WriteLine(ToLine(recovery, Array.Empty<string>()));
+					}
+					results.Add(result);
+					Console.WriteLine(ToLine(result, Array.Empty<string>()));
+				}
 			}
 			else {
 				// Existence of each library folder was already validated by --library's own
@@ -121,7 +201,7 @@ internal static class CommitCommand {
 			Console.WriteLine();
 			Console.WriteLine(summary);
 
-			if (output is not null && !WriteReport(output, results, recoveries, summary, libraryRoots, libraries, excludeFolders, targetFile, recurse, validateFiles))
+			if (output is not null && !WriteReport(output, results, recoveries, summary, libraryRoots, libraries, excludeFolders, targetFile, recurse, validateFiles, libraryNameArg, databasePath))
 				return Task.FromResult(1);
 
 			return Task.FromResult(0);
@@ -168,12 +248,15 @@ internal static class CommitCommand {
 	static bool WriteReport(FileInfo output, IReadOnlyList<CleanupFileResult> results,
 			IReadOnlyList<RecoveryAction> recoveries, string summary, IReadOnlyList<string> libraryRoots,
 			IReadOnlyList<DirectoryInfo> libraries, IReadOnlyList<DirectoryInfo> excludeFolders,
-			FileInfo? targetFile, bool recurse, bool validateFiles) {
+			FileInfo? targetFile, bool recurse, bool validateFiles, string? libraryName, string? databasePath) {
 		var report = new StringBuilder();
 		report.AppendLine($"vbr commit report  {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-		report.AppendLine(targetFile is not null
-			? $"file:           {targetFile.FullName}"
-			: $"library:        {string.Join("; ", libraries.Select(l => l.FullName))}   ({(recurse ? "recursive" : "top level only")})");
+		if (libraryName is not null)
+			report.AppendLine($"library-name:   {libraryName}   database: {databasePath}");
+		else if (targetFile is not null)
+			report.AppendLine($"file:           {targetFile.FullName}");
+		else
+			report.AppendLine($"library:        {string.Join("; ", libraries.Select(l => l.FullName))}   ({(recurse ? "recursive" : "top level only")})");
 		if (excludeFolders.Count > 0)
 			report.AppendLine($"exclude-folders: {string.Join("; ", excludeFolders.Select(e => e.FullName))}");
 		report.AppendLine($"validate-files: {validateFiles}");

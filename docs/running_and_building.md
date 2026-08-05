@@ -230,6 +230,13 @@ Or a single file — scoped to *only* that file, never the rest of its directory
 dotnet run --project VBR.CLI -- commit --file "D:\Media\Show\S01E05.mkv"
 ```
 
+Or a `vbr scan`'d library database (added 2026-08-05, same option pair `vbr remove` already
+supports on its candidate side — see `vbr remove`'s "Utilizing Databases" combinations above):
+
+```sh
+dotnet run --project VBR.CLI -- commit --library-name "my-show"
+```
+
 Key behavior:
 
 - **Pairing is filename-derived, not manifest-derived.** The JSON manifest can be separated from,
@@ -252,7 +259,21 @@ Key behavior:
 - `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`scan`
   (each folder's own directory tree walked, deduplicated where folders overlap), and
   `--exclude-folders` skips whole directories that fall under it, before `commit` ever looks
-  inside them for `.vbr.` pairs.
+  inside them for `.vbr.` pairs. Exactly one of `--library`, `--file`, or `--library-name` is
+  required.
+- `--library-name` — search a `vbr scan`'d database's files instead of walking `--library`'s
+  folder(s) live; invalid together with `--library`/`--file`. `--library-db-folder` mirrors `vbr
+  scan`'s own option and must be accompanied by `--library-name`. The database only supplies
+  candidate *paths* — pairing/promotion is still the same filename-derived logic either way, and
+  each candidate gets the exact same per-file recovery-sweep-then-pair handling `--file` already
+  uses. Tombstoned/missing database entries are silently skipped, same as `vbr remove`'s own
+  `--library-name` handling; `--exclude-folders` and the `.vbr.`-entry filter still apply;
+  `--no-recurse` has no effect in this mode. **Only a database entry with a `.vbr.` output or a
+  stray recovery marker actually waiting on disk produces any output at all** — a file `vbr remove`
+  never touched is skipped with nothing printed and doesn't count toward the summary, matching
+  `--library`'s own directory walk (which likewise only ever looks at `.vbr.`-suffixed files, never
+  every file in a directory) rather than flooding the report with "nothing to do" rows across a
+  large library.
 - `--validate-files` — off by default. When set, ffprobes each `.vbr.` output and sanity-checks
   its duration (precisely, against the manifest, when one is present and parses; otherwise a
   coarser "shorter than the original" check) before it's allowed anywhere near the original. A
