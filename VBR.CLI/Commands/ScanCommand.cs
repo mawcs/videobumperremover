@@ -104,6 +104,17 @@ internal static class ScanCommand {
 		DefaultValueFactory = _ => ScanReportLevel.verbose,
 	};
 
+	/// <summary>Compact ETA text for the progress reporting below: seconds under a minute, whole
+	/// minutes under an hour, else hours+minutes. A negative/zero <paramref name="eta"/> (the last
+	/// file or an average skewed by an unusually slow one) prints as "0s" rather than a negative
+	/// value.</summary>
+	static string FormatEta(TimeSpan eta) {
+		if (eta < TimeSpan.Zero) eta = TimeSpan.Zero;
+		if (eta.TotalMinutes < 1) return $"{eta.TotalSeconds:0}s";
+		if (eta.TotalHours < 1) return $"{eta.TotalMinutes:0}m";
+		return $"{(int)eta.TotalHours}h {eta.Minutes}m";
+	}
+
 	internal static Command Build() {
 		var cmd = new Command("scan",
 			"Build or update a library's cached fingerprint database — samples every file's true edges " +
@@ -305,6 +316,7 @@ internal static class ScanCommand {
 			WriteLogLine(startAnnouncement);
 
 			int sampledCount = 0, skippedCount = 0, failedCount = 0;
+			var scanLoopStopwatch = System.Diagnostics.Stopwatch.StartNew();
 			void OnFileScanned(LibraryScanner.FileScanResult result) {
 				switch (result.Outcome) {
 					case LibraryScanner.ScanOutcome.Sampled: sampledCount++; break;
@@ -313,31 +325,43 @@ internal static class ScanCommand {
 				}
 				int done = sampledCount + skippedCount + failedCount;
 
+				// Adaptive average over every file completed so far (sampled, skipped, or failed
+				// alike), not just sampled ones -- self-corrects as the scan's actual skip/sample mix
+				// plays out, same as any typical progress-bar ETA. Only meaningful once at least one
+				// file has completed, which OnFileScanned guarantees (done >= 1 here).
+				double avgSeconds = scanLoopStopwatch.Elapsed.TotalSeconds / done;
+				TimeSpan eta = TimeSpan.FromSeconds(avgSeconds * (candidatePaths.Count - done));
+
 				string tag = result.Outcome switch {
 					LibraryScanner.ScanOutcome.Sampled => "SAMPLED",
 					LibraryScanner.ScanOutcome.SkippedUnchanged => "SKIPPED",
 					_ => "FAILED ",
 				};
 				string resultLine = $"{tag}  {Path.GetFileName(result.Path),-56}  {result.Error ?? result.Detail}";
+				string avgEtaLine = $"Avg {avgSeconds:0.0} sec per file. ETA: {FormatEta(eta)}";
 				string progressLine = $"{done}/{candidatePaths.Count}";
 
 				if (consoleLevel >= ScanReportLevel.debug) {
 					Console.WriteLine(resultLine);
+					Console.WriteLine(avgEtaLine);
 					Console.WriteLine(progressLine);
 				}
 				else if (consoleLevel == ScanReportLevel.info) {
 					Console.Error.Write($"\rScanning: {done}/{candidatePaths.Count}  " +
-						$"(sampled {sampledCount}, unchanged {skippedCount}, failed {failedCount})   ");
+						$"(sampled {sampledCount}, unchanged {skippedCount}, failed {failedCount}, " +
+						$"avg {avgSeconds:0.0}s, ETA {FormatEta(eta)})   ");
 				}
 				// quiet: nothing to the console.
 
 				if (fileLevel >= ScanReportLevel.debug) {
 					WriteLogLine(resultLine);
+					WriteLogLine(avgEtaLine);
 					WriteLogLine(progressLine);
 				}
 				// info/quiet: no per-file lines in the log either -- info's file record is just the
 				// start/end announcements (a live-updating counter is a terminal idiom that doesn't
-				// translate to an appended file).
+				// translate to an appended file). --log-level defaults to verbose (>= debug), so the
+				// log file gets this detail by default even when the console stays terse.
 			}
 
 			using var scanner = new LibraryScanner(emitDetailedLogging);

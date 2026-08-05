@@ -428,21 +428,24 @@ was flagged right after the initial scaffold and fixed before anything else was 
   floor legitimately higher than the old ≤33% keyframe-only baseline; see the 2026-07-18 "FIX
   VALIDATED" entry in `research/vdf-evaluation.md`). Presence rule and all default thresholds
   unchanged; 5 new `FrameQuality` unit tests.
-- [ ] **Static/low-detail short bumpers may produce zero usable frames (flagged 2026-07-23, no
-  repro in hand yet).** `FrameQuality`'s near-uniform guard (calibrated for the 2026-07-18
-  black-frame fix, above) can legitimately reject a genuinely static end-card: if the whole bumper
-  is one still image with no fade/motion, dense sampling collapses to effectively one distinct
-  frame, and if *that* frame is also low-detail (flat background, minimal text/logo), it can fail
-  the uniform-detail guard too — zero usable frames, the same loud `PrepareClip`/`GatherFrames`
-  failure as an all-black clip, but from real content, not extraction corruption (and unlike the
-  extraction-corruption case, no re-encode retry can fix it). Caprica's ~5s UCP end-card survives
-  today only because it has motion (rings converging, text fade-in) yielding several distinct,
-  sufficiently-detailed frames — see the frame dump in the 2026-07-23 mixed-density/pHash session.
-  A bumper that's static for its *entire* duration wouldn't have that margin. Needs a real static
-  bumper to design against before attempting a fix; candidate directions once one exists: relax
-  `MinDetail` when very few frames survive at all (today it applies the same bar whether one frame
-  is borderline or one-of-many is), or widen the sampled window so more of any fade-in/out is
-  captured.
+- [ ] **Static image bumpers produce zero usable frames — real repro now in hand (2026-08-05).**
+  `FrameQuality`'s near-uniform guard (calibrated for the 2026-07-18 black-frame fix, above) can
+  legitimately reject a genuinely static end-card: if the whole bumper is one still image with no
+  fade/motion, dense sampling collapses to effectively one distinct frame, and if *that* frame is
+  also low-detail (flat background, minimal text/logo), it fails the uniform-detail guard too —
+  zero usable frames, the same loud `PrepareClip`/`GatherFrames` failure as an all-black clip, but
+  from real content, not extraction corruption (and unlike the extraction-corruption case, no
+  re-encode retry can fix it). Caprica's ~5s UCP end-card survives today only because it has motion
+  (rings converging, text fade-in) yielding several distinct, sufficiently-detailed frames — see the
+  frame dump in the 2026-07-23 mixed-density/pHash session. A bumper that's static for its *entire*
+  duration doesn't have that margin — confirmed live 2026-08-05 against a real end-region static
+  bumper (`vbr scan`), exact error: *"No usable frames found in '<file>'s end region (5s) -- every
+  sampled frame was filtered out as low-information (black/blank/duplicate). Check that
+  --region/--clip-length actually target the bumper."* Needs a real design pass now that a repro
+  exists; candidate directions: relax `MinDetail` when very few frames survive at all (today it
+  applies the same bar whether one frame is borderline or one-of-many is), widen the sampled window
+  so more of any fade-in/out is captured, or treat "collapsed to ~1 distinct frame, all filtered" as
+  its own case (e.g. fall back to trusting the single raw frame rather than erroring outright).
 - [ ] **`-sseof` can land in a video-less tail on real files (flagged 2026-07-24, no fix yet).**
   Confirmed via `ffprobe` on a real Daredevil episode: the *video* stream's last frame sits 2.8s
   before the *container*'s reported duration (an audio-only tail — trailing music/silence with no
