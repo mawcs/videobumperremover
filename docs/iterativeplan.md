@@ -49,6 +49,14 @@ code, nothing to catch). Nothing in this codebase currently distinguishes "GPU d
 other layer in ADR 0013's history turned out to need exactly this distinction to trust its own
 "it's working" belief.
 
+**A real environmental confound to rule out before trusting any wall-clock comparison here, noted
+by the maintainer (2026-08-05):** when this machine's NAS runs ZFS pool maintenance (scrub/resilver
+etc.), `scan` throughput drops by half or more — nothing to do with ffmpeg, hwaccel, or this
+project's own code, purely storage I/O contention on the pool the library lives on. Any "is HW
+accel actually helping" measurement (here or under Option B below) needs to either confirm the pool
+is idle first or explicitly control for this, or a slow run during unrelated NAS maintenance could
+easily be misread as a hardware-acceleration regression.
+
 **Candidate directions:**
 
 - **A. Make decode acceleration status visible, unconditionally (not just under `--verbose`).**
@@ -85,6 +93,23 @@ this machine simply has no working hardware path (in which case correct CPU fall
 happening and there's nothing to fix). Don't build B speculatively before a real run's diagnostic
 output says it's needed — same "don't build speculative surface" preference this document already
 applies elsewhere (e.g. the "Utilizing Databases" entry's `--file`-plus-`--library-name` gap).
+
+**Option A: implemented (2026-08-05).** `HardwareAcceleration.ReportDecodeRequest()` (new method,
+[`VBR.Core/Extraction/HardwareAcceleration.cs`](../VBR.Core/Extraction/HardwareAcceleration.cs))
+prints one unconditional stderr line per command invocation — `scan`/`match`/`remove`/
+`add-bumper` all call it once, right after `HardwareAcceleration.Mode`/`NativeFfmpegBinding` are
+set from the parsed CLI options — reporting the requested `-hwaccel` mode and whether native
+binding is on. Deliberately reports only what's certain (the flag about to be passed), not whether
+ffmpeg actually engaged hardware decode — that confirmation gap is still open (Option B, not built
+here). Separately, `ClipRemover.Remove`'s re-encode path now prints its resolved encoder choice
+unconditionally too (`Re-encode codec: h264_nvenc (GPU)` / `libx264 (CPU)`, promoted from a
+`--verbose`-only `Logger` line to a plain `Console.Error` line) — this one **is** a real,
+code-certain confirmation, not a hopeful request, since `GpuEncoderProbe` already probed a real
+synthetic encode before the choice was made. No change to `-hwaccel` wiring itself, error handling,
+or log verbosity — this is visibility only, chosen specifically to avoid the regression risk a
+verbose-logging bump would add to existing failure-message extraction (see the option's own
+write-up above). Not yet run against the dogfooding machine that raised this issue — next step is
+reading its actual output there, not a code change.
 
 **Open question for the maintainer:** is a real decode probe (B) worth its per-run cost and added
 complexity, or is visibility (A) enough for now, deferring B until a concrete run shows `-hwaccel`

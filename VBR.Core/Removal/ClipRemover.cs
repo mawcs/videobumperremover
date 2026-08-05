@@ -166,6 +166,12 @@ public static class ClipRemover {
 					"re-encoding preserves bit depth but not HDR color metadata yet (docs/decisions/0013-gpu-acceleration.md). " +
 					"The output may not display correctly as HDR.");
 			VideoEncoderChoice encoder = SelectVideoEncoder(sourceCodecName, sourcePixelFormat, verbose, ct);
+			// Unconditional (not gated on --verbose), unlike decode's HardwareAcceleration.ReportDecodeRequest()
+			// note -- this one IS a real, code-certain confirmation, not a hopeful request: GpuEncoderProbe
+			// already probed a real synthetic encode before this choice was made (docs/iterativeplan.md,
+			// 2026-08-05 entry, "Issue 1" -- the encode side is the one layer where "requested" and
+			// "actually engaging" are known to be the same thing).
+			Console.Error.WriteLine($"    Re-encode codec: {encoder.Encoder} ({(encoder.IsGpu ? "GPU" : "CPU")}).");
 			if (verbose)
 				Logger.Instance.Info($"[remove] Re-encode video codec: {encoder.Encoder}{(encoder.IsGpu ? " (GPU)" : " (CPU)")}.");
 

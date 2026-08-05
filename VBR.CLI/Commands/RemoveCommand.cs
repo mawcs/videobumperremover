@@ -183,6 +183,7 @@ internal static class RemoveCommand {
 			bool verbose = parseResult.GetValue(Verbose);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
+			HardwareAcceleration.ReportDecodeRequest();
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 

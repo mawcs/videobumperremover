@@ -154,6 +154,7 @@ internal static class ScanCommand {
 			ScanReportLevel fileLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
+			HardwareAcceleration.ReportDecodeRequest();
 
 			// An explicit --console-info wins; otherwise --verbose is shorthand for "verbose", else
 			// the default is "info" (today's plain x/total counter).

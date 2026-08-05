@@ -67,6 +67,43 @@ public static class HardwareAcceleration {
 		set => FfmpegEngine.UseNativeBinding = value;
 	}
 
+	/// <summary>
+	/// Prints one unconditional console line (stderr, same "Note:" convention every other
+	/// unconditional CLI note in this project already uses) reporting the ffmpeg hardware
+	/// acceleration this run requested for decode, and whether the native FFmpeg.AutoGen binding
+	/// (<see cref="NativeFfmpegBinding"/>) is active. Called once per command (<c>scan</c>/
+	/// <c>match</c>/<c>remove</c>/<c>add-bumper</c>), right after <see cref="Mode"/>/
+	/// <see cref="NativeFfmpegBinding"/> are set from the parsed CLI options — docs/iterativeplan.md's
+	/// 2026-08-05 entry, Issue 1, Option A: dogfooding surfaced that nothing told a user whether
+	/// <c>-hwaccel</c> was actually being passed to ffmpeg at all, short of reading the source or
+	/// passing <c>--verbose</c> and grepping the logged command line.
+	///
+	/// <b>Deliberately reports only what this process is CERTAIN of</b> — the flag it's about to
+	/// pass, and whether native binding is active — not whether ffmpeg actually engaged hardware
+	/// decode. <c>-hwaccel auto</c> (and named modes) can silently fall back to software decode
+	/// with no distinct exit code or exception, so claiming "engaged" here would be exactly the
+	/// kind of unverified success signal this project's own GPU work has already been burned by
+	/// twice (<c>GpuEncoderProbe</c> replacing a static encoder-list check with a real probe encode;
+	/// <c>RunDirectMlProbe</c>'s 2026-08-02 fix, after discovering "construction didn't throw" was
+	/// never proof DirectML actually attached — see docs/decisions/0013-gpu-acceleration.md).
+	/// Closing that same gap for decode (a real probe attempting an actual accelerated decode) is
+	/// the iterative-plan entry's Option B — a separate, bigger step, not attempted here.
+	///
+	/// GPU re-encode is the one ffmpeg layer that IS independently confirmed, because
+	/// <see cref="Removal.GpuEncoderProbe"/> already probes a real encode rather than trusting a
+	/// flag — see <see cref="Removal.ClipRemover"/>'s own per-file console line, which reports the
+	/// actual resolved encoder and whether it's GPU or CPU, not just what was requested.
+	/// </summary>
+	public static void ReportDecodeRequest() {
+		string decode = Mode == FFHardwareAccelerationMode.none
+			? "disabled (CPU decode only)"
+			: $"\"{Mode}\" requested for decode (not independently confirmed here -- ffmpeg can " +
+				"silently fall back to software; GPU re-encode, when remove re-encodes a match, IS " +
+				"confirmed and reported separately per file)";
+		Console.Error.WriteLine($"Note: ffmpeg hardware acceleration -- {decode}. Native ffmpeg binding: " +
+			$"{(NativeFfmpegBinding ? "on" : "off")}.");
+	}
+
 	static bool directMlUnavailable;
 
 	/// <summary>Which DXGI adapter index actually initializes DirectML successfully on this
