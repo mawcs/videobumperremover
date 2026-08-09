@@ -317,12 +317,21 @@ internal static class ScanCommand {
 			WriteLogLine(startAnnouncement);
 
 			int sampledCount = 0, skippedCount = 0, failedCount = 0;
+			// Collected regardless of --console-info/--log-level tier (those only gate the LIVE
+			// per-file line) so a user who ran at the default 'info' level still gets to know which
+			// files failed and why once the scan finishes, instead of only a bare count -- a long
+			// scan's per-file failures otherwise only ever appeared in a scrolling debug-tier stream
+			// nobody was watching, or not at all.
+			var failures = new List<(string Path, string Reason)>();
 			var scanLoopStopwatch = System.Diagnostics.Stopwatch.StartNew();
 			void OnFileScanned(LibraryScanner.FileScanResult result) {
 				switch (result.Outcome) {
 					case LibraryScanner.ScanOutcome.Sampled: sampledCount++; break;
 					case LibraryScanner.ScanOutcome.SkippedUnchanged: skippedCount++; break;
-					case LibraryScanner.ScanOutcome.Failed: failedCount++; break;
+					case LibraryScanner.ScanOutcome.Failed:
+						failedCount++;
+						failures.Add((result.Path, result.Error ?? result.Detail ?? "unknown error"));
+						break;
 				}
 				int done = sampledCount + skippedCount + failedCount;
 
@@ -387,6 +396,21 @@ internal static class ScanCommand {
 			Console.WriteLine(databaseLine);
 			WriteLogLine(summaryLine);
 			WriteLogLine(databaseLine);
+
+			// Always listed here regardless of --console-info tier (unless quiet asked for nothing
+			// at all) -- see the failures list's own declaration above for why a bare count wasn't
+			// enough on its own.
+			if (failures.Count > 0) {
+				WriteLogLine($"Failed file(s) ({failures.Count}):");
+				if (consoleLevel > ScanReportLevel.quiet)
+					Console.WriteLine($"Failed file(s) ({failures.Count}):");
+				foreach ((string path, string reason) in failures) {
+					string line = $"  {path}  ({reason})";
+					WriteLogLine(line);
+					if (consoleLevel > ScanReportLevel.quiet)
+						Console.WriteLine(line);
+				}
+			}
 			if (ScanTelemetry.Enabled)
 				EmitTrace($"vbr scan total: {commandStopwatch.Elapsed.TotalSeconds:0.0}s");
 

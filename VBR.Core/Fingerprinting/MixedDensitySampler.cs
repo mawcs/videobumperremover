@@ -148,16 +148,23 @@ public sealed class MixedDensitySampler : IDisposable {
 			List<SampledFrame> frames, string? dumpDir, string zoneName, bool verboseLogging, CancellationToken ct) {
 		byte[][] rgbFrames = DenseFrameSampler.SampleFrames(sourcePath, zone, interval.TotalSeconds, MaxFramesPerZone, ct);
 		if (dumpDir is not null) FrameDump.WritePngs(rgbFrames, dumpDir);
-		bool[] usable = FrameQuality.SelectUsable(rgbFrames);
+		// DiagnoseFrames both runs SelectUsable and, per verboseLogging below, explains WHY each
+		// frame did or didn't survive -- purely informational (docs/iterativeplan.md, 2026-08-07),
+		// nothing here changes based on the diagnostic, only what gets logged.
+		FrameQuality.FrameDiagnostic[] diagnostics = FrameQuality.DiagnoseFrames(rgbFrames);
 		int usableCount = 0;
 		for (int i = 0; i < rgbFrames.Length; i++) {
-			if (!usable[i]) continue;
+			if (!diagnostics[i].Usable) continue;
 			usableCount++;
 			frames.Add(new SampledFrame(zoneStartSeconds + i * interval.TotalSeconds, rgbFrames[i]));
 		}
-		if (verboseLogging)
+		if (verboseLogging) {
 			Logger.Instance.Info($"[mixed-density] '{Path.GetFileName(sourcePath)}' {zoneName} zone: {rgbFrames.Length} frame(s) " +
 				$"sampled @ {interval.TotalSeconds:0.###}s, {usableCount} usable after low-information filtering ({rgbFrames.Length - usableCount} dropped).");
+			foreach (FrameQuality.FrameDiagnostic d in diagnostics)
+				Logger.Instance.Info($"[mixed-density]   {zoneName} f{d.Index:000} @{zoneStartSeconds + d.Index * interval.TotalSeconds:0.###}s: " +
+					$"usable={d.Usable}  dark%={d.DarkPercent:0.#}  dup={d.IsDuplicateOfPrevious}  detail={d.Detail:0.###}");
+		}
 	}
 
 	/// <summary>

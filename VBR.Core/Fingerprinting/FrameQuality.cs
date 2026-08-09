@@ -15,7 +15,6 @@
 //
 
 using System;
-using VDF.Core;
 using VDF.Core.AI;
 
 namespace VBR.Core.Fingerprinting;
@@ -42,19 +41,60 @@ public static class FrameQuality {
 	public const double MinDetail = 1.0;
 
 	/// <summary>
-	/// Marks which sampled frames may participate in matching. Combines VDF's own guards for
-	/// its AI-partial pass (<c>ScanEngine.SelectUsableDenseFrames</c>: the ≥80%-dark-pixels
-	/// rejection and the byte-identical-duplicate drop — static held cards decode bit-identical
-	/// and would multiply one coincidental hit into an evidence quorum) with the
-	/// <see cref="MinDetail"/> near-uniform rejection those guards lack (a blank-white frame is
-	/// not dark, but carries no identity either). Excluded slots stay on the timeline so the
-	/// frame-index ↔ time mapping holds.
+	/// How much detail a majority-dark frame (<see cref="MeasureDarkPercent"/> ≥
+	/// <see cref="DarkRejectPercent"/>) needs before the dark-pixel veto is waived — deliberately a
+	/// higher bar than <see cref="MinDetail"/>, not the same one (docs/iterativeplan.md, 2026-08-07,
+	/// "dark-pixel veto deferring to detail"). <b>A starting, conservative choice, not yet
+	/// empirically validated against a real false-positive matrix</b> — see
+	/// <c>FrameQualityFalsePositiveTests</c> for what has been checked so far. Grounded in real
+	/// dogfooding data (2026-08-07): genuine bright text/logo on a dark field scored 4.2–4.6 across
+	/// multiple real static and motion bumpers that were being wrongly rejected; <see cref="MinDetail"/>'s
+	/// own original 2026-07-18 calibration separately recorded "dark-but-real scene content" at
+	/// 1.46+. 2.0 sits with real margin below the observed legitimate values and above that older
+	/// reference point — deliberately not reusing <see cref="MinDetail"/>'s exact 1.0 line, since a
+	/// majority-dark frame has less benefit of the doubt than a normally-lit one.
+	/// </summary>
+	public const double DarkOverrideDetail = 2.0;
+
+	/// <summary>Dark-pixel-percentage rejection line — mirrors VDF's own
+	/// <c>GrayBytesUtils.VerifyRgbFrameValues</c> convention exactly (a frame is majority-dark at or
+	/// above this).</summary>
+	public const double DarkRejectPercent = 80.0;
+
+	/// <summary>
+	/// Marks which sampled frames may participate in matching. Three checks, none of them deferring
+	/// to VDF's own <c>ScanEngine.SelectUsableDenseFrames</c> (docs/iterativeplan.md, 2026-08-07 —
+	/// that method is shared with VDF's own unrelated whole-file dedup scan; VBR's bumper-detection
+	/// filtering needs its own rules without risking changing that other feature's behavior):
+	/// <list type="bullet">
+	/// <item>Byte-identical to the immediately preceding frame → always rejected, regardless of its
+	/// own detail score. A real duplicate adds no new evidence beyond the first occurrence — this
+	/// protects the 2026-07-18 fix (duplicated frames must never multiply one coincidental hit into
+	/// a false evidence quorum), independent of the darkness/detail question below.</item>
+	/// <item>Majority-dark (<see cref="MeasureDarkPercent"/> ≥ <see cref="DarkRejectPercent"/>) →
+	/// rejected *unless* <see cref="MeasureDetail"/> clears the higher <see cref="DarkOverrideDetail"/>
+	/// bar. Live dogfooding (2026-08-07) found real static AND motion bumpers — bright text/logo on
+	/// a dark field — being wrongly rejected here despite detail scores 4x <see cref="MinDetail"/>:
+	/// the original assumption that "majority-dark implies low detail" doesn't hold for that content
+	/// shape, which is common and legitimate, not degenerate.</item>
+	/// <item>Otherwise (not majority-dark) → rejected below <see cref="MinDetail"/>, unchanged from
+	/// before (a blank-white ident background is bright, not dark, but still carries no identity).</item>
+	/// </list>
+	/// Excluded slots stay on the timeline so the frame-index ↔ time mapping holds.
 	/// </summary>
 	public static bool[] SelectUsable(byte[][] frames) {
-		bool[] usable = ScanEngine.SelectUsableDenseFrames(frames);
-		for (int f = 0; f < frames.Length; f++)
-			if (usable[f] && MeasureDetail(frames[f]) < MinDetail)
-				usable[f] = false;
+		int expectedLength = OnnxEmbedder.InputSide * OnnxEmbedder.InputSide * 3;
+		var usable = new bool[frames.Length];
+		for (int f = 0; f < frames.Length; f++) {
+			if (frames[f].Length != expectedLength)
+				continue; // malformed -- never expected from DenseFrameSampler, but never trust blindly
+			if (f > 0 && frames[f].AsSpan().SequenceEqual(frames[f - 1]))
+				continue;
+			double dark = MeasureDarkPercent(frames[f]);
+			double detail = MeasureDetail(frames[f]);
+			double requiredDetail = dark >= DarkRejectPercent ? DarkOverrideDetail : MinDetail;
+			usable[f] = detail >= requiredDetail;
+		}
 		return usable;
 	}
 
@@ -78,5 +118,49 @@ public static class FrameQuality {
 			}
 		}
 		return (double)deltaSum / (side * (side - 1));
+	}
+
+	// Mirrors VDF.Core.Utils.GrayBytesUtils.VerifyRgbFrameValues's exact dark-pixel definition
+	// (a pixel counts as dark only when R, G, AND B are all <= this limit) -- duplicated rather
+	// than shared because that constant is private inside an internal VDF.Core class, not worth
+	// exposing just for this diagnostic. Keep in sync if VDF's own value ever changes.
+	const byte BlackPixelLimit = 0x20;
+
+	/// <summary>Percentage of pixels in a 224×224 RGB24 frame that are "dark" by
+	/// <see cref="VDF.Core.Utils.GrayBytesUtils.VerifyRgbFrameValues"/>'s own definition (every
+	/// channel <c>&lt;= 0x20</c>) — the same check that rejects a frame at ≥80%. Exists purely to
+	/// surface the actual number for diagnostics (docs/iterativeplan.md, 2026-08-07): that method
+	/// itself only returns a pass/fail bool, not how close a frame was to the line.</summary>
+	public static double MeasureDarkPercent(ReadOnlySpan<byte> rgb24) {
+		int pixels = rgb24.Length / 3;
+		if (pixels == 0) return 0;
+		int dark = 0;
+		for (int i = 0; i + 2 < rgb24.Length; i += 3)
+			if (rgb24[i] <= BlackPixelLimit && rgb24[i + 1] <= BlackPixelLimit && rgb24[i + 2] <= BlackPixelLimit)
+				dark++;
+		return 100.0 * dark / pixels;
+	}
+
+	/// <summary>One frame's full breakdown against every check <see cref="SelectUsable"/> applies
+	/// — which one(s) actually caused <see cref="Usable"/> to be false, not just that it was.
+	/// Purely informational: nothing reads this to make a decision (docs/iterativeplan.md,
+	/// 2026-08-07 — the direct successor to the "--static suggestion" heuristic that got removed
+	/// for guessing wrong twice; this reports facts instead of trying to infer a verdict from
+	/// them).</summary>
+	public readonly record struct FrameDiagnostic(int Index, bool Usable, double DarkPercent, bool IsDuplicateOfPrevious, double Detail);
+
+	/// <summary>Runs <see cref="SelectUsable"/> and reports, per frame, exactly why each one did or
+	/// didn't survive: dark-pixel percentage (rejected at ≥80%), whether it's byte-identical to its
+	/// immediate predecessor, and its <see cref="MeasureDetail"/> score (rejected below
+	/// <see cref="MinDetail"/>). Same frame-index ↔ time mapping as <see cref="SelectUsable"/> —
+	/// nothing is skipped or reordered.</summary>
+	public static FrameDiagnostic[] DiagnoseFrames(byte[][] frames) {
+		bool[] usable = SelectUsable(frames);
+		var diagnostics = new FrameDiagnostic[frames.Length];
+		for (int f = 0; f < frames.Length; f++) {
+			bool isDuplicate = f > 0 && frames[f].AsSpan().SequenceEqual(frames[f - 1]);
+			diagnostics[f] = new FrameDiagnostic(f, usable[f], MeasureDarkPercent(frames[f]), isDuplicate, MeasureDetail(frames[f]));
+		}
+		return diagnostics;
 	}
 }

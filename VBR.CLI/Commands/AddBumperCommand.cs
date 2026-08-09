@@ -70,6 +70,19 @@ internal static class AddBumperCommand {
 			"first save. Default: a dedicated folder under VBR's own state folder.",
 	};
 
+	// A local definition, not SharedOptions.SampleInterval -- that one defaults to 1s (match/remove's
+	// own convention), which would silently change add-bumper's existing effective behavior for
+	// anyone not passing the flag. add-bumper's own default (0.2s) matches what it already hardcoded
+	// before this option existed at all -- same reasoning ScanCommand's own local --sample-interval
+	// already applies for the identical reason (docs/iterativeplan.md, 2026-08-09).
+	static readonly Option<TimeSpan> SampleInterval = new("--sample-interval") {
+		Description = "Seconds between sampled frames within the bumper's region. Default 0.2s -- " +
+			"bumper clips are always short, so this stays dense by default rather than match/remove's " +
+			"1s (tuned for their longer default search windows).",
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(0.2),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(0.2)),
+	};
+
 	internal static Command Build() {
 		var cmd = new Command("add-bumper",
 			"Add one bumper to a named catalog -- samples --clip-from's requested region, extracts " +
@@ -83,6 +96,8 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(TagsOption);
 		cmd.Options.Add(CatalogNameOption);
 		cmd.Options.Add(CatalogDbFolder);
+		cmd.Options.Add(SampleInterval);
+		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
 		cmd.Options.Add(HardwareAccel);
 		cmd.Options.Add(NoNativeFfmpegBinding);
@@ -96,6 +111,8 @@ internal static class AddBumperCommand {
 			string? tagsArg = parseResult.GetValue(TagsOption);
 			string catalogName = parseResult.GetValue(CatalogNameOption) ?? string.Empty;
 			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
+			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
+			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
@@ -181,7 +198,8 @@ internal static class AddBumperCommand {
 			BumperCatalogEntry entry;
 			try {
 				entry = BumperCatalogBuilder.AddBumper(
-					clipFrom.FullName, region, clipLength, label, description, tags, clipsFolder, verbose, ct);
+					clipFrom.FullName, region, clipLength, label, description, tags, clipsFolder,
+					sampleInterval, dumpFrames?.FullName, verbose, ct);
 			}
 			catch (OperationCanceledException) {
 				Console.Error.WriteLine("Cancelled — nothing was added.");

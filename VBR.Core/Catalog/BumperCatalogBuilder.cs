@@ -37,20 +37,25 @@ namespace VBR.Core.Catalog;
 /// how to turn one clip request into one fully-populated entry.
 /// </summary>
 public static class BumperCatalogBuilder {
-	// A bumper clip is always short (seconds to under a minute) -- the same dense-only interval
-	// match/remove default to, reused here since add-bumper exposes no --sample-interval of its
-	// own (plan decision: no tuning flags for v1).
-	static readonly TimeSpan DenseInterval = TimeSpan.FromSeconds(0.2);
-
-	// TimeSpan.MaxValue as the edge boundary is the same "always dense, no sparse zone" idiom
-	// match/remove use when --edge-boundary is left unset -- MixedDensitySampler.GatherFrames's own
-	// clamp (edgeBoundary > totalLength => totalLength) turns it into "the whole clip is dense" for
-	// whatever totalLength (here, always clipLength) a given call uses.
-	static readonly EdgeDensityProfile AllDenseProfile = new(TimeSpan.MaxValue, DenseInterval, DenseInterval);
+	// A bumper clip is always short (seconds to under a minute) -- the same dense interval
+	// match/remove default to for short clips. Used whenever AddBumper's own sampleInterval
+	// parameter is left at its TimeSpan.Zero "unset" sentinel (docs/iterativeplan.md, 2026-08-09 --
+	// add-bumper now has its own --sample-interval, matching scan/match/remove; previously this was
+	// the only value it could ever use at all).
+	static readonly TimeSpan DefaultSampleInterval = TimeSpan.FromSeconds(0.2);
 
 	/// <param name="clipsFolder">Where the extracted reference clip is written
 	/// (<c>{clipsFolder}/{id}.mkv</c>) — the catalog's own <c>clips/</c> subfolder, created if
 	/// missing.</param>
+	/// <param name="sampleInterval">Seconds between sampled frames (the same dense interval
+	/// <c>scan</c>/<c>match</c>/<c>remove</c> expose as <c>--sample-interval</c>). <c>TimeSpan.Zero</c>
+	/// (the default) means "unset" — falls back to <see cref="DefaultSampleInterval"/> (0.2s), same
+	/// as this method's own behavior before it had a tunable interval at all.</param>
+	/// <param name="dumpFramesDir">Diagnostic: when set, every frame sampled from the reference
+	/// region is written as a PNG under <c>{dumpFramesDir}/clip/</c> via <see cref="FrameDump"/> —
+	/// same convention and dump label ("clip") <c>match</c>/<c>remove</c> already use for their own
+	/// reference-clip sampling. Written pre-filter, so the dump shows the unfiltered truth, not
+	/// just what survived low-information filtering. Null (the default) dumps nothing.</param>
 	/// <param name="verboseLogging">Logs duration probing, sampled/usable frame counts, and the
 	/// exact ffmpeg commands run, via <see cref="Logger"/> — same convention as every other
 	/// sampling/extraction path in this project.</param>
@@ -62,11 +67,19 @@ public static class BumperCatalogBuilder {
 	/// requested region doesn't contain real bumper content to fingerprint.</exception>
 	public static BumperCatalogEntry AddBumper(
 			string sourcePath, ClipEdge region, TimeSpan clipLength, string label, string? description,
-			string[] tags, string clipsFolder, bool verboseLogging = false, CancellationToken ct = default) {
+			string[] tags, string clipsFolder, TimeSpan sampleInterval = default, string? dumpFramesDir = null,
+			bool verboseLogging = false, CancellationToken ct = default) {
 		if (!File.Exists(sourcePath))
 			throw new FileNotFoundException("Source video not found.", sourcePath);
 		if (clipLength <= TimeSpan.Zero)
 			throw new ArgumentOutOfRangeException(nameof(clipLength), "Clip length must be positive.");
+
+		// TimeSpan.MaxValue as the edge boundary is the same "always dense, no sparse zone" idiom
+		// match/remove use when --edge-boundary is left unset -- MixedDensitySampler.GatherFrames's
+		// own clamp (edgeBoundary > totalLength => totalLength) turns it into "the whole clip is
+		// dense" for whatever totalLength (here, always clipLength) a given call uses.
+		TimeSpan effectiveInterval = sampleInterval > TimeSpan.Zero ? sampleInterval : DefaultSampleInterval;
+		var allDenseProfile = new EdgeDensityProfile(TimeSpan.MaxValue, effectiveInterval, effectiveInterval);
 
 		MediaInfo? info = FFProbeEngine.GetMediaInfo(sourcePath, extendedLogging: verboseLogging);
 		if (info is null || info.Duration <= TimeSpan.Zero)
@@ -80,7 +93,8 @@ public static class BumperCatalogBuilder {
 
 		if (verboseLogging)
 			Logger.Instance.Info($"[add-bumper] '{Path.GetFileName(sourcePath)}': region={region}, " +
-				$"clipLength={clipLength.TotalSeconds:0.###}s, sourceDuration={sourceDuration.TotalSeconds:0.###}s.");
+				$"clipLength={clipLength.TotalSeconds:0.###}s, sourceDuration={sourceDuration.TotalSeconds:0.###}s, " +
+				$"sampleInterval={effectiveInterval.TotalSeconds:0.###}s.");
 
 		string id = Guid.NewGuid().ToString("N");
 
@@ -90,7 +104,7 @@ public static class BumperCatalogBuilder {
 		// on real media, fixed by always seeking straight into the original source.
 		TimedFingerprint[] fingerprints;
 		using (var sampler = new MixedDensitySampler(verboseLogging)) {
-			MixedDensitySampler.SampleResult sampled = sampler.SampleWithPHash(sourcePath, region, clipLength, AllDenseProfile, ct: ct);
+			MixedDensitySampler.SampleResult sampled = sampler.SampleWithPHash(sourcePath, region, clipLength, allDenseProfile, dumpFramesDir, "clip", ct);
 			fingerprints = new TimedFingerprint[sampled.Embeddings.Count];
 			for (int i = 0; i < fingerprints.Length; i++)
 				fingerprints[i] = new TimedFingerprint(
@@ -120,7 +134,7 @@ public static class BumperCatalogBuilder {
 
 		byte[] thumbnail = Array.Empty<byte>();
 		try {
-			thumbnail = CaptureThumbnail(sourcePath, region, clipLength, sourceDuration, verboseLogging, ct);
+			thumbnail = CaptureThumbnail(sourcePath, region, clipLength, sourceDuration, allDenseProfile, verboseLogging, ct);
 		}
 		catch (Exception ex) when (ex is not OperationCanceledException) {
 			// Best-effort, never blocks adding the bumper -- see BumperCatalogEntry.Thumbnail's doc
@@ -151,9 +165,10 @@ public static class BumperCatalogBuilder {
 	/// source at its native decoded resolution (the AI-pipeline frames used for scoring are
 	/// downscaled to the ONNX model's fixed input size, wrong for a preview thumbnail) — one extra,
 	/// cheap single-frame decode, deliberately not reused pixel data.</summary>
-	static byte[] CaptureThumbnail(string sourcePath, ClipEdge region, TimeSpan clipLength, TimeSpan sourceDuration, bool verboseLogging, CancellationToken ct) {
+	static byte[] CaptureThumbnail(string sourcePath, ClipEdge region, TimeSpan clipLength, TimeSpan sourceDuration,
+			EdgeDensityProfile allDenseProfile, bool verboseLogging, CancellationToken ct) {
 		List<MixedDensitySampler.SampledFrame> frames =
-			MixedDensitySampler.GatherFrames(sourcePath, region, clipLength, AllDenseProfile, verboseLogging: verboseLogging, ct: ct);
+			MixedDensitySampler.GatherFrames(sourcePath, region, clipLength, allDenseProfile, verboseLogging: verboseLogging, ct: ct);
 		if (frames.Count == 0)
 			return Array.Empty<byte>();
 
