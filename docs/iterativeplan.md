@@ -4,6 +4,146 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Per-bumper matching profiles — design sketch (2026-08-12)
+
+**Status: design sketch for discussion, not approved or built — several sub-decisions below are
+explicitly left open, not resolved by this entry.** Prompted by the maintainer noticing that the
+settings needed for static-image bumpers to work at all (namely `DarkOverrideDetail`, see the
+2026-08-07 dogfooding entry below) are the same settings producing confirmed false positives on
+short (<5s), dark motion bumpers — while longer bumpers don't show the problem. Question raised:
+instead of one global matching configuration, can matching parameters be tuned per bumper, detected
+automatically at `add-bumper` time?
+
+### Feasibility: yes, the plumbing is small
+
+Code-verified, not assumed: `remove`/`match` already scope exactly one `MatchingSession` to exactly
+one catalog entry per run (`RemoveCommand.cs`'s `catalogEntry = catalog.Entries.Values.FirstOrDefault(...)`
+picks a single entry; `MatchingSession.PrepareFromCatalogEntry` takes that one entry). `VisualBumperMatcher`
+already accepts `presenceThreshold`/`rigidHitThreshold` as per-instance constructor parameters, not
+global constants baked in anywhere. So reading a per-entry profile at the point a session is prepared
+from a catalog entry, instead of a single global default, is a localized change — not a restructuring
+of the matching pipeline.
+
+### The harder finding: re-examining the maintainer's own confirmed data changes what "tune per bumper" can mean
+
+Before designing what a profile *controls*, its numbers were checked against the real, maintainer-
+verified TP/FP data from the 150-video test (every entry independently confirmed correctly labeled —
+see that exchange). For Bumper 1:
+
+- The three confirmed **true** positives top out at `bestCos=92%` — even the one at full `present=11/11`
+  presence.
+- Numerous confirmed **false** positives reach `bestCos=96–100%`, several also at full `present=11/11`.
+
+**A false positive can out-score the true positive on the exact signal (`bestCos`) any threshold-style
+knob would tighten.** This rules out "a stricter per-bumper `presenceThreshold`" as a fix for this
+failure mode — raising the bar would cost the true positive before it excludes the worse false
+positives, since cosine similarity itself is not a reliable ranking signal for this content class
+(consistent with the earlier hypothesis: generic dark/grainy texture can alias other unrelated
+dark/grainy texture at least as strongly as a genuine, slightly-re-encoded copy of itself resembles
+the reference).
+
+This also means the real data actually contains **two different false-positive mechanisms**, which
+need different treatment, not one shared knob:
+
+1. **High-present, high-`bestCos` "generic content aliasing"** — the dominant mode by volume in the
+   real data (most of Bumper 1's false positives are `present=9-11/11` at `92-100%`). A stricter
+   threshold or a higher required-hit count does nothing here — these already look like maximally
+   strong matches by both signals. Needs a signal *orthogonal* to cosine similarity.
+2. **Low-present, borderline-`bestCos` "coincidental match"** — the `present=1-5` out of `11`/`16`
+   entries at `90-92%`, appearing with the same shape in both the TP and FP lists. A required-hit
+   floor, scaled to how many usable frames the bumper actually has (not a fixed number — a fixed
+   floor was already rejected once this session for breaking static-bumper recall), can plausibly
+   help here without threatening legitimate low-present matches like the confirmed `present=1/11` TP.
+
+### Proposed shape: `BumperMatchingProfile`, computed once at `add-bumper` time, stored on the catalog entry
+
+- A small record on `BumperCatalogEntry` (MemoryPack `VersionTolerant`, same convention as the rest
+  of the format), computed by `BumperCatalogBuilder.AddBumper` from data it already has in scope by
+  the time the entry is built: `Duration`, usable-vs-sampled frame counts, per-frame dark% (already
+  computed inside `FrameQuality.SelectUsable`'s dark-veto check today — currently discarded after the
+  usable/not-usable decision, just needs to be retained), and pairwise cosine variety among the
+  clip's own frame embeddings (cheap — the embeddings are already computed for the entry's
+  `Fingerprints`, and clip frame counts are small enough that an all-pairs comparison costs nothing
+  measurable).
+- **Two separate dials, not one, matching the two mechanisms above:**
+  1. `RequiredHitFraction`-style floor (mechanism 2): `requiredHits = max(1, ceil(usableFrameCount *
+     minPresenceFraction))`, `minPresenceFraction` itself a tunable (natural fit for the `matching`
+     config section already planned above) rather than hardcoded here.
+  2. A **mandatory corroboration requirement**, engaged only for bumpers flagged high-risk (mechanism
+     1), using a signal other than a stricter `bestCos` bar. Candidates, roughly cheapest-first:
+     - **Candidate-side temporal clustering** (raised earlier this session, not yet built or tested):
+       require that the winning match isn't one isolated candidate frame — nearby candidate frames
+       (within the sampling interval) should also score reasonably well, consistent with a bumper
+       that persists on screen for multiple seconds rather than a one-frame coincidence. Cheapest to
+       build (candidate frames are already timestamped); needs real validation against Bumper 1/2's
+       actual false-positive files before being trusted, same evidence-first requirement this whole
+       investigation has used.
+     - **Mandatory audio corroboration for high-risk bumpers that have usable audio.** Code-confirmed
+       this turn: today's `SignalResult.Present` (`MatchingSession.cs`) is a *priority fallback*, not
+       an AND-gate — `Visual?.Present ?? Audio?.Present` only reaches `Audio` when `Visual` itself is
+       `null` (visual didn't run at all); when visual *did* run, its `Present` decides alone, true or
+       false, even in `--detection-mode both`. `MatchResult` is a `readonly record struct`, confirming
+       this is really how the nullable short-circuit behaves, not a misreading. Making audio an AND
+       requirement for flagged-high-risk bumpers specifically would be a real, if narrow, change to
+       that decision rule — and only helps bumpers with distinguishing audio; silent idents gain
+       nothing from it.
+     - **A held-out background-content check at `add-bumper` time** — bigger lift, explicitly a
+       stretch/future option, not part of this phase: embed a small fixed sample of generic,
+       non-bumper content once, and check whether a *new* bumper's own clip frames already score
+       suspiciously high against that generic background before it's ever saved. Would catch a
+       Bumper-1/2-shaped problem at creation time rather than after a library-wide `remove` run finds
+       it — but needs a maintained "known generic content" reference set, which is ongoing scope, not
+       a one-time build.
+  - **High-risk flag**, deliberately mirroring the maintainer's own empirical description rather than
+    inventing new boundaries: `isHighRisk = duration < 5s && majorityDarkFraction >= DarkRejectPercent`.
+    This is a starting point to validate against real bumpers, not a final formula — same "boundary
+    cases can misfire" caveat already raised when this idea was first floated.
+
+### Sequencing
+
+Independent of the `--catalog-db`/config-file entry above, but shares infrastructure —
+`minPresenceFraction` and the high-risk boundary constants are exactly the kind of values that
+belong in the `matching` config section once it exists, rather than newly hardcoded. Recommend
+building this *after* the config file lands. One addition owed back to that entry once this ships:
+a per-bumper profile computed from `frameQuality` settings active at `add-bumper` time is itself
+now part of what "staleness" means for a catalog entry — if `frameQuality` config changes, a
+previously-computed profile (not just the fingerprints) is potentially stale too; fold into Phase
+B's recipe-stamp work when it's actually implemented, don't let it get missed.
+
+### Explicitly out of scope / not decided by this sketch
+
+- The exact `isHighRisk` formula and `minPresenceFraction` value — needs calibration against real
+  data (Bumper 1/2, already gathered this session, are the natural first test set), not guessed.
+- Which mandatory-corroboration mechanism is right — temporal clustering, audio, both, or something
+  else — needs its own prototype and validation before committing to one.
+- Retrofitting Bumper 1/2 (and any other already-added catalog entries) with a computed profile —
+  likely needs an `add-bumper` re-run or a new maintenance command; not designed here.
+
+### TODO
+
+**Phase 1 — data collection + plumbing:**
+
+1. Extend `BumperCatalogBuilder.AddBumper` to retain per-frame dark%/detail already computed during
+   quality filtering (currently discarded), plus pairwise clip-embedding variety, and compute+store a
+   `BumperMatchingProfile` on the resulting `BumperCatalogEntry`.
+2. Wire `MatchingSession.PrepareFromCatalogEntry` to read the entry's own profile for its
+   required-hit floor, replacing the single global default for that call path only.
+3. Tests: profile computation from synthetic and real-clip-derived inputs; confirm the required-hit
+   floor scales sanely from a 1-usable-frame static bumper up through Bumper 1/2's actual usable
+   counts.
+
+**Phase 2 — high-risk corroboration (needs its own validation before committing to a mechanism):**
+
+1. Prototype candidate-side temporal clustering as a standalone, testable unit, independent of the
+   profile plumbing above; validate directly against Bumper 1/2's real confirmed TP/FP files.
+2. If that under-delivers, prototype mandatory audio corroboration for high-risk bumpers as the
+   fallback candidate — requires changing `SignalResult.Present`'s decision rule for the high-risk
+   case only; normal-risk bumpers keep today's priority-fallback rule unchanged.
+3. Calibrate `isHighRisk`'s boundary against Bumper 1/2 plus any additional real bumpers the
+   maintainer can supply — a data-fitting step, not a from-first-principles guess.
+4. Regression test: Bumper-1/2-shaped inputs (dark, short, high-present false match) are rejected
+   post-fix while the confirmed low-present true positive (`present=1/11`) still passes.
+
 ## File-path DB options (`--catalog-db`/`--library-db`) + runtime config file — design & TODO (2026-08-11)
 
 **Status: maintainer-requested design, direction approved, not yet built.** Three changes, one theme: fewer moving parts between a command line and its on-disk state. The two name+folder flag pairs (`--catalog-name`+`--catalog-db-folder`, `--library-name`+`--library-db-folder`) each collapse into one explicit file-path flag, and the tunables currently compiled into the binaries move into one inspectable, validated config file with today's values as the defaults. Nothing in this plan changes default behavior: a run with no new flags and no config file resolves the same files and computes the same results as today — only the flag spellings change.
