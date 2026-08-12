@@ -116,7 +116,8 @@ internal sealed class MatchingSession : IDisposable {
 		try {
 			if (session.WantsVisual || session.WantsPHash) {
 				session.sampler = new MixedDensitySampler(verbose);
-				session.visualForPresence = new VisualBumperMatcher(presenceThreshold: presenceThreshold);
+				session.visualForPresence = new VisualBumperMatcher(
+					presenceThreshold: presenceThreshold, rigidHitThreshold: VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold);
 
 				if (session.WantsVisual)
 					await SharedOptions.EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
@@ -184,7 +185,8 @@ internal sealed class MatchingSession : IDisposable {
 
 		if (session.WantsVisual || session.WantsPHash) {
 			session.sampler = new MixedDensitySampler(verboseLogging);
-			session.visualForPresence = new VisualBumperMatcher(presenceThreshold: presenceThreshold);
+			session.visualForPresence = new VisualBumperMatcher(
+					presenceThreshold: presenceThreshold, rigidHitThreshold: VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold);
 			session.clipEmbeddings = ToTimedFrames(entry.Fingerprints);
 			session.clipHashes = ToTimedPHashes(entry.Fingerprints);
 			if (session.clipEmbeddings.Count < 1) {

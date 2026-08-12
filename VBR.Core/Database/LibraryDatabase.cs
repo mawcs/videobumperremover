@@ -66,6 +66,13 @@ public sealed partial class LibraryDatabase {
 	/// normalizing the key string itself, not by the dictionary's comparer.</summary>
 	[MemoryPackOrder(5)]
 	public Dictionary<string, LibraryDatabaseEntry> Entries { get; set; } = new();
+
+	/// <summary>Recipe-staleness stamp (docs/iterativeplan.md, "File-path DB options" entry, Part 3;
+	/// see <see cref="Configuration.FrameQualitySnapshot"/>'s own doc comment) — null for any database
+	/// saved before 2026-08-12, or one this session's own <see cref="LibraryDatabaseStore.Save"/> path
+	/// hasn't re-stamped yet.</summary>
+	[MemoryPackOrder(6)]
+	public Configuration.FrameQualitySnapshot? FrameQualitySnapshot { get; set; }
 }
 
 /// <summary>Normalizes a path for use as a <see cref="LibraryDatabase.Entries"/> key — Windows paths

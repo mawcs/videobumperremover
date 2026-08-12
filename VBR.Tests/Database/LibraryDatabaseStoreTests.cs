@@ -158,28 +158,28 @@ public class LibraryDatabaseStoreTests {
 		Assert.Equal(expected, LibraryDatabaseStore.DeriveLibraryName(folder));
 	}
 
-	// Path.Combine never *doubles* a separator explicitFolder already ends with, but it doesn't
-	// normalize which kind either -- a trailing '/' stays a '/' in the result. Every case here is
-	// still a valid Windows path either way; the point of the test is the file name (always derived
-	// from libraryName), not which separator character precedes it.
 	[Theory]
-	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Library.vbrdb")]
-	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Library.vbrdb")]
-	[InlineData(@"C:\some\custom-folder/", @"C:\some\custom-folder/My Library.vbrdb")]
-	public void ResolveDatabasePath_ExplicitFolder_FileNameAlwaysDerivedFromLibraryName(string explicitFolder, string expected) {
-		Assert.Equal(expected, LibraryDatabaseStore.ResolveDatabasePath(explicitFolder, "My Library"));
+	[InlineData(@"C:\some\custom-folder\My Library.custom", @"C:\some\custom-folder\My Library.custom")]
+	[InlineData(@"C:\some\custom-folder\no-extension", @"C:\some\custom-folder\no-extension")]
+	public void ResolvePath_ExplicitPath_UsedVerbatim_AnyOrNoExtension(string explicitPath, string expected) {
+		Assert.Equal(expected, LibraryDatabaseStore.ResolvePath(explicitPath));
 	}
 
 	[Fact]
-	public void ResolveDatabasePath_NoExplicitPath_DefaultsUnderDedicatedFolder_NamedAfterLibrary() {
-		string resolved = LibraryDatabaseStore.ResolveDatabasePath(null, "My Library");
+	public void ResolvePath_NoExplicitPath_DerivesFromFolder_UnderDedicatedFolder() {
+		string resolved = LibraryDatabaseStore.ResolvePath(null, @"D:\Media\My Library");
 		string folder = LibraryDatabaseStore.GetDefaultDatabaseFolder();
 		Assert.Equal(Path.Combine(folder, "My Library.vbrdb"), resolved);
 	}
 
 	[Fact]
-	public void ResolveDatabasePath_SanitizesInvalidFileNameCharactersInLibraryName() {
-		string resolved = LibraryDatabaseStore.ResolveDatabasePath(null, "Colon: Test");
+	public void ResolvePath_NoExplicitPath_SanitizesInvalidFileNameCharactersInDerivedName() {
+		string resolved = LibraryDatabaseStore.ResolvePath(null, @"D:\Media\Colon: Test");
 		Assert.DoesNotContain(":", Path.GetFileName(resolved));
+	}
+
+	[Fact]
+	public void ResolvePath_NeitherExplicitPathNorDeriveFolder_Throws() {
+		Assert.Throws<ArgumentException>(() => LibraryDatabaseStore.ResolvePath(null, null));
 	}
 }

@@ -15,6 +15,7 @@
 //
 
 using System.CommandLine;
+using VBR.Core.Configuration;
 using VBR.Core.Database;
 using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
@@ -49,22 +50,22 @@ internal static class ScanCommand {
 	static readonly Option<TimeSpan> EdgeBoundary = new("--edge-boundary") {
 		Description = "How deep from each file's true BOF/EOF is sampled densely (--sample-interval); " +
 			"sampled sparser beyond it (--sparse-interval). Default 20s.",
-		DefaultValueFactory = _ => TimeSpan.FromSeconds(20),
-		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(20)),
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(VbrConfig.Current.Sampling.ScanEdgeBoundarySeconds),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VbrConfig.Current.Sampling.ScanEdgeBoundarySeconds)),
 	};
 
 	static readonly Option<TimeSpan> SampleInterval = new("--sample-interval") {
 		Description = "Dense interval: seconds between sampled frames within --edge-boundary of each " +
 			"true edge. Default 0.2s.",
-		DefaultValueFactory = _ => TimeSpan.FromSeconds(0.2),
-		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(0.2)),
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(VbrConfig.Current.Sampling.ScanDenseIntervalSeconds),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VbrConfig.Current.Sampling.ScanDenseIntervalSeconds)),
 	};
 
 	static readonly Option<TimeSpan> SparseInterval = new("--sparse-interval") {
 		Description = "Sparse interval: seconds between sampled frames across the whole file " +
 			"(the dense edge zones get denser coverage on top of this, not instead of it). Default 4s.",
-		DefaultValueFactory = _ => TimeSpan.FromSeconds(4),
-		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(4)),
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(VbrConfig.Current.Sampling.ScanSparseIntervalSeconds),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VbrConfig.Current.Sampling.ScanSparseIntervalSeconds)),
 	};
 
 	static readonly Option<bool> IncludeVbrOutputs = new("--include-vbr-outputs") {
@@ -126,8 +127,7 @@ internal static class ScanCommand {
 		cmd.Options.Add(EdgeBoundary);
 		cmd.Options.Add(SampleInterval);
 		cmd.Options.Add(SparseInterval);
-		cmd.Options.Add(LibraryName);
-		cmd.Options.Add(LibraryDbFolder);
+		cmd.Options.Add(LibraryDb);
 		cmd.Options.Add(IncludeVbrOutputs);
 		cmd.Options.Add(Rescan);
 		cmd.Options.Add(Verbose);
@@ -144,8 +144,7 @@ internal static class ScanCommand {
 			TimeSpan edgeBoundary = parseResult.GetValue(EdgeBoundary);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
 			TimeSpan sparseInterval = parseResult.GetValue(SparseInterval);
-			string? libraryNameArg = parseResult.GetValue(LibraryName);
-			DirectoryInfo? libraryDbFolderArg = parseResult.GetValue(LibraryDbFolder);
+			FileInfo? libraryDbArg = parseResult.GetValue(LibraryDb);
 			bool includeVbrOutputs = parseResult.GetValue(IncludeVbrOutputs);
 			bool rescan = parseResult.GetValue(Rescan);
 			bool verboseFlag = parseResult.GetValue(Verbose);
@@ -208,27 +207,20 @@ internal static class ScanCommand {
 				return 1;
 			}
 
-			// With multiple --library folders, a default name can only ever be a guess -- derived
-			// from the first folder given, same "override if you care" philosophy as the
-			// single-folder case, just extended to pick one of several.
-			string libraryName = string.IsNullOrWhiteSpace(libraryNameArg)
-				? LibraryDatabaseStore.DeriveLibraryName(libraries[0].FullName)
-				: libraryNameArg;
-
 			// Checked here, before any scanning (or even the AI-component download) starts, not left
-			// for LibraryDatabaseStore.Save to discover: a file already sitting at --library-db-folder's
-			// path can never work as a folder to hold the database, and it's not worth wasting an entire
-			// run's sampling work to find that out only once a save is attempted.
-			if (libraryDbFolderArg is not null && File.Exists(libraryDbFolderArg.FullName)) {
+			// for LibraryDatabaseStore.Save to discover: an existing directory already sitting at
+			// --library-db's path can never work as a database file, and it's not worth wasting an
+			// entire run's sampling work to find that out only once a save is attempted.
+			if (libraryDbArg is not null && Directory.Exists(libraryDbArg.FullName)) {
 				Console.Error.WriteLine(
-					$"Error: --library-db-folder must be a folder, but a file already exists there: '{libraryDbFolderArg.FullName}'.");
+					$"Error: --library-db must be a file path, but a directory already exists there: '{libraryDbArg.FullName}'.");
 				return 1;
 			}
-			// Same class of mistake --library-db-folder used to be exposed to before it became
-			// folder-only (docs/iterativeplan.md, "Post-ship fix #2") -- --log-file is a *file* path,
-			// so a trailing separator or an existing directory there is just as much a guaranteed,
-			// never-going-to-work destination, worth catching up front rather than discovering only
-			// once the first log write silently no-ops.
+			// Same class of mistake --library-db used to be exposed to before it became explicit-path
+			// (docs/iterativeplan.md, "Post-ship fix #2" / "File-path DB options" entry) -- --log-file
+			// is a *file* path, so a trailing separator or an existing directory there is just as much
+			// a guaranteed, never-going-to-work destination, worth catching up front rather than
+			// discovering only once the first log write silently no-ops.
 			if (logFileArg is not null && (
 					logFileArg.FullName.EndsWith(Path.DirectorySeparatorChar) ||
 					logFileArg.FullName.EndsWith(Path.AltDirectorySeparatorChar) ||
@@ -237,14 +229,20 @@ internal static class ScanCommand {
 				return 1;
 			}
 
-			string databasePath = LibraryDatabaseStore.ResolveDatabasePath(libraryDbFolderArg?.FullName, libraryName);
+			// With multiple --library folders, a derived default name can only ever be a guess --
+			// derived from the first folder given, same "override if you care" philosophy as the
+			// single-folder case, just extended to pick one of several. Display-only once resolved
+			// (docs/iterativeplan.md, "File-path DB options" entry) -- always re-derived from the
+			// resolved file's own stem, whether that stem came from --library-db or the fallback.
+			string databasePath = LibraryDatabaseStore.ResolvePath(libraryDbArg?.FullName, libraries[0].FullName);
+			string libraryName = Path.GetFileNameWithoutExtension(databasePath);
 			string logPath = logFileArg?.FullName ??
 				Path.Combine(Path.GetDirectoryName(databasePath)!, Path.GetFileNameWithoutExtension(databasePath) + ".log");
 
 			// The database's own directory is created lazily, inside LibraryDatabaseStore.Save,
 			// which doesn't run until the first checkpoint -- but WriteLogLine below needs its
-			// directory (usually the same folder, for the default --library-db-folder-derived path)
-			// to exist from its very first call. Without this, every WriteLogLine call before the
+			// directory (usually the same folder, for the default --library-db-derived path) to
+			// exist from its very first call. Without this, every WriteLogLine call before the
 			// first successful save throws DirectoryNotFoundException (a subtype of IOException),
 			// which the catch below swallows exactly like a transient antivirus lock -- silently
 			// dropping the start announcement and every per-file line, not just trace detail. Same
@@ -307,6 +305,10 @@ internal static class ScanCommand {
 			database.EdgeBoundarySeconds = edgeBoundary.TotalSeconds;
 			database.DenseIntervalSeconds = sampleInterval.TotalSeconds;
 			database.SparseIntervalSeconds = sparseInterval.TotalSeconds;
+			// Recipe-staleness stamp (docs/iterativeplan.md, "File-path DB options" entry, Part 3) --
+			// re-captured on every save (including mid-scan checkpoints), reflecting whatever
+			// frameQuality settings this run's own sampling actually used.
+			database.FrameQualitySnapshot = FrameQualitySnapshot.CaptureCurrent();
 			var profile = new EdgeDensityProfile(edgeBoundary, sampleInterval, sparseInterval);
 
 			if (ScanTelemetry.Enabled)

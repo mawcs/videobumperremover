@@ -15,6 +15,7 @@
 //
 
 using System;
+using VBR.Core.Configuration;
 using VDF.Core.AI;
 
 namespace VBR.Core.Fingerprinting;
@@ -38,7 +39,13 @@ public static class FrameQuality {
 	/// mid-gap. Smooth gradients (vignettes) score far below it; any frame with actual edges
 	/// scores above.
 	/// </summary>
-	public const double MinDetail = 1.0;
+	/// <summary>Reads the live <see cref="VbrConfig.Current"/> (docs/iterativeplan.md, "File-path DB
+	/// options" entry, Part 3) -- was a <c>const</c> until 2026-08-12; the value below is now only
+	/// documentation of the built-in default (<see cref="FrameQualityConfig.MinDetail"/>), not the
+	/// value itself. A property, not a field, so every existing caller (including this class's own
+	/// <see cref="SelectUsable"/> and every test that reads it) transparently sees config overrides
+	/// without needing its own call site touched.</summary>
+	public static double MinDetail => VbrConfig.Current.FrameQuality.MinDetail;
 
 	/// <summary>
 	/// How much detail a majority-dark frame (<see cref="MeasureDarkPercent"/> ≥
@@ -54,12 +61,15 @@ public static class FrameQuality {
 	/// reference point — deliberately not reusing <see cref="MinDetail"/>'s exact 1.0 line, since a
 	/// majority-dark frame has less benefit of the doubt than a normally-lit one.
 	/// </summary>
-	public const double DarkOverrideDetail = 2.0;
+	/// <summary>See <see cref="MinDetail"/>'s doc comment -- config-aware since 2026-08-12
+	/// (<see cref="FrameQualityConfig.DarkOverrideDetail"/>).</summary>
+	public static double DarkOverrideDetail => VbrConfig.Current.FrameQuality.DarkOverrideDetail;
 
 	/// <summary>Dark-pixel-percentage rejection line — mirrors VDF's own
 	/// <c>GrayBytesUtils.VerifyRgbFrameValues</c> convention exactly (a frame is majority-dark at or
-	/// above this).</summary>
-	public const double DarkRejectPercent = 80.0;
+	/// above this). Config-aware since 2026-08-12 (<see cref="FrameQualityConfig.DarkRejectPercent"/>)
+	/// -- see <see cref="MinDetail"/>'s doc comment.</summary>
+	public static double DarkRejectPercent => VbrConfig.Current.FrameQuality.DarkRejectPercent;
 
 	/// <summary>
 	/// Marks which sampled frames may participate in matching. Three checks, none of them deferring

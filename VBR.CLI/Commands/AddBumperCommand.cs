@@ -16,6 +16,7 @@
 
 using System.CommandLine;
 using VBR.Core.Catalog;
+using VBR.Core.Configuration;
 using VBR.Core.Extraction;
 using VDF.Core.AI;
 using static VBR.CLI.Commands.SharedOptions;
@@ -30,22 +31,27 @@ namespace VBR.CLI.Commands;
 /// meaning). Does not match or remove anything, and does not read the catalog back — "apply"
 /// (catalog-aware scanning) is separate, later work.
 ///
-/// <c>--catalog-name</c> is independent of any media folder — deliberately no
-/// <c>--library</c>/folder argument anywhere (post-ship simplification, 2026-07-28). An earlier
-/// version mirrored <c>vbr scan</c>'s <c>--library</c>/<c>--library-name</c> pair, which wrongly
-/// implied a catalog belongs to one scanned library; tracing the code showed <c>--library</c> was
-/// only ever read to derive a name, never used for anything a folder is actually needed for, and
-/// the maintainer's own review concluded a catalog should be nameable and reusable independent of
-/// any specific media collection. See <see cref="BumperCatalog"/>'s doc comment.
+/// <c>--catalog-db</c> is independent of any media folder — deliberately no <c>--library</c>/folder
+/// argument anywhere (post-ship simplification, 2026-07-28). An earlier version mirrored
+/// <c>vbr scan</c>'s <c>--library</c>/<c>--library-name</c> pair, which wrongly implied a catalog
+/// belongs to one scanned library; tracing the code showed <c>--library</c> was only ever read to
+/// derive a name, never used for anything a folder is actually needed for, and the maintainer's own
+/// review concluded a catalog should be nameable and reusable independent of any specific media
+/// collection. See <see cref="BumperCatalog"/>'s doc comment. <c>--catalog-db</c> itself replaced
+/// the original <c>--catalog-name</c>/<c>--catalog-db-folder</c> pair (docs/iterativeplan.md,
+/// "File-path DB options" entry, 2026-08-12) with one explicit file path.
 /// </summary>
 internal static class AddBumperCommand {
-	const int MaxLabelLength = 30;
-	const int MaxDescriptionLength = 255;
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Limits) -- Program.cs loads config before
+	// any command's Build() runs, so these static field initializers (LabelOption/DescriptionOption
+	// below, whose Description text interpolates these) already see the resolved config value.
+	static int MaxLabelLength => VbrConfig.Current.Limits.MaxLabelLength;
+	static int MaxDescriptionLength => VbrConfig.Current.Limits.MaxDescriptionLength;
 
 	static readonly Option<string> LabelOption = new("--label") {
 		Description = $"Short, human-facing name for this bumper (max {MaxLabelLength} characters), " +
 			"e.g. 'Disney FBI warning 2003' -- the one field you must supply yourself; no auto-suggestion. " +
-			"Must be unique within the target --catalog-name (case-insensitive); other catalogs may " +
+			"Must be unique within the target --catalog-db (case-insensitive); other catalogs may " +
 			"reuse the same label freely.",
 		Required = true,
 	};
@@ -58,18 +64,6 @@ internal static class AddBumperCommand {
 		Description = "Optional comma-separated tags, e.g. \"disney,fbi-warning,2003\".",
 	};
 
-	static readonly Option<string> CatalogNameOption = new("--catalog-name") {
-		Description = "Name for this catalog -- also names its file (a .vbrcat under " +
-			"--catalog-db-folder). Independent of any media folder, so the same catalog can be used " +
-			"across different libraries.",
-		Required = true,
-	};
-
-	static readonly Option<DirectoryInfo> CatalogDbFolder = new("--catalog-db-folder") {
-		Description = "Folder to hold this catalog's file. Doesn't need to exist yet; created on " +
-			"first save. Default: a dedicated folder under VBR's own state folder.",
-	};
-
 	// A local definition, not SharedOptions.SampleInterval -- that one defaults to 1s (match/remove's
 	// own convention), which would silently change add-bumper's existing effective behavior for
 	// anyone not passing the flag. add-bumper's own default (0.2s) matches what it already hardcoded
@@ -79,8 +73,8 @@ internal static class AddBumperCommand {
 		Description = "Seconds between sampled frames within the bumper's region. Default 0.2s -- " +
 			"bumper clips are always short, so this stays dense by default rather than match/remove's " +
 			"1s (tuned for their longer default search windows).",
-		DefaultValueFactory = _ => TimeSpan.FromSeconds(0.2),
-		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(0.2)),
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(VbrConfig.Current.Sampling.AddBumperSampleIntervalSeconds),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VbrConfig.Current.Sampling.AddBumperSampleIntervalSeconds)),
 	};
 
 	internal static Command Build() {
@@ -94,8 +88,7 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(LabelOption);
 		cmd.Options.Add(DescriptionOption);
 		cmd.Options.Add(TagsOption);
-		cmd.Options.Add(CatalogNameOption);
-		cmd.Options.Add(CatalogDbFolder);
+		cmd.Options.Add(CatalogDb);
 		cmd.Options.Add(SampleInterval);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
@@ -109,8 +102,7 @@ internal static class AddBumperCommand {
 			string label = parseResult.GetValue(LabelOption) ?? string.Empty;
 			string? description = parseResult.GetValue(DescriptionOption);
 			string? tagsArg = parseResult.GetValue(TagsOption);
-			string catalogName = parseResult.GetValue(CatalogNameOption) ?? string.Empty;
-			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
+			FileInfo? catalogDbArg = parseResult.GetValue(CatalogDb);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
@@ -137,10 +129,6 @@ internal static class AddBumperCommand {
 				return 1;
 			}
 			ClipEdge region = regionArg.Value;
-			if (string.IsNullOrWhiteSpace(catalogName)) {
-				Console.Error.WriteLine("Error: --catalog-name is required.");
-				return 1;
-			}
 			if (string.IsNullOrWhiteSpace(label)) {
 				Console.Error.WriteLine("Error: --label is required.");
 				return 1;
@@ -153,12 +141,13 @@ internal static class AddBumperCommand {
 				Console.Error.WriteLine($"Error: --description must be {MaxDescriptionLength} characters or fewer (got {description.Length}).");
 				return 1;
 			}
-			// Same class of mistake --library-db-folder/--log-file guard against elsewhere
-			// (docs/iterativeplan.md, "Post-ship fix #2") -- --catalog-db-folder is a *folder*, so a
-			// file already sitting at that path can never work as one, worth catching up front.
-			if (catalogDbFolderArg is not null && File.Exists(catalogDbFolderArg.FullName)) {
+			// Same class of mistake --library-db/--log-file guard against elsewhere (docs/
+			// iterativeplan.md, "Post-ship fix #2" / "File-path DB options" entry) -- --catalog-db
+			// names a *file*, so an existing directory already sitting at that path can never work,
+			// worth catching up front.
+			if (catalogDbArg is not null && Directory.Exists(catalogDbArg.FullName)) {
 				Console.Error.WriteLine(
-					$"Error: --catalog-db-folder must be a folder, but a file already exists there: '{catalogDbFolderArg.FullName}'.");
+					$"Error: --catalog-db must be a file path, but a directory already exists there: '{catalogDbArg.FullName}'.");
 				return 1;
 			}
 
@@ -166,7 +155,7 @@ internal static class AddBumperCommand {
 				? Array.Empty<string>()
 				: tagsArg.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-			string catalogPath = BumperCatalogStore.ResolveCatalogPath(catalogDbFolderArg?.FullName, catalogName);
+			string catalogPath = BumperCatalogStore.ResolvePath(catalogDbArg?.FullName);
 			string clipsFolder = Path.Combine(Path.GetDirectoryName(catalogPath)!, "clips");
 
 			await EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
@@ -179,14 +168,22 @@ internal static class AddBumperCommand {
 				Console.Error.WriteLine($"Error: {ex.Message}");
 				return 1;
 			}
+			// Display-only (docs/iterativeplan.md, "File-path DB options" entry, Part 1) -- derived
+			// from the file itself rather than a separately-specified name, so there is exactly one
+			// thing to keep in sync between a catalog and its on-disk identity.
+			string catalogName = Path.GetFileNameWithoutExtension(catalogPath);
 			catalog.CatalogName = catalogName;
+			// Recipe-staleness stamp (docs/iterativeplan.md, "File-path DB options" entry, Part 3) --
+			// re-captured on every save, reflecting whatever frameQuality settings this run's own
+			// AddBumper call below actually used.
+			catalog.FrameQualitySnapshot = VBR.Core.Configuration.FrameQualitySnapshot.CaptureCurrent();
 
 			// Decided (docs/iterativeplan.md, "CLI terminology & multi-folder libraries" entry,
 			// 2026-07-29): labels are unique *within* a catalog, not globally -- two different
 			// catalogs may each have their own "Studio ident" without conflict. Checked here,
 			// before the (expensive: ffmpeg decode + ONNX inference) builder call, not after --
 			// same "fail fast on a cheap check before expensive work" principle already applied to
-			// --catalog-db-folder's existing-file guard above.
+			// --catalog-db's existing-directory guard above.
 			if (catalog.Entries.Values.Any(e => string.Equals(e.Label, label, StringComparison.OrdinalIgnoreCase))) {
 				Console.Error.WriteLine(
 					$"Error: catalog '{catalogName}' already has a bumper labeled '{label}' -- labels must " +

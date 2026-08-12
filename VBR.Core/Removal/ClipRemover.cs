@@ -103,12 +103,14 @@ public static class ClipRemover {
 	/// <see cref="EndCutOvershootSafetyMarginSeconds"/> — never the nearest one.</item>
 	/// </list>
 	/// </summary>
-	public const double EndCutOvershootSafetyMarginSeconds = 1.0;
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Removal.EndCutOvershootSafetyMarginSeconds).
+	public static double EndCutOvershootSafetyMarginSeconds => Configuration.VbrConfig.Current.Removal.EndCutOvershootSafetyMarginSeconds;
 
 	// How far back from the computed cut point to search for a safe keyframe. Generous relative
 	// to typical GOP lengths (~1-10s); if no keyframe is found in this window the file's
-	// keyframe spacing is unusually sparse and we fail loudly rather than guess.
-	const double KeyframeSearchWindowSeconds = 30.0;
+	// keyframe spacing is unusually sparse and we fail loudly rather than guess. Config-aware
+	// since 2026-08-12 (VbrConfig.Current.Removal.KeyframeSearchWindowSeconds).
+	static double KeyframeSearchWindowSeconds => Configuration.VbrConfig.Current.Removal.KeyframeSearchWindowSeconds;
 
 	/// <param name="verbose">Logs duration probing, the computed cut point and its rationale,
 	/// the exact ffmpeg command run, and the manifest write, via <see cref="Logger"/> — for
@@ -326,9 +328,11 @@ public static class ClipRemover {
 	/// verbatim after <c>-c:v</c>.</summary>
 	internal readonly record struct VideoEncoderChoice(string Encoder, IReadOnlyList<string> QualityArgs, bool Is10Bit, bool IsGpu);
 
-	const string ReEncodePreset = "medium"; // CPU x264/x265 preset -- ADR 0012 leans "slow" but leaves this specific value not yet finalized
-	const string ReEncodeAudioCodec = "aac";
-	const string ReEncodeAudioBitrate = "192k";
+	// CPU x264/x265 preset -- ADR 0012 leans "slow" but leaves this specific value not yet
+	// finalized. Config-aware since 2026-08-12 (VbrConfig.Current.Removal.ReEncodePreset).
+	static string ReEncodePreset => Configuration.VbrConfig.Current.Removal.ReEncodePreset;
+	static string ReEncodeAudioCodec => Configuration.VbrConfig.Current.Removal.ReEncodeAudioCodec;
+	static string ReEncodeAudioBitrate => Configuration.VbrConfig.Current.Removal.ReEncodeAudioBitrate;
 
 	/// <summary>
 	/// Picks the video encoder for a re-encode cut. GPU-first when hardware acceleration is
@@ -353,11 +357,17 @@ public static class ClipRemover {
 			if (gpu is not null) {
 				// GPU quality knobs aren't CRF -- roughly mirrored at the same numeric target as
 				// the adjacent CPU row below (not a verified equivalence, a reasonable starting
-				// point -- see docs/decisions/0013-gpu-acceleration.md).
-				string quality = family == "h264" ? "22" : "24";
+				// point -- see docs/decisions/0013-gpu-acceleration.md). Config-aware since
+				// 2026-08-12 (VbrConfig.Current.Removal.H264Quality/HevcQuality) -- one quality
+				// target per codec family, shared verbatim with the CPU row's own -crf below,
+				// exactly as the original hardcoded "22"/"24" pair was.
+				string quality = (family == "h264" ? Configuration.VbrConfig.Current.Removal.H264Quality : Configuration.VbrConfig.Current.Removal.HevcQuality)
+					.ToString(CultureInfo.InvariantCulture);
+				string nvencPreset = Configuration.VbrConfig.Current.Removal.GpuNvencPreset;
+				string qsvPreset = Configuration.VbrConfig.Current.Removal.GpuQsvPreset;
 				IReadOnlyList<string> qualityArgs = gpu switch {
-					"h264_nvenc" or "hevc_nvenc" => new[] { "-cq", quality, "-preset", "p5" },
-					"h264_qsv" or "hevc_qsv" => new[] { "-global_quality", quality, "-preset", "slow" },
+					"h264_nvenc" or "hevc_nvenc" => new[] { "-cq", quality, "-preset", nvencPreset },
+					"h264_qsv" or "hevc_qsv" => new[] { "-global_quality", quality, "-preset", qsvPreset },
 					"h264_amf" or "hevc_amf" => new[] { "-qp_i", quality, "-qp_p", quality, "-quality", "quality" },
 					_ => new[] { "-cq", quality },
 				};
@@ -365,12 +375,15 @@ public static class ClipRemover {
 			}
 		}
 
+		string h264Quality = Configuration.VbrConfig.Current.Removal.H264Quality.ToString(CultureInfo.InvariantCulture);
+		string hevcQuality = Configuration.VbrConfig.Current.Removal.HevcQuality.ToString(CultureInfo.InvariantCulture);
+		string vp9Crf = Configuration.VbrConfig.Current.Removal.Vp9Crf.ToString(CultureInfo.InvariantCulture);
 		return sourceCodecName switch {
-			"h264" => new VideoEncoderChoice("libx264", new[] { "-crf", "22", "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
-			"hevc" or "h265" => new VideoEncoderChoice("libx265", new[] { "-crf", "24", "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
-			"vp9" => new VideoEncoderChoice("libvpx-vp9", new[] { "-crf", "31", "-b:v", "0" }, is10Bit, IsGpu: false),
+			"h264" => new VideoEncoderChoice("libx264", new[] { "-crf", h264Quality, "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
+			"hevc" or "h265" => new VideoEncoderChoice("libx265", new[] { "-crf", hevcQuality, "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
+			"vp9" => new VideoEncoderChoice("libvpx-vp9", new[] { "-crf", vp9Crf, "-b:v", "0" }, is10Bit, IsGpu: false),
 			// Universal fallback -- matches today's existing default, so an old/unrecognized source doesn't break.
-			_ => new VideoEncoderChoice("libx264", new[] { "-crf", "22", "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
+			_ => new VideoEncoderChoice("libx264", new[] { "-crf", h264Quality, "-preset", ReEncodePreset }, is10Bit, IsGpu: false),
 		};
 	}
 

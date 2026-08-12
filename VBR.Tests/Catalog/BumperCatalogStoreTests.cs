@@ -164,23 +164,22 @@ public class BumperCatalogStoreTests {
 	}
 
 	[Theory]
-	[InlineData(@"C:\some\custom-folder", @"C:\some\custom-folder\My Catalog.vbrcat")]
-	[InlineData(@"C:\some\custom-folder\", @"C:\some\custom-folder\My Catalog.vbrcat")]
-	public void ResolveCatalogPath_ExplicitFolder_FileNameAlwaysDerivedFromCatalogName(string explicitFolder, string expected) {
-		Assert.Equal(expected, BumperCatalogStore.ResolveCatalogPath(explicitFolder, "My Catalog"));
+	[InlineData(@"C:\some\custom-folder\My Catalog.custom", @"C:\some\custom-folder\My Catalog.custom")]
+	[InlineData(@"C:\some\custom-folder\no-extension", @"C:\some\custom-folder\no-extension")]
+	public void ResolvePath_ExplicitPath_UsedVerbatim_AnyOrNoExtension(string explicitPath, string expected) {
+		Assert.Equal(expected, BumperCatalogStore.ResolvePath(explicitPath));
 	}
 
 	[Fact]
-	public void ResolveCatalogPath_NoExplicitPath_DefaultsUnderDedicatedFolder_NamedAfterCatalogName() {
-		string resolved = BumperCatalogStore.ResolveCatalogPath(null, "My Catalog");
+	public void ResolvePath_NoExplicitPath_DefaultsToDefaultVbrcatUnderDedicatedFolder() {
+		string resolved = BumperCatalogStore.ResolvePath(null);
 		string folder = BumperCatalogStore.GetDefaultCatalogFolder();
-		Assert.Equal(Path.Combine(folder, "My Catalog.vbrcat"), resolved);
+		Assert.Equal(Path.Combine(folder, "default.vbrcat"), resolved);
 	}
 
 	[Fact]
-	public void ResolveCatalogPath_SanitizesInvalidFileNameCharactersInCatalogName() {
-		string resolved = BumperCatalogStore.ResolveCatalogPath(null, "Colon: Test");
-		Assert.DoesNotContain(":", Path.GetFileName(resolved));
+	public void DefaultCatalogPath_MatchesResolvePathWithNoExplicitPath() {
+		Assert.Equal(BumperCatalogStore.ResolvePath(null), BumperCatalogStore.DefaultCatalogPath());
 	}
 
 	[Fact]

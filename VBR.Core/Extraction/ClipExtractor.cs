@@ -122,7 +122,8 @@ public static class ClipExtractor {
 	// A requested-vs-actual gap this far past normal keyframe-snap slack (a fraction of a second —
 	// see the removal path's own ~0.2s/1s margins) means stream-copy didn't just round to a nearby
 	// keyframe; it silently produced a padded/corrupted result (see Extract's doc comment).
-	const double StreamCopyDurationToleranceSeconds = 2.0;
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Removal.StreamCopyDurationToleranceSeconds).
+	static double StreamCopyDurationToleranceSeconds => Configuration.VbrConfig.Current.Removal.StreamCopyDurationToleranceSeconds;
 
 	// Registers a kill-on-cancel callback independent of whatever this thread is currently
 	// blocked on (ReadToEnd/WaitForExit below don't return early on their own) — same fix, same

@@ -146,28 +146,31 @@ dotnet run --project VBR.CLI -- remove --clip-from "D:\Media\Show\S01E01.mkv" --
 
 ```sh
 # ad hoc library + a named bumper from a catalog -- no re-extraction of the bumper
-dotnet run --project VBR.CLI -- remove --library "D:\Media\Show" --bumper-label "Netflix ident" --catalog-name "my-bumpers"
+dotnet run --project VBR.CLI -- remove --library "D:\Media\Show" --bumper-label "Netflix ident" --catalog-db "my-bumpers.vbrcat"
 
 # a vbr scan'd library database + an ad hoc bumper clip -- no re-scan of any candidate
-dotnet run --project VBR.CLI -- remove --library-name "my-show" --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s
+dotnet run --project VBR.CLI -- remove --library-db "my-show.vbrdb" --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s
 
 # both persisted -- the fastest combination: zero ffmpeg/ONNX work for matching, only the final cut decodes
-dotnet run --project VBR.CLI -- remove --library-name "my-show" --bumper-label "Netflix ident" --catalog-name "my-bumpers"
+dotnet run --project VBR.CLI -- remove --library-db "my-show.vbrdb" --bumper-label "Netflix ident" --catalog-db "my-bumpers.vbrcat"
 ```
 
 - `--bumper-label` — look up a named bumper instead of an ad hoc `--clip-from` clip (case-insensitive,
-  looked up in `--catalog-name`, defaulting to the `default` catalog if that's omitted).
-  `--clip-from`/`--region`/`--clip-length` are invalid together with this — the catalog entry's own
-  region and precisely-measured duration are used instead. `--catalog-db-folder` mirrors
-  `add-bumper`'s own option and must be accompanied by both `--bumper-label` and `--catalog-name`.
-- `--library-name` — search a `vbr scan`'d database's files instead of walking `--library`'s folder(s)
-  live; invalid together with `--library`. `--library-db-folder` mirrors `vbr scan`'s own option and
-  must be accompanied by `--library-name`. Tombstoned/missing database entries are silently skipped
-  (nothing on disk to remove a bumper from); `--exclude-folders` and the existing `.vbr.`-output
-  filter still apply. `--no-recurse` has no effect in this mode.
-- When both `--bumper-label` and `--library-name` are given, matching touches no ffmpeg/ONNX at all —
+  looked up in `--catalog-db`, defaulting to `default.vbrcat` under VBR's own state folder if that's
+  omitted). `--clip-from`/`--region`/`--clip-length` are invalid together with this — the catalog
+  entry's own region and precisely-measured duration are used instead. `--catalog-db` must be
+  accompanied by `--bumper-label`.
+- `--library-db` — search a `vbr scan`'d database's files instead of walking `--library`'s folder(s)
+  live; invalid together with `--library`. No default path in this mode — the flag's presence is
+  itself what selects it. Tombstoned/missing database entries are silently skipped (nothing on disk
+  to remove a bumper from); `--exclude-folders` and the existing `.vbr.`-output filter still apply.
+  `--no-recurse` has no effect in this mode.
+- When both `--bumper-label` and `--library-db` are given, matching touches no ffmpeg/ONNX at all —
   every fingerprint on both sides is already persisted; only files that actually match get decoded,
   for the removal cut itself.
+- If either side's file was saved under different `frameQuality` config settings than are currently
+  active, `remove` prints an unconditional `Warning:` line naming what drifted (docs/iterativeplan.md,
+  "File-path DB options" entry, Part 3) — re-scan/`--rescan` or re-add the bumper to clear it.
 
 **`--re-encode` defaults to `true` (Mode B — re-encode)**, and both modes are implemented and
 verified against real media:
@@ -230,11 +233,11 @@ Or a single file — scoped to *only* that file, never the rest of its directory
 dotnet run --project VBR.CLI -- commit --file "D:\Media\Show\S01E05.mkv"
 ```
 
-Or a `vbr scan`'d library database (added 2026-08-05, same option pair `vbr remove` already
-supports on its candidate side — see `vbr remove`'s "Utilizing Databases" combinations above):
+Or a `vbr scan`'d library database (added 2026-08-05, same option `vbr remove` already supports on
+its candidate side — see `vbr remove`'s "Utilizing Databases" combinations above):
 
 ```sh
-dotnet run --project VBR.CLI -- commit --library-name "my-show"
+dotnet run --project VBR.CLI -- commit --library-db "my-show.vbrdb"
 ```
 
 Key behavior:
@@ -259,15 +262,15 @@ Key behavior:
 - `--library` accepts the same semicolon-delimited multiple folders as `match`/`remove`/`scan`
   (each folder's own directory tree walked, deduplicated where folders overlap), and
   `--exclude-folders` skips whole directories that fall under it, before `commit` ever looks
-  inside them for `.vbr.` pairs. Exactly one of `--library`, `--file`, or `--library-name` is
+  inside them for `.vbr.` pairs. Exactly one of `--library`, `--file`, or `--library-db` is
   required.
-- `--library-name` — search a `vbr scan`'d database's files instead of walking `--library`'s
-  folder(s) live; invalid together with `--library`/`--file`. `--library-db-folder` mirrors `vbr
-  scan`'s own option and must be accompanied by `--library-name`. The database only supplies
-  candidate *paths* — pairing/promotion is still the same filename-derived logic either way, and
-  each candidate gets the exact same per-file recovery-sweep-then-pair handling `--file` already
-  uses. Tombstoned/missing database entries are silently skipped, same as `vbr remove`'s own
-  `--library-name` handling; `--exclude-folders` and the `.vbr.`-entry filter still apply;
+- `--library-db` — search a `vbr scan`'d database's files instead of walking `--library`'s
+  folder(s) live; invalid together with `--library`/`--file`. No default path — the flag's presence
+  is itself what selects this mode. The database only supplies candidate *paths* —
+  pairing/promotion is still the same filename-derived logic either way, and each candidate gets
+  the exact same per-file recovery-sweep-then-pair handling `--file` already uses.
+  Tombstoned/missing database entries are silently skipped, same as `vbr remove`'s own
+  `--library-db` handling; `--exclude-folders` and the `.vbr.`-entry filter still apply;
   `--no-recurse` has no effect in this mode. **Only a database entry with a `.vbr.` output or a
   stray recovery marker actually waiting on disk produces any output at all** — a file `vbr remove`
   never touched is skipped with nothing printed and doesn't count toward the summary, matching
@@ -297,7 +300,7 @@ there's nothing to match against yet, only fingerprints to gather. See
 design and validated numbers.
 
 ```sh
-dotnet run --project VBR.CLI -- scan --library "D:\Media\Show" --library-name Show
+dotnet run --project VBR.CLI -- scan --library "D:\Media\Show" --library-db "Show.vbrdb"
 ```
 
 Key options:
@@ -306,19 +309,18 @@ Key options:
   (e.g. `--library "D:\Media\Show;D:\Media\Extras"`), combined into one candidate list and
   deduplicated where folders overlap; `--exclude-folders` works the same way too. All of a
   multi-folder `--library`'s files land in the *same* database — there's still only one
-  `--library-name`/one database file per `scan` invocation, not one per folder.
+  `--library-db`/one database file per `scan` invocation, not one per folder.
 - `--edge-boundary`/`--sample-interval`/`--sparse-interval` (defaults 20s / 0.2s / 4s) — how deep
   from each true edge is sampled densely, and the dense/sparse intervals. These are **scan-specific
   defaults**, not the same options on `match`/`remove` (which are relative to a *known*
   `--clip-length`; the scan has no known bumper length, so it presumptively covers the first/last
   20s of every file instead).
-- `--library-name <name>` / `--library-db-folder <folder>` — every named library gets its own
-  independent database file, always named `{library-name}.vbrdb` (the file name is only ever derived
-  from `--library-name`; `--library-db-folder` names the *containing folder*, not the file, and
-  doesn't need to exist yet). Default name: `--library`'s own folder name (the *first* folder, if
-  more than one is given — override with `--library-name` if that guess isn't the one you want);
-  default location: a dedicated VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\database\` on
-  Windows), never VDF's own database folder.
+- `--library-db <path>` — absolute or relative path to this library's database file, any extension
+  (docs/iterativeplan.md, "File-path DB options" entry, Part 2 — replaced the old
+  `--library-name`/`--library-db-folder` pair 2026-08-12). Default when omitted: derived from
+  `--library`'s own folder name (the *first* folder, if more than one is given), under a dedicated
+  VBR state folder (`%LOCALAPPDATA%\VideoBumperRemover\database\` on Windows), never VDF's own
+  database folder.
 - `--include-vbr-outputs` — off by default: `name.vbr.ext` outputs from a prior `remove` are
   transitional staging artifacts (a review window before `commit`), usually redundant to include.
 - `--rescan` (alias `--force`) — bypass change detection and re-sample every candidate, e.g. after
@@ -358,10 +360,10 @@ no `.vbr.` output exists for the target), and `RECOVER` for anything the startup
 dotnet run --project VBR.CLI -- add-bumper --help
 ```
 
-Adds one bumper to a named, persistent **catalog** — samples `--clip-from`'s requested region directly from source, extracts a reference clip and a native-resolution thumbnail, measures precise duration, and writes a new entry. Like `match`/`remove`, it never accepts a pre-cut clip file(`--clip-from`/`--region`/`--clip-length`, identical meaning). Unlike `vbr scan`, a catalog is**not** tied to a media folder at all — it's named directly (`--catalog-name`), so the same catalog can be built from one collection of videos and applied to a different one later. (An earlier version mirrored `scan`'s `--library`/`--library-name` pair here; that wrongly implied a catalog belongs to one scanned library, and `--library`'s value turned out to never be used for anything —see [`iterativeplan.md`](iterativeplan.md) → "Bumper catalog" for the full story.) Doesn't match or remove anything, and doesn't read the catalog back yet — see that same doc for what's still unbuilt(catalog-aware matching/"apply", curation, sub-bumper relationships, export/import).
+Adds one bumper to a named, persistent **catalog** — samples `--clip-from`'s requested region directly from source, extracts a reference clip and a native-resolution thumbnail, measures precise duration, and writes a new entry. Like `match`/`remove`, it never accepts a pre-cut clip file(`--clip-from`/`--region`/`--clip-length`, identical meaning). Unlike `vbr scan`, a catalog is**not** tied to a media folder at all — it's named by its file path (`--catalog-db`), so the same catalog can be built from one collection of videos and applied to a different one later. (An earlier version mirrored `scan`'s `--library`/`--library-name` pair here; that wrongly implied a catalog belongs to one scanned library, and `--library`'s value turned out to never be used for anything —see [`iterativeplan.md`](iterativeplan.md) → "Bumper catalog" for the full story.) Doesn't match or remove anything, and doesn't read the catalog back yet — see that same doc for what's still unbuilt(catalog-aware matching/"apply", curation, sub-bumper relationships, export/import).
 
 ```sh
-dotnet run --project VBR.CLI -- add-bumper --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s --label "Studio ident" --catalog-name "my-bumpers"
+dotnet run --project VBR.CLI -- add-bumper --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s --label "Studio ident" --catalog-db "my-bumpers.vbrcat"
 ```
 
 Key options:
@@ -369,17 +371,18 @@ Key options:
 - `--label` (required, max 30 characters) — the one field you must supply yourself; no
   auto-suggestion from the filename/folder (considered and rejected during planning — too many
   edge cases to guess reliably, e.g. show name living in a grandparent folder, episode codes to
-  strip). **Must be unique within the target `--catalog-name`, case-insensitively** — a duplicate
+  strip). **Must be unique within the target `--catalog-db`, case-insensitively** — a duplicate
   is rejected before any sampling/extraction work starts; a different catalog may freely reuse the
   same label.
 - `--description` (optional, max 255 characters) and `--tags` (optional, comma-separated) add
   curation context. All three (including `--label`) are enforced at the CLI, not the underlying
   data model.
-- `--catalog-name` (required) — names the catalog itself (also its file, a `.vbrcat`) — a plain
-  label you choose, independent of any `--library`/media folder.
-- `--catalog-db-folder` — where this catalog's file lives; doesn't need to exist yet. Default: a
-  dedicated folder under VBR's own state folder (`%LOCALAPPDATA%\VideoBumperRemover\catalog\` on
-  Windows) — a sibling of, not shared with, `vbr scan`'s own database folder.
+- `--catalog-db <path>` — absolute or relative path to the catalog file, any extension
+  (docs/iterativeplan.md, "File-path DB options" entry, Part 1 — replaced the old
+  `--catalog-name`/`--catalog-db-folder` pair 2026-08-12, and dropped the requiredness that pair
+  had). Default when omitted: `default.vbrcat` under a dedicated folder in VBR's own state folder
+  (`%LOCALAPPDATA%\VideoBumperRemover\catalog\` on Windows) — a sibling of, not shared with, `vbr
+  scan`'s own database folder.
 - `--verbose` — same logging convention as every other command: model path, sampled/usable frame
   counts, and exact ffmpeg commands run, to the console and `log.txt`.
 - `--hardware-accel` / `--no-native-ffmpeg-binding` — same shared GPU/native-decode options as
@@ -401,13 +404,13 @@ dotnet run --project VBR.CLI -- list-bumpers --help
 Lists the bumpers in a catalog, one line each: `"label", region, length, "thumbnail location"`. Read-only — doesn't touch the catalog file itself, but materializes each entry's embedded thumbnail to a real JPEG under the system temp folder (`{temp}\.vbrthumbs\{label}-thumbnail.jpg`, rewritten on every call) since the catalog only ever stores thumbnail bytes inline (see `add-bumper` above).
 
 ```sh
-dotnet run --project VBR.CLI -- list-bumpers --catalog-name "my-bumpers"
+dotnet run --project VBR.CLI -- list-bumpers --catalog-db "my-bumpers.vbrcat"
 ```
 
 Key options:
 
-- `--catalog-name` — which catalog to list. Default: `"default"` when omitted (unlike `add-bumper`, where it's required).
-- `--catalog-db-folder` — where that catalog's file lives; same default and same "must be a folder, not a file" guard as `add-bumper`.
+- `--catalog-db` — path to the catalog to list; same option, same `default.vbrcat`-under-state-folder
+  default, as `add-bumper` (docs/iterativeplan.md, "File-path DB options" entry, Part 1).
 - `--show-guids` — prints each bumper's `Id` on its own line immediately before that bumper's regular output line.
 
 An empty or nonexistent catalog prints `Catalog '<name>' has no bumpers.` and exits 0, rather than erroring — same "a fresh catalog isn't an error" convention `add-bumper` already established.

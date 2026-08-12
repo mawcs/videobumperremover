@@ -45,4 +45,11 @@ public sealed partial class BumperCatalog {
 	/// itself.</summary>
 	[MemoryPackOrder(2)]
 	public Dictionary<string, BumperCatalogEntry> Entries { get; set; } = new();
+
+	/// <summary>Recipe-staleness stamp (docs/iterativeplan.md, "File-path DB options" entry, Part 3;
+	/// see <see cref="Configuration.FrameQualitySnapshot"/>'s own doc comment) — null for any catalog
+	/// saved before 2026-08-12, or one this session's own <see cref="BumperCatalogStore.Save"/> path
+	/// hasn't re-stamped yet.</summary>
+	[MemoryPackOrder(3)]
+	public Configuration.FrameQualitySnapshot? FrameQualitySnapshot { get; set; }
 }

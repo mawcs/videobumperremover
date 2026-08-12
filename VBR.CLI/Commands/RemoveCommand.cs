@@ -18,6 +18,7 @@ using System.CommandLine;
 using System.Globalization;
 using System.Text;
 using VBR.Core.Catalog;
+using VBR.Core.Configuration;
 using VBR.Core.Database;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
@@ -64,11 +65,11 @@ internal sealed record RemoveRow(string File, bool Present, string? VisualDetail
 /// <list type="bullet">
 /// <item>ad hoc library (<c>--library</c>/<c>--file</c>) + ad hoc bumper (<c>--clip-from</c>/
 /// <c>--region</c>/<c>--clip-length</c>) — the original, unchanged behavior.</item>
-/// <item>ad hoc library + catalog bumper (<c>--bumper-label</c>/<c>--catalog-name</c>/
-/// <c>--catalog-db-folder</c>) — the bumper's fingerprints/audio are reused from the catalog, not
-/// re-extracted; candidates are still freshly sampled per file.</item>
-/// <item>scanned library database (<c>--library-name</c>/<c>--library-db-folder</c>) + ad hoc
-/// bumper — candidates' fingerprints/audio are reused from the database, not re-scanned; the
+/// <item>ad hoc library + catalog bumper (<c>--bumper-label</c>/<c>--catalog-db</c>) — the
+/// bumper's fingerprints/audio are reused from the catalog, not re-extracted; candidates are
+/// still freshly sampled per file.</item>
+/// <item>scanned library database (<c>--library-db</c>) + ad hoc bumper — candidates'
+/// fingerprints/audio are reused from the database, not re-scanned; the
 /// bumper is still freshly sampled from <c>--clip-from</c>.</item>
 /// <item>scanned library database + catalog bumper — both sides fully cached; matching touches
 /// no ffmpeg/ONNX at all (only the removal cut itself, for files that actually match, decodes
@@ -78,8 +79,6 @@ internal sealed record RemoveRow(string File, bool Present, string? VisualDetail
 /// implemented.
 /// </summary>
 internal static class RemoveCommand {
-	const string DefaultCatalogName = "default";
-
 	static readonly Option<bool> ReEncode = new("--re-encode") {
 		Description = "Re-encode (Mode B: frame-accurate, correctly realigns subtitle cues) vs. " +
 			"stream-copy (Mode A: much faster — no decode/encode — but keyframe-bound, and " +
@@ -97,19 +96,9 @@ internal static class RemoveCommand {
 
 	static readonly Option<string> BumperLabel = new("--bumper-label") {
 		Description = "Use a named bumper from a catalog instead of an ad hoc --clip-from clip -- " +
-			"looked up (case-insensitively) in --catalog-name, or the 'default' catalog if that's " +
-			"not given. The catalog entry's own region and measured duration are used; " +
+			"looked up (case-insensitively) in --catalog-db, or the default catalog if that's not " +
+			"given. The catalog entry's own region and measured duration are used; " +
 			"--clip-from/--region/--clip-length are invalid together with this.",
-	};
-
-	static readonly Option<string> CatalogName = new("--catalog-name") {
-		Description = $"Which catalog --bumper-label is looked up in. Must be accompanied by " +
-			$"--bumper-label. Default: '{DefaultCatalogName}' when omitted.",
-	};
-
-	static readonly Option<DirectoryInfo> CatalogDbFolder = new("--catalog-db-folder") {
-		Description = "Folder holding --catalog-name's file. Must be accompanied by --bumper-label " +
-			"and --catalog-name. Default: the same dedicated folder 'vbr add-bumper' writes to.",
 	};
 
 	internal static Command Build() {
@@ -120,13 +109,12 @@ internal static class RemoveCommand {
 			"Bundles clip extraction, matching, and removal in one command " +
 			"(see docs/decisions/0007-removal-command.md). The bumper can be ad hoc or a named " +
 			"catalog entry (--bumper-label); candidates can be an ad hoc folder/file or a scanned " +
-			"library database (--library-name) — see docs/iterativeplan.md, \"Utilizing Databases\".");
+			"library database (--library-db) — see docs/iterativeplan.md, \"Utilizing Databases\".");
 		cmd.Options.Add(ClipFrom);
 		cmd.Options.Add(Region);
 		cmd.Options.Add(ClipLength);
 		cmd.Options.Add(BumperLabel);
-		cmd.Options.Add(CatalogName);
-		cmd.Options.Add(CatalogDbFolder);
+		cmd.Options.Add(CatalogDb);
 		cmd.Options.Add(SearchLength);
 		cmd.Options.Add(SampleInterval);
 		cmd.Options.Add(EdgeBoundary);
@@ -139,8 +127,7 @@ internal static class RemoveCommand {
 		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(TargetFile);
 		cmd.Options.Add(NoRecurse);
-		cmd.Options.Add(LibraryName);
-		cmd.Options.Add(LibraryDbFolder);
+		cmd.Options.Add(LibraryDb);
 		cmd.Options.Add(Output);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(ReEncode);
@@ -156,8 +143,7 @@ internal static class RemoveCommand {
 			ClipEdge? regionArg = parseResult.GetValue(Region);
 			TimeSpan clipLengthArg = parseResult.GetValue(ClipLength);
 			string? bumperLabel = parseResult.GetValue(BumperLabel);
-			string? catalogNameArg = parseResult.GetValue(CatalogName);
-			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
+			FileInfo? catalogDbArg = parseResult.GetValue(CatalogDb);
 
 			TimeSpan searchLength = parseResult.GetValue(SearchLength);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
@@ -176,8 +162,7 @@ internal static class RemoveCommand {
 			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			var targetFile = parseResult.GetValue(TargetFile);
 			bool recurse = !parseResult.GetValue(NoRecurse);
-			string? libraryNameArg = parseResult.GetValue(LibraryName);
-			DirectoryInfo? libraryDbFolderArg = parseResult.GetValue(LibraryDbFolder);
+			FileInfo? libraryDbArg = parseResult.GetValue(LibraryDb);
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
@@ -198,12 +183,8 @@ internal static class RemoveCommand {
 				Console.Error.WriteLine("Error: one of --clip-from/--region/--clip-length or --bumper-label is required.");
 				return 1;
 			}
-			if (!string.IsNullOrWhiteSpace(catalogNameArg) && !catalogRefGiven) {
-				Console.Error.WriteLine("Error: --catalog-name must be accompanied by --bumper-label.");
-				return 1;
-			}
-			if (catalogDbFolderArg is not null && !(catalogRefGiven && !string.IsNullOrWhiteSpace(catalogNameArg))) {
-				Console.Error.WriteLine("Error: --catalog-db-folder must be accompanied by --bumper-label and --catalog-name.");
+			if (catalogDbArg is not null && !catalogRefGiven) {
+				Console.Error.WriteLine("Error: --catalog-db must be accompanied by --bumper-label.");
 				return 1;
 			}
 			if (!catalogRefGiven) {
@@ -227,32 +208,28 @@ internal static class RemoveCommand {
 			// ---- Candidate side: ad hoc library/file vs. scanned library database ----
 			bool hasLibrary = libraries.Length > 0;
 			bool hasFile = targetFile is not null;
-			bool hasLibraryDb = !string.IsNullOrWhiteSpace(libraryNameArg);
+			bool hasLibraryDb = libraryDbArg is not null;
 			if (hasLibraryDb && hasLibrary) {
-				Console.Error.WriteLine("Error: --library-name is invalid together with --library.");
-				return 1;
-			}
-			if (libraryDbFolderArg is not null && !hasLibraryDb) {
-				Console.Error.WriteLine("Error: --library-db-folder must be accompanied by --library-name.");
+				Console.Error.WriteLine("Error: --library-db is invalid together with --library.");
 				return 1;
 			}
 			int candidateSourceCount = (hasLibrary ? 1 : 0) + (hasLibraryDb ? 1 : 0) + (hasFile ? 1 : 0);
 			if (candidateSourceCount == 0) {
-				Console.Error.WriteLine("Error: one of --library, --library-name, or --file is required.");
+				Console.Error.WriteLine("Error: one of --library, --library-db, or --file is required.");
 				return 1;
 			}
 			if (candidateSourceCount > 1) {
-				Console.Error.WriteLine("Error: specify only one of --library, --library-name, or --file.");
+				Console.Error.WriteLine("Error: specify only one of --library, --library-db, or --file.");
 				return 1;
 			}
-			if (libraryDbFolderArg is not null && File.Exists(libraryDbFolderArg.FullName)) {
+			if (hasLibraryDb && Directory.Exists(libraryDbArg!.FullName)) {
 				Console.Error.WriteLine(
-					$"Error: --library-db-folder must be a folder, but a file already exists there: '{libraryDbFolderArg.FullName}'.");
+					$"Error: --library-db must be a file path, but a directory already exists there: '{libraryDbArg.FullName}'.");
 				return 1;
 			}
-			if (catalogDbFolderArg is not null && File.Exists(catalogDbFolderArg.FullName)) {
+			if (catalogDbArg is not null && Directory.Exists(catalogDbArg.FullName)) {
 				Console.Error.WriteLine(
-					$"Error: --catalog-db-folder must be a folder, but a file already exists there: '{catalogDbFolderArg.FullName}'.");
+					$"Error: --catalog-db must be a file path, but a directory already exists there: '{catalogDbArg.FullName}'.");
 				return 1;
 			}
 
@@ -263,8 +240,8 @@ internal static class RemoveCommand {
 			string? resolvedCatalogName = null;
 			string? catalogPath = null;
 			if (catalogRefGiven) {
-				resolvedCatalogName = string.IsNullOrWhiteSpace(catalogNameArg) ? DefaultCatalogName : catalogNameArg;
-				catalogPath = BumperCatalogStore.ResolveCatalogPath(catalogDbFolderArg?.FullName, resolvedCatalogName);
+				catalogPath = BumperCatalogStore.ResolvePath(catalogDbArg?.FullName);
+				resolvedCatalogName = Path.GetFileNameWithoutExtension(catalogPath);
 				BumperCatalog catalog;
 				try {
 					catalog = BumperCatalogStore.Load(catalogPath);
@@ -273,6 +250,14 @@ internal static class RemoveCommand {
 					Console.Error.WriteLine($"Error: {ex.Message}");
 					return 1;
 				}
+				// Recipe-staleness check (docs/iterativeplan.md, "File-path DB options" entry, Part 3)
+				// -- unconditional, not gated on --verbose: a stale frameQuality recipe can produce
+				// silently wrong match/removal results, not just a cosmetic difference.
+				string? catalogStalenessWarning = FrameQualitySnapshot.DescribeMismatchFromCurrent(
+					catalog.FrameQualitySnapshot, $"Catalog '{resolvedCatalogName}'");
+				if (catalogStalenessWarning is not null)
+					Console.Error.WriteLine($"Warning: {catalogStalenessWarning}");
+
 				catalogEntry = catalog.Entries.Values.FirstOrDefault(
 					e => string.Equals(e.Label, bumperLabel, StringComparison.OrdinalIgnoreCase));
 				if (catalogEntry is null) {
@@ -287,7 +272,7 @@ internal static class RemoveCommand {
 				clipLength = clipLengthArg;
 			}
 			if (searchLength <= TimeSpan.Zero)
-				searchLength = clipLength + TimeSpan.FromSeconds(20);
+				searchLength = clipLength + TimeSpan.FromSeconds(VbrConfig.Current.Sampling.SearchLengthSlackSeconds);
 
 			if (region == ClipEdge.begin && !reEncode)
 				Console.Error.WriteLine(
@@ -298,10 +283,10 @@ internal static class RemoveCommand {
 				Console.Error.WriteLine("Note: --dump-frames applies to visual/pHash matching only; --detection-mode audio dumps nothing.");
 			if (dumpFrames is not null && hasLibraryDb)
 				Console.Error.WriteLine(
-					"Note: --dump-frames cannot dump candidate frames sourced from --library-name (no frames " +
+					"Note: --dump-frames cannot dump candidate frames sourced from --library-db (no frames " +
 					"are decoded for a database candidate); only the reference clip's own frames (if ad hoc) are dumped.");
 			if (recurse == false && hasLibraryDb)
-				Console.Error.WriteLine("Note: --no-recurse has no effect with --library-name -- the database's own file list is used as-is.");
+				Console.Error.WriteLine("Note: --no-recurse has no effect with --library-db -- the database's own file list is used as-is.");
 
 			// ---- Resolve candidates: ad hoc folder/file vs. a scanned library database ----
 			IReadOnlyList<string> candidatePaths;
@@ -309,8 +294,7 @@ internal static class RemoveCommand {
 			Dictionary<string, LibraryDatabaseEntry>? candidateDbEntries = null;
 			string? databasePath = null;
 			if (hasLibraryDb) {
-				string libraryName = libraryNameArg!;
-				databasePath = LibraryDatabaseStore.ResolveDatabasePath(libraryDbFolderArg?.FullName, libraryName);
+				databasePath = LibraryDatabaseStore.ResolvePath(libraryDbArg!.FullName);
 				LibraryDatabase database;
 				try {
 					database = LibraryDatabaseStore.Load(databasePath);
@@ -319,6 +303,12 @@ internal static class RemoveCommand {
 					Console.Error.WriteLine($"Error: {ex.Message}");
 					return 1;
 				}
+				// Recipe-staleness check -- see the matching check on the catalog side above for why
+				// this is unconditional rather than gated on --verbose.
+				string? libraryStalenessWarning = FrameQualitySnapshot.DescribeMismatchFromCurrent(
+					database.FrameQualitySnapshot, $"Library database '{Path.GetFileNameWithoutExtension(databasePath)}'");
+				if (libraryStalenessWarning is not null)
+					Console.Error.WriteLine($"Warning: {libraryStalenessWarning}");
 
 				candidateDbEntries = new Dictionary<string, LibraryDatabaseEntry>(StringComparer.OrdinalIgnoreCase);
 				var paths = new List<string>();
@@ -434,7 +424,7 @@ internal static class RemoveCommand {
 				if (output is not null && !WriteReport(output, rows, summary,
 						clipFromArg, region, clipLength, searchLength, sampleInterval, edgeBoundary, sparseInterval, mode,
 						presenceThreshold, phashPresenceThreshold, minSimilarity, libraries, excludeFolders, targetFile, recurse, removalMode,
-						bumperLabel, resolvedCatalogName, catalogPath, libraryNameArg, databasePath))
+						bumperLabel, resolvedCatalogName, catalogPath, databasePath is not null ? Path.GetFileNameWithoutExtension(databasePath) : null, databasePath))
 					return 1;
 			}
 			return 0;
@@ -464,7 +454,7 @@ internal static class RemoveCommand {
 			$"detection-mode: {mode}   presence-threshold: {presenceThreshold:0.###}   " +
 			$"phash-presence-threshold: {phashPresenceThreshold:0.###}   min-similarity: {minSimilarity:0.###}"));
 		if (libraryName is not null)
-			report.AppendLine($"library-name:   {libraryName}   database: {databasePath}");
+			report.AppendLine($"library-db:     {libraryName}   database: {databasePath}");
 		else if (targetFile is not null)
 			report.AppendLine($"file:           {targetFile.FullName}");
 		else

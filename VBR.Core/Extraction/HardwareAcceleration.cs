@@ -139,7 +139,8 @@ public static class HardwareAcceleration {
 	// device 0 can be a phantom remote-session display adapter, not a real GPU, so at least one
 	// extra index beyond "the obvious one" always needs trying; this leaves headroom for multi-GPU
 	// machines too, not just the single-real-GPU-plus-one-virtual-adapter case actually observed.
-	const int MaxDirectMlDeviceIdToTry = 4;
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Limits.MaxDirectMlDeviceIdToTry).
+	static int MaxDirectMlDeviceIdToTry => Configuration.VbrConfig.Current.Limits.MaxDirectMlDeviceIdToTry;
 
 	/// <summary>
 	/// Finds a DXGI adapter index DirectML actually initializes successfully against, by running

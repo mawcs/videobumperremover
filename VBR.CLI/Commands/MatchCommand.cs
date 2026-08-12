@@ -17,6 +17,7 @@
 using System.CommandLine;
 using System.Globalization;
 using System.Text;
+using VBR.Core.Configuration;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
 using static VBR.CLI.Commands.SharedOptions;
@@ -97,7 +98,7 @@ internal static class MatchCommand {
 			ClipEdge region = regionArg.Value;
 			TimeSpan searchLength = parseResult.GetValue(SearchLength);
 			if (searchLength <= TimeSpan.Zero)
-				searchLength = clipLength + TimeSpan.FromSeconds(20);
+				searchLength = clipLength + TimeSpan.FromSeconds(VbrConfig.Current.Sampling.SearchLengthSlackSeconds);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
 			TimeSpan edgeBoundary = parseResult.GetValue(EdgeBoundary);
 			if (edgeBoundary <= TimeSpan.Zero)

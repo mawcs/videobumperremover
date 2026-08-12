@@ -16,7 +16,6 @@
 
 using System;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using MemoryPack;
 
@@ -49,37 +48,31 @@ public static class LibraryDatabaseStore {
 		return string.IsNullOrEmpty(name) ? trimmed : name;
 	}
 
-	/// <summary>Resolves the database file's full path: always <c>{folder}/{sanitized library
-	/// name}.vbrdb</c> — the file's name is derived from <paramref name="libraryName"/> alone and
-	/// is never independently specified, so there is exactly one thing to keep in sync between a
-	/// library and its database. <paramref name="explicitFolder"/> is the containing folder when given
-	/// (decision 13's <c>--library-db-folder</c> override, itself not required to exist yet — same as any
-	/// other output folder, it's created on first save), else <see cref="GetDefaultDatabaseFolder"/>.
-	/// <c>Path.Combine</c> handles a trailing separator on <paramref name="explicitFolder"/> either
-	/// way, so callers don't need to normalize it first.</summary>
-	public static string ResolveDatabasePath(string? explicitFolder, string libraryName) {
-		string folder = string.IsNullOrWhiteSpace(explicitFolder) ? GetDefaultDatabaseFolder() : explicitFolder;
-		return Path.Combine(folder, SanitizeFileName(libraryName) + DatabaseFileExtension);
+	/// <summary>Resolves the database file's full path: <paramref name="explicitPath"/> verbatim when
+	/// given (callers pass a <see cref="FileInfo"/>'s own <c>.FullName</c>, which already resolves a
+	/// relative <c>--library-db</c> against the current directory at construction time — see
+	/// docs/iterativeplan.md, "File-path DB options" entry), else derived from
+	/// <paramref name="deriveNameFromFolder"/> (typically the first <c>--library</c> folder) via
+	/// <see cref="DeriveLibraryName"/>, sanitized, under <see cref="GetDefaultDatabaseFolder"/> — the
+	/// no-flag default <c>vbr scan</c> alone still supports (remove/commit's scanned-library mode has
+	/// no folder to derive from, so they always pass an explicit path once that mode is selected at
+	/// all).</summary>
+	/// <exception cref="ArgumentException">Both <paramref name="explicitPath"/> and
+	/// <paramref name="deriveNameFromFolder"/> are null/empty — a caller error, not a user-facing
+	/// case (every command either has an explicit path in hand or a folder to derive one from).</exception>
+	public static string ResolvePath(string? explicitPath, string? deriveNameFromFolder = null) {
+		if (!string.IsNullOrWhiteSpace(explicitPath)) return explicitPath;
+		if (string.IsNullOrWhiteSpace(deriveNameFromFolder))
+			throw new ArgumentException("Either an explicit path or a folder to derive a name from is required.", nameof(explicitPath));
+		return Path.Combine(GetDefaultDatabaseFolder(), SanitizeFileName(DeriveLibraryName(deriveNameFromFolder)) + DatabaseFileExtension);
 	}
 
 	/// <summary>The dedicated VBR-specific folder decision 6 calls for — mirrors
-	/// <c>VDF.Core.Utils.CoreUtils.GetDefaultStateFolder</c>'s per-OS resolution algorithm, rooted
-	/// at a VBR-specific base instead of VDF's, so the two projects' persisted state never mixes
-	/// (decision 2/6). Created if missing.</summary>
+	/// <c>VDF.Core.Utils.CoreUtils.GetDefaultStateFolder</c>'s per-OS resolution algorithm via
+	/// <see cref="Configuration.VbrPaths.GetStateRootFolder"/>, rooted at a VBR-specific base instead
+	/// of VDF's, so the two projects' persisted state never mixes (decision 2/6). Created if missing.</summary>
 	public static string GetDefaultDatabaseFolder() {
-		string baseFolder;
-		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
-			baseFolder = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-		}
-		else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) {
-			baseFolder = Path.Combine(
-				Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support");
-		}
-		else {
-			baseFolder = Environment.GetEnvironmentVariable("XDG_STATE_HOME")
-				?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state");
-		}
-		string folder = Path.Combine(baseFolder, "VideoBumperRemover", "database");
+		string folder = Path.Combine(Configuration.VbrPaths.GetStateRootFolder(), "database");
 		Directory.CreateDirectory(folder);
 		return folder;
 	}
@@ -124,8 +117,10 @@ public static class LibraryDatabaseStore {
 		MoveIntoPlace(tempPath, path);
 	}
 
-	const int MoveRetryAttempts = 4;
-	static readonly TimeSpan MoveRetryDelay = TimeSpan.FromMilliseconds(150);
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Storage) -- shared with
+	// BumperCatalogStore's identical retry mechanics, one config key each, not two copies.
+	static int MoveRetryAttempts => Configuration.VbrConfig.Current.Storage.SaveRetryAttempts;
+	static TimeSpan MoveRetryDelay => TimeSpan.FromMilliseconds(Configuration.VbrConfig.Current.Storage.SaveRetryDelayMilliseconds);
 
 	/// <summary>A file that was just closed is occasionally still briefly held by something else on
 	/// Windows — real-time antivirus scanning a freshly-written file is the common real-world case —

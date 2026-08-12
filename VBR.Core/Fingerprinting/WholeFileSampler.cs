@@ -49,13 +49,16 @@ namespace VBR.Core.Fingerprinting;
 /// </summary>
 public sealed class WholeFileSampler : IDisposable {
 	// Same per-zone safety ceiling VisualBumperMatcher/MixedDensitySampler use elsewhere; a single
-	// 20s dense edge zone is well under this for any interval this project targets.
-	const int MaxDenseFramesPerZone = 400;
+	// 20s dense edge zone is well under this for any interval this project targets. Config-aware
+	// since 2026-08-12 (VbrConfig.Current.Sampling.MaxFramesPerZone) -- was three independently
+	// hardcoded copies of the same value before this, now one shared config key.
+	static int MaxDenseFramesPerZone => Configuration.VbrConfig.Current.Sampling.MaxFramesPerZone;
 
 	// Headroom above the exact frame count the probed duration implies, for seek/rounding slop --
 	// the whole point of sizing this adaptively (rather than reusing MaxDenseFramesPerZone) is to
-	// never silently truncate a long file's middle, so a little slack costs nothing.
-	const int SparseFrameCapMargin = 20;
+	// never silently truncate a long file's middle, so a little slack costs nothing. Config-aware
+	// since 2026-08-12 (VbrConfig.Current.Sampling.SparseFrameCapMargin).
+	static int SparseFrameCapMargin => Configuration.VbrConfig.Current.Sampling.SparseFrameCapMargin;
 
 	readonly bool verboseLogging;
 	OnnxEmbedder? embedder;

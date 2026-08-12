@@ -85,7 +85,8 @@ public static class LibraryCleaner {
 	/// this is a post-hoc sanity check meant to catch gross errors (wrong length used, wrong file),
 	/// not a precise re-verification of exact cut placement — precision already happened in
 	/// <c>remove</c>.</summary>
-	public const double ValidateFilesDurationToleranceSeconds = 2.0;
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Removal.ValidateFilesDurationToleranceSeconds).
+	public static double ValidateFilesDurationToleranceSeconds => Configuration.VbrConfig.Current.Removal.ValidateFilesDurationToleranceSeconds;
 
 	/// <summary>Inverse of <see cref="ClipRemover.BuildOutputPath"/>: given a <c>.vbr.</c> output
 	/// path, returns the original path it was cut from, or <see langword="null"/> if

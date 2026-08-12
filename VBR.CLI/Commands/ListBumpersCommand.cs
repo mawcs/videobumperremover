@@ -17,30 +17,21 @@
 using System.CommandLine;
 using System.Linq;
 using VBR.Core.Catalog;
+using static VBR.CLI.Commands.SharedOptions;
 
 namespace VBR.CLI.Commands;
 
 /// <summary>
 /// <c>vbr list-bumpers</c> — lists the bumpers in a catalog (docs/iterativeplan.md, "Bumper CRUD
-/// Part 1"). Read-only: loads the catalog named by <c>--catalog-name</c> (default: <c>"default"</c>)
-/// and prints one line per entry, plus materializes each entry's embedded <see
+/// Part 1"). Read-only: loads the catalog named by <c>--catalog-db</c> (default: <c>default.vbrcat</c>
+/// under VBR's own state folder — see "File-path DB options" entry) and prints one line per entry,
+/// plus materializes each entry's embedded <see
 /// cref="BumperCatalogEntry.Thumbnail"/> bytes to a real file under the system temp folder so it can
 /// actually be viewed -- the catalog itself only ever stores the thumbnail in-line (see
 /// <see cref="BumperCatalog"/>'s doc comment on the "Bumper catalog" plan for why).
 /// </summary>
 internal static class ListBumpersCommand {
-	const string DefaultCatalogName = "default";
 	const string ThumbnailFolderName = ".vbrthumbs";
-
-	static readonly Option<string> CatalogNameOption = new("--catalog-name") {
-		Description = $"Name of the catalog to list (also names its .vbrcat file under " +
-			$"--catalog-db-folder). Default: '{DefaultCatalogName}' when omitted.",
-	};
-
-	static readonly Option<DirectoryInfo> CatalogDbFolder = new("--catalog-db-folder") {
-		Description = "Folder holding this catalog's file. Default: the same dedicated folder " +
-			"'vbr add-bumper' writes to.",
-	};
 
 	static readonly Option<bool> ShowGuids = new("--show-guids") {
 		Description = "Print each bumper's GUID on its own line immediately before that bumper's " +
@@ -50,26 +41,23 @@ internal static class ListBumpersCommand {
 	internal static Command Build() {
 		var cmd = new Command("list-bumpers",
 			"List the bumpers in a catalog: one line each, '\"label\", region, length, \"thumbnail location\"'.");
-		cmd.Options.Add(CatalogNameOption);
-		cmd.Options.Add(CatalogDbFolder);
+		cmd.Options.Add(CatalogDb);
 		cmd.Options.Add(ShowGuids);
 
 		cmd.SetAction((parseResult, ct) => {
-			string? catalogNameArg = parseResult.GetValue(CatalogNameOption);
-			DirectoryInfo? catalogDbFolderArg = parseResult.GetValue(CatalogDbFolder);
+			FileInfo? catalogDbArg = parseResult.GetValue(CatalogDb);
 			bool showGuids = parseResult.GetValue(ShowGuids);
 
-			string catalogName = string.IsNullOrWhiteSpace(catalogNameArg) ? DefaultCatalogName : catalogNameArg;
-
-			// Same guard as add-bumper's --catalog-db-folder: it's a folder, so a file already
-			// sitting at that path can never work as one.
-			if (catalogDbFolderArg is not null && File.Exists(catalogDbFolderArg.FullName)) {
+			// Same guard as add-bumper's --catalog-db: it names a file, so an existing directory
+			// already sitting at that path can never work.
+			if (catalogDbArg is not null && Directory.Exists(catalogDbArg.FullName)) {
 				Console.Error.WriteLine(
-					$"Error: --catalog-db-folder must be a folder, but a file already exists there: '{catalogDbFolderArg.FullName}'.");
+					$"Error: --catalog-db must be a file path, but a directory already exists there: '{catalogDbArg.FullName}'.");
 				return Task.FromResult(1);
 			}
 
-			string catalogPath = BumperCatalogStore.ResolveCatalogPath(catalogDbFolderArg?.FullName, catalogName);
+			string catalogPath = BumperCatalogStore.ResolvePath(catalogDbArg?.FullName);
+			string catalogName = Path.GetFileNameWithoutExtension(catalogPath);
 
 			BumperCatalog catalog;
 			try {

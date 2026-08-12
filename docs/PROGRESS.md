@@ -459,26 +459,23 @@ was flagged right after the initial scaffold and fixed before anything else was 
   decode" for the full finding; didn't block that fix since it doesn't affect this project's actual
   targets (bumpers sit well inside files, not in a trailing video-less gap) and is now handled
   gracefully (clean "no usable frames," not a crash) rather than silently wrong.
-- [ ] **Database/catalog fingerprint-recipe staleness has no detection (flagged 2026-08-07, real
-  incident, not designed/built).** `LibraryDatabase`/`BumperCatalog` both already carry a
-  `FormatVersion`/`CurrentFormatVersion` — added deliberately forward-thinking, per the maintainer,
-  before this was an active problem — but neither store's `Load` actually compares it against
-  `CurrentFormatVersion` at load time (checked directly, 2026-08-07: both just validate the magic
-  header and deserialize via MemoryPack's version-tolerant mode, silently trusting whatever value is
-  in the file). And even enforced, that version tracks *schema* compatibility (did a field change
-  shape), not *fingerprint content* validity (did the sampling/filtering algorithm that produced the
-  stored bytes change) — a real, live example: the 2026-08-07 dark-pixel-veto fix
-  (`FrameQuality.SelectUsable`) changed what fingerprints get produced for real content, touching no
-  schema at all, so a `FormatVersion` check wouldn't have caught it even if wired up. A scanned
-  library database built before that fix silently returned incomplete `remove` results against
-  bumpers that fresh sampling now correctly picks up — no error, no warning, just missing matches —
-  discovered only because the maintainer happened to cross-check an ad hoc run against the same
-  file. Needs a real design pass: likely a second, separate "sampling recipe" version (distinct from
-  `FormatVersion`) bumped whenever fingerprint-producing logic changes, actually checked at load
-  time, surfacing at minimum a clear warning on mismatch (auto-triggering a re-scan is a further,
-  separate question — not decided). This is the maintainer's stated primary workflow (a long-lived
-  scanned library, bumper catalog built once, `remove` applied repeatedly over time), so staleness
-  here isn't a one-off risk, it's a standing one every future fingerprint-recipe change reopens.
+- [x] **Database/catalog fingerprint-recipe staleness has no detection (flagged 2026-08-07, real
+  incident; minimum bar built 2026-08-12, docs/iterativeplan.md "File-path DB options" entry, Part
+  3).** `FormatVersion`/`CurrentFormatVersion` remain schema-only, unchanged, and still unchecked at
+  load — that gap was real, but a second, separate mechanism was built rather than repurposing them:
+  `BumperCatalog`/`LibraryDatabase` each gained a `Configuration.FrameQualitySnapshot?` field
+  (nullable — null for any pre-2026-08-12 file, meaning "unknown, not provably stale," never a false
+  alarm), re-captured from `VbrConfig.Current.FrameQuality` at every `Save` (`add-bumper`, `scan`).
+  `remove` compares each side's stamp against the currently active config right after loading and
+  prints an unconditional `Warning:` line (not gated on `--verbose` — a stale recipe can produce
+  silently wrong results, not just a cosmetic difference) naming exactly which values drifted.
+  Deliberately scoped to `frameQuality` only, not every config value that moved into `vbr.config.json`
+  — `sampling` differences are normal/expected and never make a result *wrong*, only less thorough
+  (see `VbrConfig`'s own doc comment for the full reasoning); stamping them would have false-alarmed
+  on the correct default state. **Known, documented scope limit, not silently accepted:** the stamp
+  is whole-*file*, not per-entry — a catalog with old and newly-added bumpers reports "current" for
+  the whole file after any save, so older entries' staleness isn't individually caught. Per-entry
+  tracking would close that gap; deferred as real additional scope beyond this minimum bar.
 - [ ] **Productionize matching (leave probes behind).** Build real modules per ADR 0005 and
   **[`design/matcher-spec.md`](design/matcher-spec.md)** — the authoritative "definition of done."
   Read the spec first: the PRIMARY matcher is the visual DINOv2 presence path, audio is a secondary

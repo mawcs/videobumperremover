@@ -16,6 +16,7 @@
 
 using System.CommandLine;
 using VBR.CLI.Commands;
+using VBR.Core.Configuration;
 using VBR.Core.Extraction;
 
 // Hidden, undocumented entry point: a child-process probe target for
@@ -25,6 +26,19 @@ using VBR.Core.Extraction;
 // System.CommandLine or a real command's state, only this one throwaway invocation.
 if (args.Length >= 3 && args[0] == HardwareAcceleration.DirectMlProbeArgument)
 	return HardwareAcceleration.RunDirectMlProbe(args[1], int.Parse(args[2]));
+
+// Must run before any Option's DefaultValueFactory can fire (docs/iterativeplan.md, "File-path DB
+// options" entry, Part 3): those factories read VbrConfig.Current, and System.CommandLine only
+// invokes one lazily, at parse time -- but "before Parse is called at all" is the simplest correct
+// place to guarantee this runs first, rather than relying on that laziness. A bad config file fails
+// every command identically and immediately, same as a bad CLI argument would.
+try {
+	VbrConfigLoader.LoadAndActivate();
+}
+catch (System.InvalidOperationException ex) {
+	Console.Error.WriteLine($"Error: {ex.Message}");
+	return 1;
+}
 
 var root = new RootCommand("vbr-cli — Video Bumper Remover command-line interface");
 root.Subcommands.Add(MatchCommand.Build());

@@ -118,6 +118,17 @@ B's recipe-stamp work when it's actually implemented, don't let it get missed.
   else — needs its own prototype and validation before committing to one.
 - Retrofitting Bumper 1/2 (and any other already-added catalog entries) with a computed profile —
   likely needs an `add-bumper` re-run or a new maintenance command; not designed here.
+- **Evaluate all 3 signals (visual + audio + pHash) together, not just visual-with-optional-
+  corroboration (raised by the maintainer, 2026-08-12) — captured as a pointer only, deliberately
+  NOT designed or built against.** Broader than the "mandatory audio for flagged bumpers" candidate
+  above: a real weighted evidence-combination architecture, motivated by visual's dark/grainy-content
+  aliasing failure mode having no particular reason to also fool audio or pHash (different feature
+  spaces). Two known constraints any future design has to satisfy, already established this session:
+  audio contributes nothing for the many bumpers that are silent (`VisualBumperMatcher`'s own doc
+  comment — "the only path validated on ... short, often silent studio/network idents, which audio
+  cannot touch"), and pHash has already tested as weak standalone on these exact bumpers
+  (`SharedOptions.PHashPresenceThreshold`'s description) — so it cannot be a flat 3-way majority
+  vote; whatever combines them must degrade gracefully when a signal is absent or historically weak.
 
 ### TODO
 
@@ -146,7 +157,7 @@ B's recipe-stamp work when it's actually implemented, don't let it get missed.
 
 ## File-path DB options (`--catalog-db`/`--library-db`) + runtime config file — design & TODO (2026-08-11)
 
-**Status: maintainer-requested design, direction approved, not yet built.** Three changes, one theme: fewer moving parts between a command line and its on-disk state. The two name+folder flag pairs (`--catalog-name`+`--catalog-db-folder`, `--library-name`+`--library-db-folder`) each collapse into one explicit file-path flag, and the tunables currently compiled into the binaries move into one inspectable, validated config file with today's values as the defaults. Nothing in this plan changes default behavior: a run with no new flags and no config file resolves the same files and computes the same results as today — only the flag spellings change.
+**Status: built and tested, 2026-08-12 — all three parts.** Three changes, one theme: fewer moving parts between a command line and its on-disk state. The two name+folder flag pairs (`--catalog-name`+`--catalog-db-folder`, `--library-name`+`--library-db-folder`) each collapsed into one explicit file-path flag (`--catalog-db`/`--library-db`), and the tunables previously compiled into the binaries moved into one inspectable, validated `vbr.config.json` with today's values as the defaults. Default behavior is unchanged: a run with no new flags and no config file resolves the same files and computes the same results as before — only the flag spellings changed. Deviations from the original design worth flagging: (1) the recipe-stamp mechanism (Part 3) ended up living on `BumperCatalog`/`LibraryDatabase` directly as a nullable `FrameQualitySnapshot` field, checked and warned on inside `remove` right after each load, rather than a separate `VbrConfig`-side comparison API — simpler given `FrameQuality` was the only section that needed it; (2) per-codec removal quality values (`H264Quality`/`HevcQuality`) turned out to be shared per codec *family* across CPU and every GPU vendor's own flag, exactly mirroring how the original hardcoded `"22"`/`"24"` strings were already structured, not one key per vendor; (3) the "Per-bumper matching profiles" entry above and the maintainer's later "evaluate all 3 signals together" idea are both explicitly NOT part of this build — see that entry's own TODO and the bare pointer below it. Full test coverage: `VBR.Tests/Catalog/BumperCatalogStoreTests.cs`, `VBR.Tests/Database/LibraryDatabaseStoreTests.cs`, `VBR.Tests/Configuration/VbrConfigLoaderTests.cs` (loader discovery/validation/precedence, plus a `FrameQuality.SelectUsable`-flips-on-a-lowered-`DarkOverrideDetail` flows-through test) — 98 tests passing, 0 failing.
 
 ### Part 1 — `--catalog-db <file>` replaces `--catalog-name` + `--catalog-db-folder`
 

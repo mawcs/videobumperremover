@@ -55,7 +55,8 @@ public sealed class LibraryScanner : IDisposable {
 	/// just that one candidate couldn't be read.</param>
 	public readonly record struct ScanSummary(int Scanned, int SkippedUnchanged, int Failed, int Total, string? DatabaseSaveError = null);
 
-	static readonly TimeSpan DefaultCheckpointInterval = TimeSpan.FromSeconds(30);
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Scan.CheckpointIntervalSeconds).
+	static TimeSpan DefaultCheckpointInterval => TimeSpan.FromSeconds(Configuration.VbrConfig.Current.Scan.CheckpointIntervalSeconds);
 
 	readonly WholeFileSampler sampler;
 	readonly bool verboseLogging;

@@ -55,9 +55,11 @@ namespace VBR.Core.Fingerprinting;
 /// removes the extra hop these both depended on.
 /// </summary>
 public sealed class MixedDensitySampler : IDisposable {
-	// Same cap VisualBumperMatcher applies per extracted region; a single dense or sparse zone is
-	// well under this for any bumper length this project targets.
-	const int MaxFramesPerZone = 400;
+	// Same cap VisualBumperMatcher/WholeFileSampler apply per extracted region; a single dense or
+	// sparse zone is well under this for any bumper length this project targets. Config-aware since
+	// 2026-08-12 (VbrConfig.Current.Sampling.MaxFramesPerZone) -- one shared config key, not three
+	// independently hardcoded copies.
+	static int MaxFramesPerZone => Configuration.VbrConfig.Current.Sampling.MaxFramesPerZone;
 
 	readonly bool verboseLogging;
 	OnnxEmbedder? embedder;

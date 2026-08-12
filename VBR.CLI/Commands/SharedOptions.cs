@@ -18,6 +18,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
 using System.Linq;
+using VBR.Core.Configuration;
 using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
@@ -161,8 +162,8 @@ internal static class SharedOptions {
 			"the true edge (see --edge-boundary) — smaller is denser. Default 1s; short clips " +
 			"(under ~8s) need it as low as ~0.2s to have enough frames to match on — no floor is " +
 			"enforced, go as dense as needed.",
-		DefaultValueFactory = _ => TimeSpan.FromSeconds(VisualBumperMatcher.DefaultSampleIntervalSeconds),
-		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VisualBumperMatcher.DefaultSampleIntervalSeconds)),
+		DefaultValueFactory = _ => TimeSpan.FromSeconds(VbrConfig.Current.Sampling.MatchSampleIntervalSeconds),
+		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VbrConfig.Current.Sampling.MatchSampleIntervalSeconds)),
 	};
 
 	// No DefaultValueFactory for the same reason as SearchLength: the real default ("cover the
@@ -191,8 +192,8 @@ internal static class SharedOptions {
 
 	internal static readonly Option<float> PresenceThreshold = new("--presence-threshold") {
 		Description = "Visual: cosine similarity (0-1) at or above which a clip frame counts as present in a candidate.",
-		DefaultValueFactory = _ => VisualBumperMatcher.DefaultPresenceThreshold,
-		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultPresenceThreshold),
+		DefaultValueFactory = _ => VbrConfig.Current.Matching.PresenceThreshold,
+		CustomParser = r => ParseInvariantFloat(r, VbrConfig.Current.Matching.PresenceThreshold),
 	};
 
 	internal static readonly Option<float> PHashPresenceThreshold = new("--phash-presence-threshold") {
@@ -201,14 +202,14 @@ internal static class SharedOptions {
 			"on real testing so far, pHash alone has a much narrower true/false-positive margin " +
 			"than visual and has missed real matches visual caught — treat --detection-mode phash " +
 			"as experimental, not a drop-in replacement for visual.",
-		DefaultValueFactory = _ => VisualBumperMatcher.DefaultPHashPresenceThreshold,
-		CustomParser = r => ParseInvariantFloat(r, VisualBumperMatcher.DefaultPHashPresenceThreshold),
+		DefaultValueFactory = _ => VbrConfig.Current.Matching.PHashPresenceThreshold,
+		CustomParser = r => ParseInvariantFloat(r, VbrConfig.Current.Matching.PHashPresenceThreshold),
 	};
 
 	internal static readonly Option<float> MinSimilarity = new("--min-similarity") {
 		Description = "Audio: similarity (0-1) at or above which a file is flagged as a match.",
-		DefaultValueFactory = _ => AudioBumperMatcher.DefaultMinSimilarity,
-		CustomParser = r => ParseInvariantFloat(r, AudioBumperMatcher.DefaultMinSimilarity),
+		DefaultValueFactory = _ => VbrConfig.Current.Matching.AudioMinSimilarity,
+		CustomParser = r => ParseInvariantFloat(r, VbrConfig.Current.Matching.AudioMinSimilarity),
 	};
 
 	internal static readonly Option<DetectionMode> Mode = new("--detection-mode") {
@@ -226,8 +227,8 @@ internal static class SharedOptions {
 		Description = "Semicolon-delimited folder(s) of video files to search (e.g. " +
 			"\"D:\\Show;D:\\Extras\"). Subfolders are traversed by default — see --no-recurse. The " +
 			"same folder may appear under more than one library (e.g. across separate " +
-			"--library-db-folder/--library-name runs) — nothing here checks for or prevents that " +
-			"overlap. Exactly one of --library or --file is required.",
+			"--library-db runs) — nothing here checks for or prevents that overlap. Exactly one of " +
+			"--library or --file is required.",
 		CustomParser = r => ParseFolderListArg(r, requireExists: true),
 	};
 
@@ -249,23 +250,30 @@ internal static class SharedOptions {
 		Description = "With --library: search only its top level instead of traversing subfolders. No effect with --file.",
 	};
 
-	// Shared by `scan` and `add-bumper` — both name a per-library file (a database, a catalog) after
-	// this, defaulting from --library's own folder name. Promoted here (was scan-only originally)
-	// once add-bumper needed the identical option, per this file's own stated purpose: one shared
-	// definition rather than two copies drifting apart.
-	internal static readonly Option<string> LibraryName = new("--library-name") {
-		Description = "Label for this library — also names its default per-library file (database, " +
-			"catalog, etc.). Default: --library's own folder name (the first folder, if --library " +
-			"names more than one).",
+	// Replaces the old --library-name/--library-db-folder pair (docs/iterativeplan.md, "File-path DB
+	// options" entry, Part 2, 2026-08-12) -- one explicit file path instead of a name+folder that got
+	// combined into one internally anyway. Shared by scan/remove/commit: scan derives a default from
+	// --library's own folder name when this is omitted (its one no-flag-required case); remove/commit
+	// have no folder to derive from, so this option's mere presence is what selects "use a scanned
+	// library database" for them -- there is no default path in that mode.
+	internal static readonly Option<FileInfo> LibraryDb = new("--library-db") {
+		Description = "Path to this library's database file -- any extension, absolute or relative to " +
+			"the current directory (e.g. \"d:\\data\\my-library-db.db\"). scan: default, when omitted, " +
+			"is derived from --library's own folder name (the first folder, if --library names more " +
+			"than one), under VBR's own state folder. remove/commit: giving this selects a scanned " +
+			"library database instead of an ad hoc --library/--file walk -- no default path in that mode.",
 	};
 
-	// Promoted from ScanCommand (was scan-only originally) once remove needed the identical option
-	// too (docs/iterativeplan.md, "Utilizing Databases" entry) — same rationale as LibraryName above.
-	internal static readonly Option<DirectoryInfo> LibraryDbFolder = new("--library-db-folder") {
-		Description = "Folder holding this library's database file. The file itself is always named " +
-			"after --library-name (with a .vbrdb extension) -- there's no separate way to set the " +
-			"file name. Doesn't need to exist yet; created on first save. Default: a dedicated " +
-			"per-library folder under VBR's own state folder.",
+	// Replaces the old --catalog-name/--catalog-db-folder pair (docs/iterativeplan.md, "File-path DB
+	// options" entry, Part 1, 2026-08-12). Shared by add-bumper/list-bumpers/remove. Omitted ⇒
+	// "default.vbrcat" under VBR's own state folder (BumperCatalogStore.DefaultCatalogPath) --
+	// unifies every command on one convention (add-bumper previously required an explicit name;
+	// remove/list-bumpers already defaulted to "default").
+	internal static readonly Option<FileInfo> CatalogDb = new("--catalog-db") {
+		Description = "Path to the catalog file -- any extension, absolute or relative to the current " +
+			"directory (e.g. \"d:\\data\\my-catalog-db.db\"). Default: 'default.vbrcat' under VBR's own " +
+			"state folder. Independent of any media folder, so the same catalog can be reused across " +
+			"different libraries.",
 	};
 
 	internal static readonly Option<DirectoryInfo> DumpFrames = new("--dump-frames") {

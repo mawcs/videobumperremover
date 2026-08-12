@@ -76,8 +76,10 @@ public sealed class VisualBumperMatcher : IBumperMatcher, IDisposable {
 	public const float DefaultPHashPresenceThreshold = 0.96f;
 
 	// VisualTailProbe's own cap; generous relative to any edge window this project searches
-	// (a 30s window at the densest validated interval, 0.2s, is 150 frames).
-	const int MaxFramesPerFile = 400;
+	// (a 30s window at the densest validated interval, 0.2s, is 150 frames). Config-aware since
+	// 2026-08-12 (VbrConfig.Current.Sampling.MaxFramesPerZone) -- shares one config key with
+	// WholeFileSampler/MixedDensitySampler's identical caps rather than a fourth hardcoded copy.
+	static int MaxFramesPerFile => Configuration.VbrConfig.Current.Sampling.MaxFramesPerZone;
 
 	readonly double sampleInterval;
 	readonly float presenceThreshold;

@@ -16,7 +16,6 @@
 
 using System;
 using System.IO;
-using System.Runtime.InteropServices;
 using System.Threading;
 using MemoryPack;
 
@@ -37,40 +36,29 @@ public static class BumperCatalogStore {
 	const string CatalogFileExtension = ".vbrcat";
 	static ReadOnlySpan<byte> FormatMagic => "VBRCAT01"u8;
 
-	/// <summary>Resolves the catalog file's full path: always <c>{folder}/{sanitized catalog
-	/// name}.vbrcat</c>. <paramref name="explicitFolder"/> is the containing folder when given
-	/// (<c>--catalog-db-folder</c>, itself not required to exist yet — created on first save), else
-	/// <see cref="GetDefaultCatalogFolder"/>.</summary>
-	public static string ResolveCatalogPath(string? explicitFolder, string catalogName) {
-		string folder = string.IsNullOrWhiteSpace(explicitFolder) ? GetDefaultCatalogFolder() : explicitFolder;
-		return Path.Combine(folder, SanitizeFileName(catalogName) + CatalogFileExtension);
-	}
+	/// <summary>Resolves the catalog file's full path: <paramref name="explicitPath"/> verbatim when
+	/// given (callers pass a <see cref="FileInfo"/>'s own <c>.FullName</c>, which already resolves a
+	/// relative <c>--catalog-db</c> against the current directory at construction time — see
+	/// docs/iterativeplan.md, "File-path DB options" entry), else <see cref="DefaultCatalogPath"/>.
+	/// Any extension (or none) is accepted — every <see cref="Load"/> is magic-header-checked, so the
+	/// extension never gated anything; it was only ever a naming convention for the derived-default
+	/// path.</summary>
+	public static string ResolvePath(string? explicitPath) =>
+		string.IsNullOrWhiteSpace(explicitPath) ? DefaultCatalogPath() : explicitPath;
+
+	/// <summary>The catalog used when <c>--catalog-db</c> is omitted: <c>default.vbrcat</c> under
+	/// <see cref="GetDefaultCatalogFolder"/> — unifies every command on one convention (add-bumper
+	/// previously required an explicit catalog name; remove/list-bumpers already defaulted to
+	/// "default").</summary>
+	public static string DefaultCatalogPath() => Path.Combine(GetDefaultCatalogFolder(), "default" + CatalogFileExtension);
 
 	/// <summary>A dedicated VBR-specific folder, sibling to (not inside) the library database's own —
 	/// mirrors <c>LibraryDatabaseStore.GetDefaultDatabaseFolder</c>'s per-OS resolution algorithm rooted
 	/// at a "catalog" leaf instead of "database" so the two stores never collide. Created if missing.</summary>
 	public static string GetDefaultCatalogFolder() {
-		string baseFolder;
-		if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows)) {
-			baseFolder = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-		}
-		else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX)) {
-			baseFolder = Path.Combine(
-				Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "Library", "Application Support");
-		}
-		else {
-			baseFolder = Environment.GetEnvironmentVariable("XDG_STATE_HOME")
-				?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".local", "state");
-		}
-		string folder = Path.Combine(baseFolder, "VideoBumperRemover", "catalog");
+		string folder = Path.Combine(Configuration.VbrPaths.GetStateRootFolder(), "catalog");
 		Directory.CreateDirectory(folder);
 		return folder;
-	}
-
-	static string SanitizeFileName(string name) {
-		foreach (char c in Path.GetInvalidFileNameChars())
-			name = name.Replace(c, '_');
-		return name.Length == 0 ? "library" : name;
 	}
 
 	/// <summary>Loads the catalog at <paramref name="path"/>, or a fresh empty one if it doesn't
@@ -105,8 +93,10 @@ public static class BumperCatalogStore {
 		MoveIntoPlace(tempPath, path);
 	}
 
-	const int MoveRetryAttempts = 4;
-	static readonly TimeSpan MoveRetryDelay = TimeSpan.FromMilliseconds(150);
+	// Config-aware since 2026-08-12 (VbrConfig.Current.Storage) -- shared with
+	// LibraryDatabaseStore's identical retry mechanics, one config key each, not two copies.
+	static int MoveRetryAttempts => Configuration.VbrConfig.Current.Storage.SaveRetryAttempts;
+	static TimeSpan MoveRetryDelay => TimeSpan.FromMilliseconds(Configuration.VbrConfig.Current.Storage.SaveRetryDelayMilliseconds);
 
 	/// <summary>Same transient-lock retry as <c>LibraryDatabaseStore</c>'s own <c>MoveIntoPlace</c> —
 	/// see that method's doc comment for the full rationale (real-time antivirus on a freshly
