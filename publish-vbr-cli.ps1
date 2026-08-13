@@ -87,6 +87,21 @@ Write-Host "Publishing VBR.CLI ($Rid, $Layout$(if ($Aot) { ' / Native AOT' }))..
 & dotnet publish @publishArgs
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed (exit $LASTEXITCODE)" }
 
+# vbr.config.json (docs/iterativeplan.md, "File-path DB options" entry, Part 3) is discovered via
+# the CURRENT directory at runtime, not the exe's own folder -- copying it into the output root
+# means a target machine running vbr-cli.exe from inside this published folder (the common case for
+# both layouts, e.g. test-onnx-directml.ps1's own benchmarking workflow) picks it up automatically.
+# Warns rather than throws: an absent config file is a valid state (built-in defaults apply), same
+# convention as the ai\ folder's own "skip if not found" handling below.
+$configSrc = Join-Path $PSScriptRoot "vbr.config.json"
+if (Test-Path $configSrc) {
+    Copy-Item $configSrc $outDir -Force
+    Write-Host "Copied vbr.config.json into the output."
+}
+else {
+    Write-Warning "vbr.config.json not found at $configSrc -- skipping. The published exe will use built-in defaults until one is placed alongside it."
+}
+
 if ($Layout -eq "Loose") {
     $testScriptSrc = Join-Path $PSScriptRoot "test-onnx-directml.ps1"
     if (Test-Path $testScriptSrc) {

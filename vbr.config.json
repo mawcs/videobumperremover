@@ -1,0 +1,155 @@
+{
+	// vbr.config.json -- every value here is currently set to VBR's built-in default, so this file
+	// changes nothing until you edit something. Comments and trailing commas are fine (the loader
+	// tolerates both). Precedence: built-in default < this file < an explicit CLI flag -- a flag you
+	// type always wins over whatever's set here.
+	//
+	// For the static-image / short-dark-bumper false-positive investigation, start with
+	// frameQuality.darkOverrideDetail and frameQuality.darkRejectPercent (what makes a dark frame
+	// "usable" at all) and matching.presenceThreshold (how strong a single-frame match has to be to
+	// count as "present") -- those are the three most directly implicated by what you've been seeing.
+	//
+	// Unknown keys and out-of-range values fail loudly on the next command you run, naming exactly
+	// what's wrong -- safe to experiment.
+
+	"frameQuality": {
+		// Minimum mean horizontal luma delta (0-255 scale) for a NON-dark frame to count as
+		// distinctive. Range: >= 0. Default: 1.0
+		"minDetail": 1.0,
+
+		// How much detail a majority-dark frame needs before the dark-pixel veto is waived (higher
+		// bar than minDetail -- a dark frame gets less benefit of the doubt). Range: >= 0.
+		// Default: 2.0 -- this is the one that let short/dark bumpers work at all, and the prime
+		// suspect for the false positives you're chasing. Try raising it (fewer dark frames admitted,
+		// may reject real bumpers again) or lowering it (opposite trade).
+		"darkOverrideDetail": 2.0,
+
+		// Percentage of pixels that must be "dark" (R,G,B all <= 0x20) for a frame to count as
+		// majority-dark at all, triggering the darkOverrideDetail check instead of minDetail.
+		// Range: 0-100. Default: 80.0
+		"darkRejectPercent": 80.0
+	},
+
+	"matching": {
+		// Visual: cosine similarity (0-1] at or above which a single clip frame counts as "present"
+		// in a candidate. This is the exact number your false-positive data showed can be beaten by
+		// unrelated content (a false positive scored higher than a confirmed true positive on this
+		// same signal) -- raising it will NOT reliably fix that class of false positive, see the
+		// "Per-bumper matching profiles" entry in iterativeplan.md for why. Default: 0.90
+		"presenceThreshold": 0.90,
+
+		// Rigid (VDF) matcher's own hit threshold -- corroboration only, never gates the decision.
+		// No CLI flag exists for this; this file is the only way to tune it. Range: (0, 1].
+		// Default: 0.89
+		"rigidHitThreshold": 0.89,
+
+		// pHash: Hamming similarity (0-1] at or above which a clip frame counts as present.
+		// Experimental signal, narrower true/false-positive margin than visual in real testing.
+		// Range: (0, 1]. Default: 0.96
+		"phashPresenceThreshold": 0.96,
+
+		// Audio: similarity (0-1] at or above which a file is flagged as a match. Contributes
+		// nothing for silent bumpers. Range: (0, 1]. Default: 0.80
+		"audioMinSimilarity": 0.80
+	},
+
+	"sampling": {
+		// match/remove's shared dense sample interval, seconds. Range: > 0. Default: 1.0
+		"matchSampleIntervalSeconds": 1.0,
+
+		// add-bumper's own dense sample interval, seconds -- denser than match/remove by default
+		// since bumper clips are always short. Range: > 0. Default: 0.2
+		"addBumperSampleIntervalSeconds": 0.2,
+
+		// scan's edge-boundary: how deep from each file's true BOF/EOF is sampled densely, seconds.
+		// Range: >= 0. Default: 20.0
+		"scanEdgeBoundarySeconds": 20.0,
+
+		// scan's dense interval within the edge boundary, seconds. Range: > 0. Default: 0.2
+		"scanDenseIntervalSeconds": 0.2,
+
+		// scan's sparse interval across the whole file, seconds. Range: > 0. Default: 4.0
+		"scanSparseIntervalSeconds": 4.0,
+
+		// match/remove's search-length slack added to --clip-length when --search-length is
+		// omitted, seconds. Range: >= 0. Default: 20.0
+		"searchLengthSlackSeconds": 20.0,
+
+		// Safety ceiling on frames sampled per zone/region (a single dense or sparse pass). One
+		// shared value, previously three independently hardcoded copies. Range: >= 1. Default: 400
+		"maxFramesPerZone": 400,
+
+		// Headroom added to scan's sparse-pass frame cap above what the probed duration implies.
+		// Range: >= 0. Default: 20
+		"sparseFrameCapMargin": 20
+	},
+
+	"removal": {
+		// How far before the arithmetic end-region cut point to require a safe keyframe (stream-copy
+		// only), seconds. Range: >= 0. Default: 1.0
+		"endCutOvershootSafetyMarginSeconds": 1.0,
+
+		// How far back from the computed cut point to search for a safe keyframe (stream-copy only),
+		// seconds. Range: > 0. Default: 30.0
+		"keyframeSearchWindowSeconds": 30.0,
+
+		// CPU x264/x265 re-encode preset. Default: "medium"
+		"reEncodePreset": "medium",
+
+		// Re-encode audio codec (used when audio can't be stream-copied). Default: "aac"
+		"reEncodeAudioCodec": "aac",
+
+		// Re-encode audio bitrate. Default: "192k"
+		"reEncodeAudioBitrate": "192k",
+
+		// H.264 quality target, shared between the CPU -crf and every GPU vendor's own quality flag.
+		// Range: 0-51 (lower is higher quality). Default: 22
+		"h264Quality": 22,
+
+		// HEVC/H.265 quality target, same sharing as h264Quality. Range: 0-51. Default: 24
+		"hevcQuality": 24,
+
+		// VP9 -crf (CPU-only, no GPU row exists for VP9). Range: 0-63. Default: 31
+		"vp9Crf": 31,
+
+		// NVENC -preset. Default: "p5"
+		"gpuNvencPreset": "p5",
+
+		// QSV -preset. Default: "slow"
+		"gpuQsvPreset": "slow",
+
+		// Stream-copy extraction: how far the actual vs. requested duration can drift before it's
+		// treated as a padded/corrupt result, seconds. Range: >= 0. Default: 2.0
+		"streamCopyDurationToleranceSeconds": 2.0,
+
+		// --validate-files duration sanity-check tolerance, seconds. Range: >= 0. Default: 2.0
+		"validateFilesDurationToleranceSeconds": 2.0
+	},
+
+	"scan": {
+		// How often the database is checkpointed to disk mid-scan, seconds. Range: > 0.
+		// Default: 30.0
+		"checkpointIntervalSeconds": 30.0
+	},
+
+	"storage": {
+		// How many times a catalog/database save retries a transient file-lock failure before
+		// giving up. Shared by both stores. Range: >= 1. Default: 4
+		"saveRetryAttempts": 4,
+
+		// Delay between save retries, milliseconds. Range: >= 0. Default: 150.0
+		"saveRetryDelayMilliseconds": 150.0
+	},
+
+	"limits": {
+		// add-bumper --label max length, characters. Range: >= 1. Default: 30
+		"maxLabelLength": 30,
+
+		// add-bumper --description max length, characters. Range: >= 1. Default: 255
+		"maxDescriptionLength": 255,
+
+		// Highest DXGI device index tried for DirectML, only consulted when adapter enumeration
+		// itself found nothing to iterate. Range: >= 0. Default: 4
+		"maxDirectMlDeviceIdToTry": 4
+	}
+}
