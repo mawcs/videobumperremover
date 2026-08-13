@@ -368,6 +368,15 @@ was flagged right after the initial scaffold and fixed before anything else was 
 
 ## Open / next steps
 
+- [ ] **`match`/`remove` have no way to surface `ScanTelemetry`'s debug/trace tiers (flagged
+  2026-08-13).** `ScanCommand` is the only place that sets `ScanTelemetry.DebugEnabled`/`Enabled`
+  and subscribes to `DebugNoted`/`Measured` — `MatchingSession`'s own per-candidate
+  `ScanTelemetry.NoteDebug` calls (e.g. the "using cached database fingerprint -- no audio decode"
+  line, moved off `--verbose` 2026-08-13 for being too chatty on a real library) are currently
+  no-ops for `match`/`remove`: nothing ever sets `DebugEnabled`/subscribes, so the line goes
+  nowhere. Needs either a `--console-info`-style tiered flag mirroring `scan`'s own (bigger, more
+  consistent with scan), or a minimal "--verbose implies debug tier too" wiring (smaller, less
+  granular) — not decided, not built.
 - [ ] **`VBR.Tests` has no coverage of `SignalResult`/`MatchingSession`'s multi-signal decision
   logic (flagged 2026-08-13, docs/iterativeplan.md's "Multi-signal corroboration" entry).** The
   2026-08-13 change making pHash mandatory (when it ran) and audio conditionally mandatory (when it

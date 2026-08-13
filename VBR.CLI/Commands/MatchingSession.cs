@@ -17,6 +17,7 @@
 using System.Linq;
 using VBR.Core.Catalog;
 using VBR.Core.Database;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
 using VBR.Core.Fingerprinting;
 using VBR.Core.Matching;
@@ -322,9 +323,13 @@ internal sealed class MatchingSession : IDisposable {
 		}
 
 		if (WantsAudio) {
-			if (verboseLogging)
-				Logger.Instance.Info($"[audio] '{Path.GetFileName(dbEntry.Path)}': using cached database fingerprint " +
-					$"({dbEntry.AudioFingerprint?.Length ?? 0} blocks) -- no audio decode.");
+			// Debug tier, not --verbose (moved 2026-08-13 -- this fires once per candidate and was
+			// drowning out --verbose's actual per-run diagnostics on a real library). Currently a
+			// no-op for match/remove: only ScanCommand wires ScanTelemetry.DebugEnabled/subscribes
+			// to DebugNoted today, so this line goes nowhere until something opts in -- see the
+			// PROGRESS.md TODO this is filed under.
+			ScanTelemetry.NoteDebug($"[audio] '{Path.GetFileName(dbEntry.Path)}': using cached database fingerprint " +
+				$"({dbEntry.AudioFingerprint?.Length ?? 0} blocks) -- no audio decode.");
 			audioResult = AudioBumperMatcher.MatchFingerprints(
 				referenceAudioFingerprint, dbEntry.AudioFingerprint, ClipRegion.For(region, searchLength), minSimilarity);
 		}

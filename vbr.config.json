@@ -22,12 +22,12 @@
 		// Default: 2.0 -- this is the one that let short/dark bumpers work at all, and the prime
 		// suspect for the false positives you're chasing. Try raising it (fewer dark frames admitted,
 		// may reject real bumpers again) or lowering it (opposite trade).
-		"darkOverrideDetail": 2.0,
+		"darkOverrideDetail": 1.0,
 
 		// Percentage of pixels that must be "dark" (R,G,B all <= 0x20) for a frame to count as
 		// majority-dark at all, triggering the darkOverrideDetail check instead of minDetail.
 		// Range: 0-100. Default: 80.0
-		"darkRejectPercent": 80.0
+		"darkRejectPercent": 99.0
 	},
 
 	"matching": {
@@ -36,7 +36,7 @@
 		// unrelated content (a false positive scored higher than a confirmed true positive on this
 		// same signal) -- raising it will NOT reliably fix that class of false positive, see the
 		// "Per-bumper matching profiles" entry in iterativeplan.md for why. Default: 0.90
-		"presenceThreshold": 0.90,
+		"presenceThreshold": 0.96,
 
 		// Rigid (VDF) matcher's own hit threshold -- corroboration only, never gates the decision.
 		// No CLI flag exists for this; this file is the only way to tune it. Range: (0, 1].
@@ -50,7 +50,7 @@
 
 		// Audio: similarity (0-1] at or above which a file is flagged as a match. Contributes
 		// nothing for silent bumpers. Range: (0, 1]. Default: 0.80
-		"audioMinSimilarity": 0.80
+		"audioMinSimilarity": 0.90
 	},
 
 	"sampling": {
@@ -59,17 +59,17 @@
 
 		// add-bumper's own dense sample interval, seconds -- denser than match/remove by default
 		// since bumper clips are always short. Range: > 0. Default: 0.2
-		"addBumperSampleIntervalSeconds": 0.2,
+		"addBumperSampleIntervalSeconds": 0.1,
 
 		// scan's edge-boundary: how deep from each file's true BOF/EOF is sampled densely, seconds.
 		// Range: >= 0. Default: 20.0
 		"scanEdgeBoundarySeconds": 20.0,
 
 		// scan's dense interval within the edge boundary, seconds. Range: > 0. Default: 0.2
-		"scanDenseIntervalSeconds": 0.2,
+		"scanDenseIntervalSeconds": 0.1,
 
 		// scan's sparse interval across the whole file, seconds. Range: > 0. Default: 4.0
-		"scanSparseIntervalSeconds": 4.0,
+		"scanSparseIntervalSeconds": 2.0,
 
 		// match/remove's search-length slack added to --clip-length when --search-length is
 		// omitted, seconds. Range: >= 0. Default: 20.0
@@ -142,8 +142,7 @@
 	},
 
 	"limits": {
-		// add-bumper --label max length, characters. Range: >= 1. Default: 80 (raised from 30,
-		// 2026-08-13 -- 30 proved too tight for real bumper labels in practice).
+		// add-bumper --label max length, characters. Range: >= 1. Default: 30
 		"maxLabelLength": 80,
 
 		// add-bumper --description max length, characters. Range: >= 1. Default: 255
