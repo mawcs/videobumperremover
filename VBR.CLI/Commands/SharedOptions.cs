@@ -121,29 +121,30 @@ internal static class SharedOptions {
 		return false;
 	}
 
-	// Not Required=true on any of these three: match always needs them (checked manually in its own
-	// action, same effect as the old declarative Required), but remove doesn't when --bumper-label
-	// supplies the bumper instead (docs/iterativeplan.md, "Utilizing Databases" entry) — and since
-	// these Option instances are shared between commands, "required" can't be a per-command toggle
-	// on the Option itself. Region is Option<ClipEdge?> (not Option<ClipEdge>) specifically so
-	// "omitted" is observable as null instead of silently defaulting to ClipEdge.begin.
+	// Not Required=true on any of these three: add-bumper always needs them (checked manually in its
+	// own action, same effect as the old declarative Required), but match/remove don't when
+	// --bumper-label supplies the bumper instead (docs/iterativeplan.md, "Utilizing Databases" entry
+	// -- extended from remove-only to match too, 2026-08-13) — and since these Option instances are
+	// shared between commands, "required" can't be a per-command toggle on the Option itself. Region
+	// is Option<ClipEdge?> (not Option<ClipEdge>) specifically so "omitted" is observable as null
+	// instead of silently defaulting to ClipEdge.begin.
 	internal static readonly Option<FileInfo> ClipFrom = new("--clip-from") {
 		Description = "Source video containing the bumper. The reference clip is extracted from " +
-			"it internally — this never takes a pre-cut clip file. Required, unless remove's " +
-			"--bumper-label is given instead.",
+			"it internally — this never takes a pre-cut clip file. Required, unless " +
+			"--bumper-label is given instead (match/remove only).",
 	};
 
 	internal static readonly Option<ClipEdge?> Region = new("--region") {
 		Description = "Which edge the bumper lives at (begin|end). Drives both reference-clip " +
 			"extraction from --clip-from and the search window in each --library file — a bumper " +
-			"lives at one edge, so one choice governs both. Required, unless remove's " +
-			"--bumper-label is given instead (the catalog entry's own region is used then).",
+			"lives at one edge, so one choice governs both. Required, unless --bumper-label is " +
+			"given instead (match/remove only; the catalog entry's own region is used then).",
 	};
 
 	internal static readonly Option<TimeSpan> ClipLength = new("--clip-length") {
 		Description = "How much of --clip-from to extract as the reference clip. A plain number " +
-			"of seconds, or suffixed like '8s' / '5.1s'. Required, unless remove's --bumper-label " +
-			"is given instead (the catalog entry's own measured duration is used then).",
+			"of seconds, or suffixed like '8s' / '5.1s'. Required, unless --bumper-label is given " +
+			"instead (match/remove only; the catalog entry's own measured duration is used then).",
 		CustomParser = r => ParseDurationArg(r, TimeSpan.Zero),
 	};
 

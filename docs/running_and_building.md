@@ -111,6 +111,26 @@ Both regions are validated end to end (2026-07-18): begin-region Netflix-ident t
 positives vs 0 false positives across two unrelated libraries, end-stack regression clean — the
 recorded numbers live in [`iterativeplan.md`](iterativeplan.md) §C.
 
+**Both the bumper and the library can each independently be ad hoc or persisted** (docs/iterativeplan.md,
+"Utilizing Databases" — extended from `remove`-only to `match` too, 2026-08-13), exactly the same four
+combinations `vbr remove` supports (see that section below) minus the removal step itself:
+
+```sh
+# ad hoc library + a named bumper from a catalog -- no re-extraction of the bumper
+dotnet run --project VBR.CLI -- match --library "D:\Media\Show" --bumper-label "Netflix ident" --catalog-db "my-bumpers.vbrcat"
+
+# a vbr scan'd library database + an ad hoc bumper clip -- no re-scan of any candidate
+dotnet run --project VBR.CLI -- match --library-db "my-show.vbrdb" --clip-from "D:\Media\Show\S01E01.mkv" --region end --clip-length 8s
+
+# both persisted -- zero ffmpeg/ONNX work for matching at all
+dotnet run --project VBR.CLI -- match --library-db "my-show.vbrdb" --bumper-label "Netflix ident" --catalog-db "my-bumpers.vbrcat"
+```
+
+- `--bumper-label`/`--catalog-db` and `--library-db` — same options, same defaults, same
+  frameQuality staleness warning, as `vbr remove` (see that section below for the full
+  description) — this is the natural way to dry-run/investigate a catalog-and-scanned-library
+  setup before committing to an actual `remove`.
+
 ### Run — `vbr remove`
 
 ```sh

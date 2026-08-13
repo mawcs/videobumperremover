@@ -94,11 +94,19 @@ internal static class RemoveCommand {
 			"summary as the console, plus a header recording the run's parameters.",
 	};
 
+	// --label is an alias, not a separate option (added 2026-08-13): before catalog/library
+	// collapsed onto one --catalog-db/--library-db pair each, --bumper-label needed to stay
+	// distinguishable from a same-named library-side label option -- that distinction is gone now,
+	// and the two-name split had bothered the maintainer for a while. --bumper-label remains the
+	// canonical/documented name (matches add-bumper's own --label in spirit -- "the label of the
+	// bumper" -- without colliding with it, since add-bumper is a different Command with its own
+	// independent option namespace); --label is accepted as a shorter alias on this command only.
 	static readonly Option<string> BumperLabel = new("--bumper-label") {
 		Description = "Use a named bumper from a catalog instead of an ad hoc --clip-from clip -- " +
 			"looked up (case-insensitively) in --catalog-db, or the default catalog if that's not " +
 			"given. The catalog entry's own region and measured duration are used; " +
-			"--clip-from/--region/--clip-length are invalid together with this.",
+			"--clip-from/--region/--clip-length are invalid together with this. Alias: --label.",
+		Aliases = { "--label" },
 	};
 
 	internal static Command Build() {

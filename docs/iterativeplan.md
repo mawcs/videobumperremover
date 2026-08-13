@@ -870,6 +870,24 @@ themselves — `VBR.Tests` doesn't reference `VBR.CLI` (the same pre-existing, a
 `add-bumper`/`list-bumpers` note), so verification of the CLI wiring itself follows this project's
 established live-smoke-test convention instead.
 
+### Extended to `match` (2026-08-13)
+
+**Status: implemented, built, and smoke-tested.** This entry originally scoped both database axes
+to `remove` only ("Modify the `remove` command to..." — see the plan text above). The maintainer
+asked for the same support on `match`, having expected it was already there. Mechanical, since
+nothing above was actually `remove`-specific under the hood: `MatchCommand` gained the identical
+`--bumper-label`/`--catalog-db`/`--library-db` options, validation, catalog/database resolution,
+and staleness-warning logic `RemoveCommand` already had — `MatchingSession.PrepareFromCatalogEntry`/
+`CompareUsingDatabase` were already command-agnostic, so `match`'s per-file loop just gained the
+same `candidateDbEntries is not null ? CompareUsingDatabase : Compare` branch `remove`'s loop has,
+minus the removal call. `--clip-from`/`--region`/`--clip-length`'s shared `SharedOptions`
+descriptions, which previously said "unless remove's `--bumper-label`," were corrected to name
+both commands rather than just one now-stale one. `vbr match` is the natural dry-run/investigation
+tool for a catalog-and-scanned-library setup before committing to an actual `remove`, so this
+closes a real, if accidental, capability gap rather than adding new surface area. Build + full test
+suite (98 passing) unaffected; `match --help`/`remove --help` smoke-tested to confirm identical
+option sets on the shared axes.
+
 ## Bumper CRUD Part 1 — implemented (2026-07-29)
 
 **Status: implemented and live-verified.** Built exactly to the plan below.
