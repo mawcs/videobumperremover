@@ -142,8 +142,9 @@
 	},
 
 	"limits": {
-		// add-bumper --label max length, characters. Range: >= 1. Default: 30
-		"maxLabelLength": 30,
+		// add-bumper --label max length, characters. Range: >= 1. Default: 80 (raised from 30,
+		// 2026-08-13 -- 30 proved too tight for real bumper labels in practice).
+		"maxLabelLength": 80,
 
 		// add-bumper --description max length, characters. Range: >= 1. Default: 255
 		"maxDescriptionLength": 255,

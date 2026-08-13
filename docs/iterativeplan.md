@@ -4,6 +4,73 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Multi-signal corroboration: pHash mandatory, audio conditionally mandatory — implemented (2026-08-13)
+
+**Status: built, tested, live-smoke-tested.** Prompted by real dogfooding evidence (config file,
+`--sample-interval 0.1s`, dense zone widened to 2s, `presenceThreshold` raised to 0.96): the first
+12 bumpers added were 100% accurate, zero false positives. Bumper #13 (5.7s, high-motion) produced
+2 false positives against unrelated dark-motion and full-color-motion content. Critically,
+`minDetail`/`darkOverrideDetail` pushed to 50-55 and `darkRejectPercent` changes had **zero**
+effect — ruling out the dark-content-aliasing mechanism from the 2026-08-07/2026-08-12 investigation
+for this bumper specifically. Combined with `presenceThreshold` already at 0.96 not stopping it,
+this reconfirmed the earlier finding (a false positive can outscore a true positive on the exact
+visual signal a threshold would tighten) generalizes beyond dark content — visual alone, tuned as
+hard as a single signal can be, isn't always enough. The maintainer asked to start using pHash (and
+asked about audio) as real corroborating signals rather than fallback-only, deliberately setting
+aside the rigid matcher (confirmed, this session, to not even be computed in the actual
+`MatchMixedDensity` code path — a real engineering task, not a flag flip — see the code-verified
+finding two exchanges earlier in the session transcript).
+
+### Design
+
+**Old decision rule** (`SignalResult.Present`, unchanged since this project's earliest matching
+work): `Visual?.Present ?? Audio?.Present ?? PHash?.Present ?? false` — whichever signal ran decided
+alone, in priority order; audio/pHash were corroboration in name only, never actually required.
+
+**New decision rule:** when visual ran, it must still agree — same as before — but every *other*
+signal that both ran (per `--detection-mode`) and is actually *meaningful for this specific bumper*
+must now agree too:
+
+- **pHash** — unconditionally mandatory whenever it ran (`--detection-mode all`). No carve-out
+  needed: pHash and visual share the exact same upfront usable-frame gate (both come from one
+  `MixedDensitySampler.GatherFrames` call), so if visual could run at all, pHash's clip-side data is
+  equally real — there's no scenario where pHash's answer would be structurally meaningless while
+  visual's isn't.
+- **Audio** — mandatory whenever it ran (`--detection-mode both|all`) *and* the reference clip's own
+  audio is real (`MatchingSession.ReferenceHasUsableAudio`, mirroring the exact `Length: >= 2`
+  Chromaprint-block check `AudioBumperMatcher.MatchFingerprints` already used internally to
+  short-circuit on "no usable audio fingerprint on the reference clip"). This is the direct answer
+  to "can audio handle silent bumpers as well as bumpers with sound" — not a smarter fingerprint
+  algorithm (Chromaprint is unchanged), a caller that knows when the algorithm's answer means
+  anything. A silent/near-silent bumper's `Audio` result is still computed and still shown (for
+  transparency) but never vetoes a match it structurally cannot judge; a bumper with real,
+  distinguishing audio gets audio as a genuine, mandatory corroborator, same as pHash.
+- When visual *didn't* run at all (`--detection-mode audio|phash`), the old priority-fallback
+  behavior is unchanged — whichever single signal ran decides alone. This is a two-signal-minimum
+  gate, not a re-architecture of every mode.
+
+**Known, deliberately unaddressed limitation:** `ReferenceHasUsableAudio`'s `>= 2 blocks` predicate
+is "has *some* audio content," not "has *distinguishing* audio content" — a generic room-tone/noise
+bumper could pass this check yet be just as audio-indistinguishable as true silence, a possible
+audio-side echo of the video dark-frame-aliasing problem this project has already hit twice. Not
+built against without real evidence, per this project's own established methodology — flagged here
+so a future false positive traced to "audio agreed, but only because both sides are generic noise"
+isn't a surprise.
+
+**Implementation:** `SignalResult` gained an `AudioApplicable` field (set from
+`MatchingSession.ReferenceHasUsableAudio` at both `Compare`/`CompareUsingDatabase` construction
+sites) and its `Present` property now runs the rule above instead of the old `??` chain. Added
+`SignalResult.CombinedDetail` (every computed signal's detail string, concatenated — same shape
+`MatchRow`/`RemoveRow.ToLine()` already built per-row) and used it in `RemoveCommand`'s "Match
+found" progress line and the removal manifest's `MatchDetail`, replacing the old first-non-null
+chain there too — showing only visual's detail on a match that now depends on multiple signals
+agreeing would have been actively misleading. `DetectionMode`'s own doc comment and
+`running_and_building.md`'s `vbr match` section updated to state the new rule plainly ("audio as an
+opt-in accelerator" was no longer accurate). Build clean, full suite (98 tests) unaffected — no
+existing test exercised `both`/`all` mode's gating specifically, so this is a real coverage gap
+worth closing in a follow-up, not proof the new rule is correct beyond compiling and preserving
+`visual`/`audio`/`phash`-alone behavior.
+
 ## Per-bumper matching profiles — design sketch (2026-08-12)
 
 **Status: design sketch for discussion, not approved or built — several sub-decisions below are

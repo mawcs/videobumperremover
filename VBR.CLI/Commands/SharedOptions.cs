@@ -30,11 +30,18 @@ using VDF.Core.Utils;
 namespace VBR.CLI.Commands;
 
 /// <summary>Which signal(s) a command runs. Lowercase members — see VBR.Core.Extraction.ClipEdge
-/// for why. <c>both</c> (visual+audio) predates pHash and keeps its original meaning for backward
-/// compatibility; <c>all</c> adds pHash alongside both. <c>phash</c> alone makes pHash the sole
-/// decision-maker — genuinely alternate, not just corroboration, per the maintainer's direction —
-/// but be aware it has so far underperformed badly as a standalone signal in real testing (see
-/// --phash-presence-threshold's help text).</summary>
+/// for why. <c>both</c> (visual+audio) predates pHash; <c>all</c> adds pHash alongside both.
+/// <c>phash</c> alone makes pHash the sole decision-maker — genuinely alternate, not just
+/// corroboration, per the maintainer's direction — but be aware it has so far underperformed badly
+/// as a standalone signal in real testing (see --phash-presence-threshold's help text).
+///
+/// <b>Every signal a mode includes must agree, not just whichever ran first</b> (revised
+/// 2026-08-13 — see <see cref="SignalResult"/>'s doc comment): <c>both</c> requires
+/// audio to also agree whenever the bumper has real audio to check (silent bumpers are exempt, not
+/// stuck failing forever — see <see cref="MatchingSession.ReferenceHasUsableAudio"/>); <c>all</c>
+/// requires pHash unconditionally on top of that. This is a real behavior change from this
+/// project's original "visual decides alone, audio/pHash are just corroboration" design — audio and
+/// pHash are no longer passengers once a mode includes them.</summary>
 internal enum DetectionMode { visual, audio, phash, both, all }
 
 /// <summary>
@@ -213,13 +220,20 @@ internal static class SharedOptions {
 		CustomParser = r => ParseInvariantFloat(r, VbrConfig.Current.Matching.AudioMinSimilarity),
 	};
 
+	// Default is 'all', not 'visual' (changed 2026-08-13) -- every signal that runs must now agree
+	// (see DetectionMode's own doc comment), so running all three by default is the "use every
+	// corroborating signal available" choice; visual/audio/phash alone are for deliberately
+	// isolating one detector (debugging, comparing signals against each other), not the normal case.
 	internal static readonly Option<DetectionMode> Mode = new("--detection-mode") {
-		Description = "Which signal(s) to run (visual|audio|phash|both|all). 'both' runs visual " +
-			"and audio (visual decides, audio corroborates) — the original two-signal meaning, " +
-			"kept for compatibility. 'all' adds pHash alongside both (visual still decides when " +
-			"it ran). 'phash' runs pHash alone as the sole decision-maker — see " +
-			"--phash-presence-threshold's note before relying on it.",
-		DefaultValueFactory = _ => DetectionMode.visual,
+		Description = "Which signal(s) to run (visual|audio|phash|both|all). Default 'all': every " +
+			"signal that runs must agree (see DetectionMode's own note) -- visual, plus pHash " +
+			"unconditionally, plus audio whenever the bumper has real audio to check (silent " +
+			"bumpers are exempt, not stuck failing forever). 'both' is the same rule minus pHash " +
+			"(visual + audio only). Use 'visual'/'audio'/'phash' alone to single out one detector " +
+			"-- for debugging or comparing signals, not the normal case. 'phash' alone has a much " +
+			"narrower true/false-positive margin than visual in real testing -- see " +
+			"--phash-presence-threshold's note before relying on it standalone.",
+		DefaultValueFactory = _ => DetectionMode.all,
 	};
 
 	// Not Required: exactly one of Library/TargetFile must be given, validated in each command's

@@ -204,8 +204,9 @@ public sealed record StorageConfig {
 
 /// <summary>Plain input-validation ceilings, unrelated to matching/sampling/removal.</summary>
 public sealed record LimitsConfig {
-	/// <summary>Original: <c>AddBumperCommand.MaxLabelLength</c>.</summary>
-	public int MaxLabelLength { get; init; } = 30;
+	/// <summary>Original: <c>AddBumperCommand.MaxLabelLength</c> (was 30 -- raised to 80, 2026-08-13,
+	/// per real dogfooding: 30 characters proved too tight for real bumper labels in practice).</summary>
+	public int MaxLabelLength { get; init; } = 80;
 
 	/// <summary>Original: <c>AddBumperCommand.MaxDescriptionLength</c>.</summary>
 	public int MaxDescriptionLength { get; init; } = 255;

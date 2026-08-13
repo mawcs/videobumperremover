@@ -25,12 +25,55 @@ using VDF.Core.Utils;
 
 namespace VBR.CLI.Commands;
 
-/// <summary>One candidate's outcome across whichever signal(s) <c>--detection-mode</c> selected.
-/// <see cref="Present"/> mirrors the decision rule <c>match</c>/<c>remove</c> have always used —
-/// whichever signal actually ran wins, in priority order — just extended by one more link for
-/// pHash: visual (if it ran) decides; otherwise audio; otherwise pHash.</summary>
-internal readonly record struct SignalResult(MatchResult? Visual, MatchResult? Audio, MatchResult? PHash) {
-	internal bool Present => Visual?.Present ?? Audio?.Present ?? PHash?.Present ?? false;
+/// <summary>
+/// One candidate's outcome across whichever signal(s) <c>--detection-mode</c> selected.
+/// <see cref="Present"/> (decided 2026-08-13, docs/iterativeplan.md — the maintainer's own real
+/// dogfooding found a bumper whose false positives survived both extreme <c>frameQuality</c> values
+/// and a raised <c>presenceThreshold</c>, i.e. visual alone, tuned as hard as a single signal can
+/// be, still wasn't enough): when visual ran, it must still agree — same as before — but every
+/// *other* signal that also ran and is actually meaningful for this bumper now has to agree too,
+/// not just corroborate optionally. "Meaningful" is the load-bearing word for audio specifically —
+/// see <see cref="AudioApplicable"/>. pHash needs no such carve-out: it shares the exact same
+/// upfront usable-frame gate visual does (both come from one <see cref="Fingerprinting.MixedDensitySampler.GatherFrames"/>
+/// call), so if visual could run at all, pHash's clip-side data is equally real. When visual
+/// *didn't* run at all (<c>--detection-mode audio|phash</c>), the old priority-fallback behavior is
+/// unchanged — whichever single signal ran decides alone.
+/// </summary>
+/// <param name="AudioApplicable">Whether the *reference* side's own audio is real enough to mean
+/// anything (mirrors <see cref="Matching.AudioBumperMatcher.MatchFingerprints"/>'s own "no usable
+/// audio fingerprint on the reference clip" check — <see cref="MatchingSession.ReferenceHasUsableAudio"/>).
+/// False for a silent/near-silent bumper: <see cref="Audio"/> is still computed and still shown in
+/// <see cref="CombinedDetail"/> for transparency, it just never vetoes a match it structurally
+/// cannot agree OR disagree with. True for a bumper with real, distinguishing audio: <see cref="Audio"/>
+/// becomes as mandatory as pHash. This is what makes audio "handle silent bumpers as well as
+/// bumpers with sound" (the maintainer's own framing) — not a smarter fingerprint algorithm, a
+/// caller that knows when the algorithm's answer is meaningful.</param>
+internal readonly record struct SignalResult(MatchResult? Visual, MatchResult? Audio, MatchResult? PHash, bool AudioApplicable) {
+	internal bool Present {
+		get {
+			if (Visual is not { } visual)
+				return Audio?.Present ?? PHash?.Present ?? false;
+			bool ok = visual.Present;
+			if (PHash is { } phash) ok &= phash.Present;
+			if (Audio is { } audio && AudioApplicable) ok &= audio.Present;
+			return ok;
+		}
+	}
+
+	/// <summary>Every computed signal's own detail string, concatenated — same shape/order
+	/// <c>MatchRow</c>/<c>RemoveRow.ToLine()</c> already build per-row from these same three fields,
+	/// centralized here so single-line call sites (a "Match found" progress message, a removal
+	/// manifest's <c>MatchDetail</c>) show every signal that decided the outcome, not just whichever
+	/// happened to be first in an old priority chain.</summary>
+	internal string? CombinedDetail {
+		get {
+			var parts = new List<string>(3);
+			if (Visual is { } visual) parts.Add($"visual: {visual.Detail}");
+			if (Audio is { } audio) parts.Add($"audio: {audio.Detail}");
+			if (PHash is { } phash) parts.Add($"phash: {phash.Detail}");
+			return parts.Count > 0 ? string.Join("  |  ", parts) : null;
+		}
+	}
 }
 
 /// <summary>
@@ -65,6 +108,13 @@ internal readonly record struct SignalResult(MatchResult? Visual, MatchResult? A
 /// four-combo matrix would otherwise have made much worse: the old code re-extracted the
 /// reference clip's own fingerprint on every single candidate via <c>AudioBumperMatcher.Match</c>;
 /// now it's computed (or reused) exactly once per run, regardless of which combo is active.
+///
+/// <b>Decision rule (revised 2026-08-13, see <see cref="SignalResult"/>'s own doc comment for the
+/// full reasoning):</b> every signal that both ran and is meaningful for this specific bumper must
+/// agree, not just whichever ran first. <see cref="ReferenceHasUsableAudio"/> is what keeps this
+/// safe for silent bumpers — audio only ever gates when the reference side actually has real audio
+/// to compare, never when it's silent/near-silent, so a silent bumper's audio result stays
+/// informational-only instead of becoming an automatic veto no candidate could ever pass.
 /// </summary>
 internal sealed class MatchingSession : IDisposable {
 	readonly DetectionMode mode;
@@ -87,6 +137,15 @@ internal sealed class MatchingSession : IDisposable {
 	bool WantsVisual => mode is DetectionMode.visual or DetectionMode.both or DetectionMode.all;
 	bool WantsAudio => mode is DetectionMode.audio or DetectionMode.both or DetectionMode.all;
 	bool WantsPHash => mode is DetectionMode.phash or DetectionMode.all;
+
+	/// <summary>Whether the reference clip's own audio carries enough real content for a comparison
+	/// against it to mean anything — exactly the predicate <see cref="Matching.AudioBumperMatcher.MatchFingerprints"/>
+	/// already uses internally to short-circuit ("no usable audio fingerprint on the reference
+	/// clip"), promoted here to a caller-visible fact instead of a silently-always-false result
+	/// (docs/iterativeplan.md, 2026-08-13 — see <see cref="SignalResult.AudioApplicable"/>). False
+	/// for a silent/near-silent bumper — Chromaprint blocks are ~1s each, so <c>&lt; 2</c> is
+	/// "essentially nothing was fingerprinted," not "fingerprinted but different."</summary>
+	bool ReferenceHasUsableAudio => referenceAudioFingerprint is { Length: >= 2 };
 
 	MatchingSession(DetectionMode mode, ClipEdge region, EdgeDensityProfile profile,
 			float presenceThreshold, float phashPresenceThreshold, float minSimilarity, string? dumpFramesDir, bool verboseLogging) {
@@ -235,7 +294,7 @@ internal sealed class MatchingSession : IDisposable {
 				referenceAudioFingerprint, candidateFingerprint, ClipRegion.For(region, searchLength), minSimilarity);
 		}
 
-		return new SignalResult(visualResult, audioResult, phashResult);
+		return new SignalResult(visualResult, audioResult, phashResult, ReferenceHasUsableAudio);
 	}
 
 	/// <summary>
@@ -270,7 +329,7 @@ internal sealed class MatchingSession : IDisposable {
 				referenceAudioFingerprint, dbEntry.AudioFingerprint, ClipRegion.For(region, searchLength), minSimilarity);
 		}
 
-		return new SignalResult(visualResult, audioResult, phashResult);
+		return new SignalResult(visualResult, audioResult, phashResult, ReferenceHasUsableAudio);
 	}
 
 	/// <summary>The absolute-seconds-from-BOF window a <paramref name="searchLength"/>-sized search

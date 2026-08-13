@@ -393,7 +393,7 @@ internal static class RemoveCommand {
 							string modeDescription = removalMode == RemovalMode.ReEncode
 								? "re-encode -- this may take a while for large files"
 								: "stream-copy -- fast";
-							Console.Error.WriteLine($"  Match found ({result.Visual?.Detail ?? result.Audio?.Detail ?? result.PHash?.Detail}) — removing bumper ({modeDescription})...");
+							Console.Error.WriteLine($"  Match found ({result.CombinedDetail}) — removing bumper ({modeDescription})...");
 							bool printedProgress = false;
 							void OnRemovalProgress(RemovalProgress p) {
 								printedProgress = true;
@@ -403,7 +403,7 @@ internal static class RemoveCommand {
 							}
 							try {
 								var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
-									result.Visual?.Detail ?? result.Audio?.Detail ?? result.PHash?.Detail, verbose, OnRemovalProgress, ct);
+									result.CombinedDetail, verbose, OnRemovalProgress, ct);
 								if (printedProgress) Console.Error.WriteLine();
 								outputPath = removed.OutputPath;
 								removedCount++;

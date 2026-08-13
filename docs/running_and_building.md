@@ -30,9 +30,12 @@ dotnet run --project VBR.CLI -- --help
 dotnet run --project VBR.CLI -- match --help
 ```
 
-Finds a bumper's presence across a library of videos — visual DINOv2 presence matching by
-default, audio as an opt-in accelerator, pHash as an experimental alternate signal
-(`--detection-mode visual|audio|phash|both|all`). The reference clip is always sampled internally
+Finds a bumper's presence across a library of videos (`--detection-mode visual|audio|phash|both|all`,
+default `all`) — **every signal that runs must agree, not just whichever ran first** (revised
+2026-08-13): visual, plus pHash unconditionally, plus audio whenever the bumper actually has real
+audio to check (a silent bumper is exempt — audio never vetoes a match it structurally can't judge).
+`visual`/`audio`/`phash` alone are for deliberately singling out one detector (debugging, comparing
+signals against each other), not the normal case. The reference clip is always sampled internally
 from a source video + a region — there is no way to pass a pre-cut clip file (see
 [`AGENTS.md`](../AGENTS.md) → "Clip extraction is the tool's job"):
 
