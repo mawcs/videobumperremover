@@ -4,6 +4,362 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Per-bumper matching strategy — concrete design (2026-08-13)
+
+**Status: design, not yet built — the maintainer has confirmed intent to proceed, this entry is the
+concrete shape to build against, not a decision that's already final.** Supersedes/narrows the
+2026-08-12 "Per-bumper matching profiles" sketch: that entry's `isHighRisk` auto-flagging, temporal
+clustering, and rigid-matcher-adaptation ideas are **not** part of this — none of this round's
+testing motivated them. What real testing *did* motivate, confirmed with `--dump-frames` evidence
+gathered for every one of 101 bumpers (the Analysis entry above): three genuinely different bumpers
+need three genuinely different *strategies*, not just different thresholds on one shared strategy.
+
+### Motivation (see the Analysis entry above for the full evidence; summarized here)
+
+1. **Thin/flowing-text bumpers**: dumped-frame analysis on every candidate concluded, with real
+   evidence, that current visual detection (DINOv2 frame embeddings) cannot identify this content —
+   confirmed, not assumed. Audio identifies it cleanly (100%/98% similarity). Visual/pHash need to
+   be *excludable* per bumper, not just corroborators that sometimes lose a vote.
+2. **All-black/near-black trailing segments** (the 14.7s case): nothing to fingerprint at all —
+   this was never a matching problem. Needs a mode that skips content detection entirely and just
+   cuts a known duration from a known set of files, at the user's explicit request.
+3. **Cross-fades**: the region needed to *identify* a bumper reliably (13s) can differ from the
+   region that needs to be *removed* to fully strip a transition (15s) — one `Duration` field
+   serving both purposes today is the gap.
+
+### Schema: `BumperCatalogEntry` gains a strategy and two new fields
+
+```csharp
+public enum BumperMatchingStrategy {
+    Corroborated,  // today's default and only behavior: visual + pHash (mandatory when it ran) +
+                    // audio (mandatory when it ran AND ReferenceHasUsableAudio) must all agree.
+    AudioOnly,     // visual/pHash never sampled or consulted for this bumper; audio alone decides.
+    Trim,          // no content matching at all -- unconditionally "present" for each of an
+                    // explicit TargetFiles list, nothing else.
+}
+```
+
+New `BumperCatalogEntry` fields (`MemoryPackOrder(14)`/`(15)`/`(16)` — next free slots; all
+additive, so existing entries deserialize with `MatchingStrategy = Corroborated`,
+`RemovalLength = null`, `TargetFiles = []`, i.e. today's exact behavior, unchanged):
+
+- `MatchingStrategy` (default `Corroborated`).
+- `RemovalLength` (`TimeSpan?`, default `null` = falls back to `Duration`) — the cross-fade fix.
+  Orthogonal to `MatchingStrategy`: any strategy can set it, since "how much to cut" is a separate
+  question from "how to decide presence."
+- `TargetFiles` (`string[]`, default empty) — only meaningful for `Trim`; the explicit,
+  maintainer-supplied file list a trim entry applies to. Deliberately explicit paths, not a
+  folder/glob: a `Trim` entry has no content-based safety net at all (nothing is compared, ever), so
+  an accidentally-broad target list would silently cut unrelated files with zero verification. Being
+  explicit here is a correctness requirement, not just today's simplest option.
+
+### Behavior per strategy
+
+**`Corroborated`** — no change from the previous entry's implementation.
+
+**`AudioOnly`** — `MatchingSession.PrepareFromCatalogEntry` reads `entry.MatchingStrategy` and
+overrides `WantsVisual`/`WantsPHash` to false and `WantsAudio` to true for *this session*,
+regardless of `--detection-mode`. No video frames get sampled/embedded for this bumper at all (a
+real efficiency win alongside the correctness one — this content wasn't matchable anyway).
+`SignalResult.Present` reduces to `Audio?.Present ?? false`, same as today's `audio`-only mode. Ad
+hoc bumpers (`--clip-from`, no catalog entry) have no strategy to read — `AudioOnly` is
+catalog-entry-only, same scoping as everything else in this design.
+
+**`Trim`** — structurally different enough that it doesn't fit `MatchingSession`'s loop at all, and
+isn't forced to: `RemoveCommand`, on resolving a `--bumper-label` entry with
+`MatchingStrategy == Trim`, takes an early, separate branch — candidates come from
+`entry.TargetFiles` directly (not `--library`/`--file`/`--library-db`; giving any of those alongside
+a `Trim` entry is a validation error, to avoid two conflicting candidate sources), each file is
+unconditionally treated as a match (no `MatchingSession`, no fingerprints, no ONNX/ffmpeg decode for
+matching purposes at all), and `ClipRemover.Remove` is called directly with `entry.RemovalLength ??
+entry.Duration` as the cut length. `vbr match` against a `Trim` entry is a legitimate, if
+degenerate, dry-run — reports every target file as present with a `"trim: unconditional"`-style
+detail, useful for previewing what a `remove` run would touch before actually cutting.
+
+### `add-bumper` needs a genuinely different flow for `Trim`
+
+Every other strategy still samples fingerprints from `--clip-from` the normal way. A `Trim` entry
+has no source content to sample at all — it needs a new, explicit path: something like
+`add-bumper --trim --region end --remove-length 14.7s --target-files "a.mkv;b.mkv;..."` that skips
+`--clip-from`/`--label`'s normal requiredness and the whole `BumperCatalogBuilder.AddBumper`
+sampling pipeline, writing an entry with empty `Fingerprints`/`AudioFingerprint` and
+`Status="active"` directly. Exact flag names not decided — listed here as a placeholder shape, not
+a final API.
+
+### Open questions before/while building (real decisions, not yet made)
+
+- Exact CLI flag names/shapes for all three (`--matching-strategy`? separate `--audio-only`/`--trim`
+  switches? `--remove-length`?) — not bikeshedded yet.
+- Should `Trim` support a *rescan*-style refresh if `TargetFiles` needs to grow later, or is
+  re-running `add-bumper --trim` with a fresh full list (overwrite, not append) enough for v1?
+- Does `list-bumpers` need new output to show `MatchingStrategy`/`RemovalLength`/`TargetFiles`, or
+  is that a fast-follow once the fields exist?
+- `Trim` entries have no fingerprints and thus no `FrameQualitySnapshot` staleness concern at all —
+  confirm the staleness-warning code path (`FrameQualitySnapshot.DescribeMismatchFromCurrent`)
+  degrades harmlessly (it already treats a null snapshot as "unknown, don't warn," which is exactly
+  right here — `Trim` entries would just never carry one, same as any pre-2026-08-12 entry).
+
+### TODO — suggested build order
+
+1. Add `BumperMatchingStrategy` enum + the three new `BumperCatalogEntry` fields (additive,
+   version-tolerant, zero behavior change until something sets them).
+2. `AudioOnly`: wire `MatchingSession.PrepareFromCatalogEntry`'s `Wants*` override — smallest,
+   lowest-risk slice, directly fixes the thin-text-bumper finding, no new CLI command shape needed
+   beyond however the strategy gets set on the entry.
+3. `RemovalLength`: thread through `RemoveCommand`'s `ClipRemover.Remove` call, separate from the
+   matching-side `clipLength` — fixes the cross-fade finding, independent of the other two.
+4. `Trim`: the `add-bumper --trim` flow, `RemoveCommand`'s early-branch execution path, and
+   `match`'s dry-run behavior — largest, most structurally different slice, do last.
+5. Tests: `VBR.Tests` still can't reach `MatchingSession`/`RemoveCommand` (the pre-existing,
+   already-tracked `VBR.Tests`→`VBR.CLI` project-reference gap) — at minimum, unit-test
+   `BumperMatchingStrategy`'s serialization round-trip and any pure logic that can be pulled into
+   `VBR.Core` (e.g. `RemovalLength ?? Duration` resolution), and rely on live smoke-testing for the
+   CLI wiring itself, consistent with how this project has verified CLI changes all along.
+
+## Analysis: real-library testing findings, `testing_202608131708.md` (2026-08-13)
+
+**Status: analysis only — no code changes made against this entry yet.** The maintainer ran the
+multi-signal gating change (previous entry) against their real library: config tuned to
+`presenceThreshold=0.96`, `audioMinSimilarity=0.90`, `phashPresenceThreshold=0.96`,
+`darkOverrideDetail=1.0`, `darkRejectPercent=99.0`, and denser sampling throughout
+(`--sample-interval 0.1s`/`scanDenseIntervalSeconds=0.1`/`scanSparseIntervalSeconds=2.0`) — full
+values in the repo's `vbr.config.json`. **Final, precise tally (superseding two earlier rounds of
+rougher estimates in this same entry):**
+
+- **101 bumpers attempted.** 2 failed at `add-bumper` creation outright — reason given: "either
+  complete blackness, or there was too much dark, despite some text" (98.0% creation success, 99/101).
+- **Of the 99 successfully created:** 2 failed to match *at all*, even tested against multiple
+  files; 2 matched their own origin video but failed to match on *other* files, root-caused by the
+  maintainer themselves to audio differences; the remaining 95 worked cleanly (95/99 = 96.0% clean
+  among created bumpers; 95/101 = 94.1% fully clean end to end).
+- One further bumper, outside this tally, was deliberately created purely as a diagnostic aid to
+  help investigate the non-matching ones — not a production bumper being scored pass/fail.
+
+The 2 creation failures and the 2-plus-2 post-creation failures are now cleanly, explicitly
+categorized by the maintainer — Findings 2-4 below are revised to match this categorization rather
+than the earlier, less precise merge. This entry works through `testing_202608131708.md`'s findings
+one at a time, root-causing each against the actual code rather than the symptom alone, then
+synthesizes a prioritized path forward. Nothing here is decided yet — it's the analysis the
+maintainer asked for before deciding what to build next.
+
+### The config change itself is a real, coherent finding, not just tuning
+
+`darkOverrideDetail` dropped from 2.0 to **1.0** — the exact same value as `minDetail`. Combined
+with `darkRejectPercent` raised from 80 to **99**, this doesn't just loosen the dark-pixel veto, it
+nearly **neutralizes** it: a frame now only gets the stricter "majority-dark" treatment at all if
+≥99% of its pixels are dark (vs. 80% before), and even then, the bar it has to clear
+(`darkOverrideDetail=1.0`) is now identical to what a normal, non-dark frame needs
+(`minDetail=1.0`). The two code paths in `FrameQuality.SelectUsable` now produce the same verdict
+for almost every real frame regardless of darkness. This is consistent with, and further validates,
+the finding from the bumper-#13 investigation two entries back: darkness-specific filtering wasn't
+the real mechanism behind the remaining false positives, so loosening it and leaning on multi-signal
+corroboration (previous entry) to control false positives instead is a coherent strategy, not an
+accident. Worth stating plainly since it wasn't called out in the maintainer's own notes.
+
+### Finding 1 — multi-signal gating is validated by the maintainer's own data
+
+"Adding the additional dimensions fixe[d] the previous false positives... pushing
+`audioMinSimilarity` to 0.90 eliminated the false positive while keeping the matches." This is
+real, positive confirmation that the mandatory-pHash/conditionally-mandatory-audio design (previous
+entry) does what it was built for. The one remaining case in this section (7.1s, "actually two
+bumpers together") is a different, narrower problem — adjacent/back-to-back bumpers where the
+search window catches part of a second, different bumper — and the maintainer's own hypothesis
+("might be mitigated by `remove` of the first bumper") is plausible: once the first bumper is
+physically cut, the leftover file no longer contains the confusing adjacent content. Worth
+confirming empirically once there's time, not urgent — this is a candidate-sequencing quirk, not a
+detection defect.
+
+### Finding 2 — two distinct dark-content problems, not one: creation failures vs. total match failures
+
+The maintainer's precise recount (above) splits what this entry originally treated as one
+continuous story into **two separate categories**, worth analyzing separately:
+
+**Category A — 2 pure creation failures** ("either complete blackness, or too much dark, despite
+some text"): `add-bumper` itself never produces a catalog entry — the "every sampled frame was
+filtered out" error. This is `FrameQuality.SelectUsable` correctly doing its job on genuinely
+degenerate content (true blackness has nothing to fingerprint, full stop) for at least one of the
+two, and possibly still-too-strict filtering on the other ("despite some text" suggests real,
+if faint, content that still isn't clearing `minDetail`/`darkOverrideDetail` even at today's loosened
+values). Not urgent to chase further without knowing which of the two this is — genuine blackness
+isn't fixable by loosening thresholds further (there's nothing there to detect, and admitting truly
+content-free frames reopens the original 2026-07-18 aliasing bug this whole filter exists to
+prevent); a real-but-faint case might warrant a further look at the specific frame data
+(`--dump-frames`) if it recurs.
+
+**Category B — 2 bumpers that failed to match *at all*, even against multiple candidate files**
+(distinct from Category A: these *did* get created successfully). The thin-red/white-text-on-black
+8s bumper is one of these — tested against its own source video, it produced
+`visual: present=0/63 bestCos=6% win=125`; the second dark-motion case shows the same shape
+(`present=0/42 bestCos=55%`, milder but still a real miss), and per the maintainer's new count,
+both failed uniformly across multiple files, not just the origin video specifically.
+
+`bestCos=6%` against the literal file the bumper was extracted from is a strong, unusual signal —
+not "borderline," closer to "these two frame sets share almost nothing."
+
+**Staleness ruled out, directly, by the maintainer: "There is no stale library. I deleted all of my
+libraries and catalogs and started fresh."** Both sides of every comparison in this round were built
+under today's exact `frameQuality` settings — the leading hypothesis from this entry's first draft
+is wrong and is struck here rather than left to mislead a future read. What's left, grounded in what
+*is* known rather than a fresh guess:
+
+- **Presence matching is alignment-insensitive by design** (`VisualBumperMatcher.ComparePresence`
+  is all-pairs — clip frame vs. every candidate frame, no temporal correspondence required), so a
+  coarse timing/window offset can't produce a result this low on its own; if the true occurrence is
+  anywhere inside the searched window, presence matching finds it regardless of exact alignment.
+  `audio=100%@0s` confirms the search window does cover the right position.
+- **The window sizes argue against a coverage gap too:** `win=125`/`win=148` (roughly 12.5s/14.8s at
+  today's 0.1s interval) are dense-looking counts, not the handful of samples a sparse-only pass
+  would produce — so both sides plausibly *did* densely sample the right region. Ruling out
+  staleness and coverage gaps narrows this to two live hypotheses:
+  1. **The content itself may be intrinsically hard for frame-level embedding matching** — "thin"
+     red/white text "moving and flowing" over black means most individual frames carry very little
+     stable structure (a thin colored streak on a black field). DINOv2 built its whole reputation on
+     shape/object structure; a frame with almost none may not embed into a stable, recognizable
+     point at all, so consecutive real occurrences of the *same* animation could legitimately embed
+     far apart from each other — not an aliasing problem (two different things looking similar, the
+     failure mode this project has chased all along) but its mirror image: one real thing failing to
+     look consistently like itself. This would be a first-of-its-kind finding for this project if
+     confirmed, worth treating as a real hypothesis, not an assumption.
+  2. **A genuine per-file decode/mastering difference** — if the candidate file(s) tested are a
+     different release/master than the file the bumper was extracted from (different color grading,
+     re-encode, broadcast vs. disc capture), the pixels themselves could differ enough to matter even
+     though the ident is conceptually "the same."
+- **`--dump-frames` on both the catalog entry and a failing candidate's search window, compared side
+  by side, is the direct way to tell these apart** — this project's established method (used
+  repeatedly and effectively earlier this session) for distinguishing "wrong/different content" from
+  "right content, an embedding that doesn't capture it well." This is now the single most useful next
+  step for Category B, not one option among several.
+
+### Finding 3 — "Dark Motion End Bumpers": audio is vetoing matches visual and pHash overwhelmingly agree on
+
+```text
+visual: present=61/66  bestCos=100%  win=191  |  audio: audio=70%@486s  |  phash: present=63/66  bestSim=100%  win=191
+visual: present=62/66  bestCos=99%   win=171  |  audio: audio=68%@486s  |  phash: present=63/66  bestSim=100%  win=171
+```
+
+61-63 of 66 reference frames present, `bestCos`/`bestSim` at 99-100% on both visual and pHash — about
+as strong as evidence gets — and the match still fails, because `audioMinSimilarity=0.90` rejects a
+genuine 68-70% audio similarity. This is a **real cost of the current design**, not a bug: audio was
+made mandatory whenever it's "applicable" (`MatchingSession.ReferenceHasUsableAudio`), but
+"applicable" today only means "has ≥2 real Chromaprint blocks" — it says nothing about whether the
+*threshold* chosen for standalone audio matching is the right bar for audio acting as a
+*corroborator* of an already-overwhelming visual/pHash signal. 68-70% is plausibly genuine,
+legitimate variance (different broadcast masters, loudness normalization, slightly different audio
+mixes across episodes of the same series) rather than evidence the bumper is actually absent — real
+audio similarity has more natural spread than a pristine same-file comparison would suggest. (The
+third line in the maintainer's notes, `present=0/66 bestCos=11%`, is a genuine visual miss and a
+different situation — worth the maintainer double-checking that file actually contains the bumper
+before assuming it should have matched, the same "verify, don't assume" lesson from the earlier
+Bumper 2 miscounting incident this session.)
+
+### Finding 4 — "Content Music"/"Content Audio": audio is sometimes structurally not the bumper's own signal at all
+
+This is the maintainer's own clearest diagnosis, and the numbers back it up cleanly:
+
+```text
+Match:        visual: present=23/34 bestCos=100%  |  audio: audio=100%@0s   |  phash: present=21/34 bestSim=100%
+Didn't match: visual: present=19/34 bestCos=99%    |  audio: audio=54%@15s  |  phash: present=19/34 bestSim=100%
+Didn't match: visual: present=18/34 bestCos=99%    |  audio: audio=62%@19s  |  phash: present=19/34 bestSim=100%
+```
+
+Visual and pHash are consistently near-perfect across *all three* occurrences; only audio swings
+wildly (54-100%). "The reason these don't match is that the music for the main content is used
+during the bumper" — some idents are overlaid on continuing film/show score rather than carrying
+their own fixed sting, so the "audio" isn't the bumper's signature at all, it's whatever happens to
+be playing in that particular scene of that particular piece of content. This is a genuinely
+**different** failure mode from Finding 3 (natural variance around a real signal) and from the
+silent-bumper case `ReferenceHasUsableAudio` already handles (no signal at all) — this is a *strong,
+real, but structurally meaningless* signal. No threshold adjustment fixes this: a bumper in this
+class needs audio excluded from gating entirely, the same way a silent bumper already is, but
+`ReferenceHasUsableAudio`'s "≥2 blocks" check cannot detect it, because the audio content is real.
+The "Content Audio" section (`98%@2587s` matched vs. `60%@692s`/`72%@594s` missed, again with
+uniformly-strong 95/105-present visual across all three) is the same mechanism, not a separate one.
+
+### Finding 5 — synthesis: per-bumper matching profiles are now evidenced, not just sketched
+
+Findings 2-4 are three genuinely different failure modes that all point the same direction:
+
+1. A bumper's own recipe can go stale relative to a library's cached fingerprints (Finding 2,
+   pending confirmation) — a per-*store* problem, already tracked (2026-08-12 entry).
+2. A bumper's genuine audio can have more natural variance than a fixed 0.90 bar tolerates
+   (Finding 3) — arguably wants a *different*, more forgiving bar for audio-as-corroborator than for
+   audio-as-sole-decider, not a global threshold change (raising the standalone `--min-similarity`
+   default would hurt `--detection-mode audio` alone; lowering the *corroboration* bar specifically
+   wouldn't).
+3. A bumper's audio can be real but structurally meaningless (content-borrowed score) and needs to
+   be excluded from gating entirely, the same way silence already is (Finding 4) — but this can't be
+   detected from the fingerprint alone the way silence can.
+
+None of these three is solvable with one global config number, because they're properties of
+*individual bumpers*, not of the matching algorithm as a whole. This directly confirms the
+"Per-bumper matching profiles" design sketch (2026-08-12 entry) was pointed the right direction, and
+the maintainer's own framing — "putting the parameters in the bumper," and explicit willingness to
+have "the user involved in making some of these decisions" rather than waiting for full automatic
+detection — matches that entry's own scoping almost exactly. Recommended shape for a first, useful
+slice (deliberately smaller than the full 2026-08-12 sketch, which also covered visual risk-flagging
+and temporal clustering that nothing in this round of testing motivates yet):
+
+- A per-bumper, **manually-set** `TrustAudio` (or inverse `AudioUnreliable`) flag on
+  `BumperCatalogEntry`, settable via a new `add-bumper` option (e.g. `--audio-unreliable`), honestly
+  scoped as manual because reliably *auto-detecting* "is this audio the bumper's own signal or
+  borrowed content audio" is real, unsolved scope on its own (a plausible future heuristic: compare
+  the bumper region's audio fingerprint against the fingerprint of the content immediately
+  surrounding it — suspiciously continuous audio across the bumper boundary would suggest borrowed
+  score — but that needs its own validation before trusting it, not a first-pass build). When set,
+  `MatchingSession.ReferenceHasUsableAudio`-equivalent logic returns false for that entry regardless
+  of fingerprint quality, exactly like the existing silent-bumper exemption.
+- Separately, a **lower corroboration-specific audio bar** (e.g. `matching.audioCorroborationMinSimilarity`,
+  distinct from `matching.audioMinSimilarity`, defaulting lower) addresses Finding 3 without needing
+  per-bumper intervention at all — plausibly enough on its own for that finding, worth trying before
+  reaching for a per-bumper override there too.
+
+### Finding 6 — cross-fades need a separate match length and removal length
+
+"There are some bumpers with cross-fades that are almost 2 seconds long. The length for identifying
+the clip is 13s. But, to remove everything in the cross-fade, we'd want to remove 15s." Verified
+against the code: `BumperCatalogEntry.Duration` today serves three purposes at once — the
+fingerprinting region size at `add-bumper` time, the match search-window sizing, *and* the literal
+removal arithmetic (`ClipRemover.Remove`'s `bumperLength` — begin-region cut point =
+`bumperLength.TotalSeconds`; end-region cut point = `sourceDuration - bumperLength.TotalSeconds`).
+The maintainer's own proposed fix is exactly right and cleanly scoped: add an optional
+`RemovalLength` field (nullable, defaulting to `Duration` — today's exact behavior when unset), a
+new `add-bumper` option (e.g. `--remove-length`) to set it, and thread it through `RemoveCommand`
+as the value passed to `ClipRemover.Remove` specifically, leaving the *matching*-side length
+(`Duration`) untouched. Small, additive, no risk to existing catalogs (new nullable field, old
+entries just keep using `Duration` for both purposes as they do today).
+
+### Finding 7 — 14.7s of trailing black isn't a matching problem at all
+
+11 known files, each with a fixed 14.7s of pure black at the end — genuinely unmatchable by content
+fingerprinting (there's nothing to fingerprint; this is exactly the class of content
+`FrameQuality`'s filters correctly reject as low-information) and shouldn't be forced into the
+bumper-catalog/matching machinery at all. The maintainer's own proposed fix is right: a distinct,
+unconditional time-based removal — given a fixed duration + region + a file or list of files, cut
+that duration with no fingerprint matching involved. Nearly all the needed machinery already
+exists: `ClipRemover.Remove` takes an arbitrary `bumperLength`/`region`/`sourcePath` and needs no
+fingerprints at all — what's missing is a CLI surface that skips `MatchingSession` entirely (a new
+command, or a `remove --unconditional`-style mode) and just applies the cut to every file in a given
+set. Genuinely separate feature from bumper-catalog matching, not an extension of it.
+
+### Recommended prioritization (for the maintainer's call, not decided here)
+
+Roughly cheapest/highest-confidence first:
+
+1. **Finding 2 (Category B)** — staleness is ruled out (confirmed by the maintainer, see above);
+   `--dump-frames` on the catalog entry and a failing candidate's window, compared side by side, is
+   the direct next step to tell "hard-to-embed content" apart from "different master/mastering"
+   before either becomes a code change.
+2. **Finding 3** — try a separate, lower `audioCorroborationMinSimilarity` config value. Small,
+   config-only-shaped change, directly testable against the exact data already gathered.
+3. **Finding 6** — cross-fade `RemovalLength`. Small, additive, clearly scoped, no design ambiguity
+   left to resolve.
+4. **Finding 7** — unconditional time-based removal. Small, additive, genuinely separate feature,
+   no interaction risk with the matching path.
+5. **Finding 5 / per-bumper `TrustAudio`** — real but larger scope (new catalog field, new CLI
+   option, `MatchingSession` wiring); do after 1-4 land, since some of what motivated it (Finding 3)
+   may turn out to be addressed by item 2 alone, narrowing what per-bumper override is actually still
+   needed.
+
 ## Multi-signal corroboration: pHash mandatory, audio conditionally mandatory — implemented (2026-08-13)
 
 **Status: built, tested, live-smoke-tested.** Prompted by real dogfooding evidence (config file,
@@ -72,6 +428,12 @@ worth closing in a follow-up, not proof the new rule is correct beyond compiling
 `visual`/`audio`/`phash`-alone behavior.
 
 ## Per-bumper matching profiles — design sketch (2026-08-12)
+
+**Superseded/narrowed by "Per-bumper matching strategy — concrete design" above (2026-08-13):** the
+`isHighRisk` auto-flagging and temporal-clustering ideas below were never built and aren't part of
+the design that moved forward — real testing motivated a different, more direct need (audio-only and
+trim-only matching strategies) instead. Kept below for the historical record of what was considered
+and why it wasn't what got built.
 
 **Status: design sketch for discussion, not approved or built — several sub-decisions below are
 explicitly left open, not resolved by this entry.** Prompted by the maintainer noticing that the
