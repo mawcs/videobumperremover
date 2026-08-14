@@ -31,19 +31,25 @@ namespace VBR.Core.Configuration;
 /// conventions (invariant decimal, duration suffixes). Changing any of these doesn't tune behavior,
 /// it silently breaks correctness or comparability with already-persisted data.
 ///
-/// <b><see cref="FrameQuality"/> is the only section stamped into saved catalogs/databases and
-/// checked for staleness on load</b> (see <c>BumperCatalog.FrameQualitySnapshot</c>/
-/// <c>LibraryDatabase.FrameQualitySnapshot</c>) — it is a binary usable/not-usable *gate* on which
-/// frames even get embedded, so drift between two stores means one side is being compared against
-/// content the other never saw (the exact 2026-08-07 incident). <see cref="Sampling"/> is
-/// deliberately NOT stamped: presence matching (<c>VisualBumperMatcher.ComparePresence</c>) is
-/// interval-agnostic by design (see the "does the sample interval have to match" design note in
-/// iterativeplan.md, 2026-08-11) — a coarser interval can only cost recall, never turn an
-/// already-found match into a wrong one, so treating it as a staleness signal would false-alarm on
-/// the normal, correct state.
+/// <b><see cref="FrameQuality"/> and <see cref="Audio"/> are the sections stamped into saved
+/// catalogs/databases and checked for staleness on load</b> (see <c>BumperCatalog.FrameQualitySnapshot</c>/
+/// <c>LibraryDatabase.FrameQualitySnapshot</c>/<c>BumperCatalogEntry.FrameQualitySnapshot</c>, which
+/// despite the name now covers both — see <see cref="Configuration.FrameQualitySnapshot"/>'s own doc
+/// comment) — both are binary usable/not-usable *recipes* baked directly into the stored bytes, not
+/// just a judgment applied afterward: <see cref="FrameQuality"/> gates which frames even get
+/// embedded (drift between two stores means one side is being compared against content the other
+/// never saw — the exact 2026-08-07 incident); <see cref="Audio"/>'s <c>BucketSeconds</c> changes
+/// what each stored fingerprint element *encodes* (two fingerprints built at different bucket sizes
+/// aren't directly comparable at all — docs/iterativeplan.md, "Audio bucket phase-alignment" entry,
+/// 2026-08-14). <see cref="Sampling"/> is deliberately NOT stamped: presence matching
+/// (<c>VisualBumperMatcher.ComparePresence</c>) is interval-agnostic by design (see the "does the
+/// sample interval have to match" design note in iterativeplan.md, 2026-08-11) — a coarser interval
+/// can only cost recall, never turn an already-found match into a wrong one, so treating it as a
+/// staleness signal would false-alarm on the normal, correct state.
 /// </summary>
 public sealed record VbrConfig {
 	public FrameQualityConfig FrameQuality { get; init; } = new();
+	public AudioConfig Audio { get; init; } = new();
 	public MatchingConfig Matching { get; init; } = new();
 	public SamplingConfig Sampling { get; init; } = new();
 	public RemovalConfig Removal { get; init; } = new();
@@ -75,6 +81,26 @@ public sealed record FrameQualityConfig {
 
 	/// <summary>Original: <c>Fingerprinting.FrameQuality.DarkRejectPercent</c>.</summary>
 	public double DarkRejectPercent { get; init; } = 80.0;
+}
+
+/// <summary>Audio-fingerprint recipe (<see cref="Chromaprint.ChromaContext"/>, via VDF.Core) — a
+/// fingerprint recipe like <see cref="FrameQuality"/> (see <see cref="VbrConfig"/>'s own doc
+/// comment), not a live comparison parameter: it changes what gets encoded into
+/// <c>BumperCatalogEntry.AudioFingerprint</c>/<c>LibraryDatabaseEntry.AudioFingerprint</c> at
+/// extraction time, so a mismatch between two stores (or between a store and the currently active
+/// config) means the two fingerprint arrays aren't meaningfully comparable at all — not just
+/// somewhat less precise, the way a coarser <see cref="Sampling"/> interval is.</summary>
+public sealed record AudioConfig {
+	/// <summary>How much audio each element of a Chromaprint fingerprint array represents, in
+	/// seconds — originally a hardcoded 1.0 (<c>ChromaContext</c>'s majority-vote aggregation bucket
+	/// boundary). Real testing (docs/iterativeplan.md, "Audio bucket phase-alignment" entry,
+	/// 2026-08-14) found that a reference clip extracted independently from a source file is
+	/// essentially never phase-aligned with that source's own continuous decode-from-BOF bucket grid
+	/// — even byte-identical audio can score well below 100% purely from a sub-bucket timing offset,
+	/// because <c>ScanEngine.SlidingWindowCompare</c> only searches whole-bucket offsets. Lowering
+	/// this shrinks the worst-case phase error proportionally (bucket size directly bounds it) at the
+	/// cost of a correspondingly larger stored fingerprint array per file. Range: > 0.</summary>
+	public double BucketSeconds { get; init; } = 1.0;
 }
 
 /// <summary>Presence-matching thresholds (<see cref="Matching.VisualBumperMatcher"/>/

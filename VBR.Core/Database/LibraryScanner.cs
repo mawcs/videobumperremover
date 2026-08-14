@@ -214,7 +214,8 @@ public sealed class LibraryScanner : IDisposable {
 		// destination via ScanTelemetry.NoteDebug like every other debug/trace line.
 		var audioSw = System.Diagnostics.Stopwatch.StartNew();
 		using (ScanTelemetry.Time("audio fingerprint (Chromaprint)"))
-			audioFingerprint = ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
+			audioFingerprint = ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct,
+				bucketSeconds: Configuration.VbrConfig.Current.Audio.BucketSeconds);
 		if (ScanTelemetry.DebugEnabled)
 			ScanTelemetry.NoteDebug($"'{fileInfo.Name}' audio fingerprint: {audioSw.Elapsed.TotalMilliseconds:0}ms, " +
 				$"{audioFingerprint?.Length ?? 0} block(s).");

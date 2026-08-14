@@ -199,9 +199,11 @@ dotnet run --project VBR.CLI -- remove --library-db "my-show.vbrdb" --bumper-lab
 - When both `--bumper-label` and `--library-db` are given, matching touches no ffmpeg/ONNX at all —
   every fingerprint on both sides is already persisted; only files that actually match get decoded,
   for the removal cut itself.
-- If either side's file was saved under different `frameQuality` config settings than are currently
-  active, `remove` prints an unconditional `Warning:` line naming what drifted (docs/iterativeplan.md,
-  "File-path DB options" entry, Part 3) — re-scan/`--rescan` or re-add the bumper to clear it.
+- If either side's file was saved under different fingerprint-recipe config settings than are
+  currently active — `frameQuality` or `audio.bucketSeconds` (added 2026-08-14, see
+  [`iterativeplan.md`](iterativeplan.md)'s "Audio bucket phase-alignment" entry) — `remove` prints an
+  unconditional `Warning:` line naming what drifted (docs/iterativeplan.md, "File-path DB options"
+  entry, Part 3) — re-scan/`--rescan` or re-add the bumper to clear it.
 
 **`--re-encode` defaults to `true` (Mode B — re-encode)**, and both modes are implemented and
 verified against real media:

@@ -33,8 +33,9 @@ namespace VDF.Core.Chromaprint {
 	/// </code>
 	///
 	/// Input PCM must be mono 16-bit samples at 11025 Hz.
-	/// Each element in the returned array represents one second of audio encoded
-	/// as a 32-bit integer (majority-vote aggregation of ~8 per-frame fingerprints).
+	/// Each element in the returned array represents <see cref="_bucketSeconds"/> of audio encoded
+	/// as a 32-bit integer (majority-vote aggregation of the per-frame fingerprints, ~8 per second,
+	/// that fall within that bucket).
 	/// </summary>
 	public sealed class ChromaContext {
 		// ──────────────────────────────────────────────────────────────────────
@@ -43,6 +44,20 @@ namespace VDF.Core.Chromaprint {
 		private const int FrameHop = 1365; // samples between consecutive frames
 		// Frames per second = 11025 / 1365 ≈ 8.07
 
+		// Bucket boundaries are anchored to THIS stream's own decode start (frame index 0), not to
+		// any absolute/shared reference -- an independently-decoded excerpt of the same underlying
+		// audio (e.g. a reference clip extracted from a source file) will essentially never land its
+		// own bucket 0 on the same real-time instant the source's bucket grid does, and majority-vote
+		// aggregation is sensitive to which frames fall in which bucket. A smaller bucket shrinks that
+		// worst-case phase error proportionally, since VDF.Core.ScanEngine.SlidingWindowCompare only
+		// ever searches whole-bucket offsets, never a sub-bucket phase correction (docs/iterativeplan.md,
+		// "Audio bucket phase-alignment" entry, 2026-08-14 -- live-measured: byte-identical audio
+		// scored 95% at zero phase error vs. 79-82% at a 437-500ms phase error, using the original
+		// hardcoded 1.0s bucket). Defaults to 1.0 -- the original hardcoded value -- so every caller
+		// that predates this parameter (VDF's own ScanEngine.cs partial-clip-audio dedup feature,
+		// which has no knowledge of VBR's config and must not be affected by it) is unchanged.
+		private readonly double _bucketSeconds;
+
 		// ──────────────────────────────────────────────────────────────────────
 		// Pipeline objects  (allocated once, reused across Start/Finish cycles)
 		// ──────────────────────────────────────────────────────────────────────
@@ -50,6 +65,12 @@ namespace VDF.Core.Chromaprint {
 		private readonly ChromaFilter _filter = new();
 		private readonly double[] _chromaBuf = new double[12];
 		private readonly double[] _filteredBuf = new double[12];
+
+		public ChromaContext(double bucketSeconds = 1.0) {
+			if (bucketSeconds <= 0)
+				throw new ArgumentOutOfRangeException(nameof(bucketSeconds), "Bucket size must be positive.");
+			_bucketSeconds = bucketSeconds;
+		}
 
 		// ──────────────────────────────────────────────────────────────────────
 		// Per-scan state
@@ -91,7 +112,7 @@ namespace VDF.Core.Chromaprint {
 		}
 
 		/// <summary>
-		/// Flushes the last partial 1-second bucket.  Call once after all audio
+		/// Flushes the last partial bucket.  Call once after all audio
 		/// has been fed.
 		/// </summary>
 		public void Finish() {
@@ -102,8 +123,8 @@ namespace VDF.Core.Chromaprint {
 		}
 
 		/// <summary>
-		/// Returns the aggregated fingerprint: one <c>uint</c> per second of audio.
-		/// Only valid after <see cref="Finish"/> has been called.
+		/// Returns the aggregated fingerprint: one <c>uint</c> per <see cref="_bucketSeconds"/> of
+		/// audio. Only valid after <see cref="Finish"/> has been called.
 		/// </summary>
 		public uint[] GetRawFingerprint() => _aggregated.ToArray();
 
@@ -129,9 +150,9 @@ namespace VDF.Core.Chromaprint {
 					ChromaNormalizer.Normalize(_filteredBuf);
 					uint fp = FingerprintCalculator.Compute(_filteredBuf);
 
-					// Determine which 1-second bucket this frame belongs to
+					// Determine which bucket this frame belongs to
 					double frameSec = (double)_frameIndex * FrameHop / Chroma.SampleRate;
-					double bucket = Math.Floor(frameSec);
+					double bucket = Math.Floor(frameSec / _bucketSeconds);
 
 					if (_secondFrames.Count > 0 && bucket > _aggregated.Count) {
 						// Close the previous bucket

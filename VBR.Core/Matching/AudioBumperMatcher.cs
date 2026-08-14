@@ -58,28 +58,29 @@ public sealed class AudioBumperMatcher : IBumperMatcher {
 	public string Name => "audio";
 
 	public MatchResult Match(string referenceClipPath, string candidatePath, ClipRegion searchRegion, CancellationToken ct = default) {
-		uint[]? clipFingerprint = ChromaprintEngine.ExtractFingerprint(referenceClipPath, verboseLogging, ct);
+		double bucketSeconds = Configuration.VbrConfig.Current.Audio.BucketSeconds;
+		uint[]? clipFingerprint = ChromaprintEngine.ExtractFingerprint(referenceClipPath, verboseLogging, ct, bucketSeconds: bucketSeconds);
 		if (clipFingerprint is not { Length: >= 2 })
 			return new MatchResult(false, 0f, null, "no usable audio fingerprint on the reference clip");
 		if (verboseLogging)
 			Logger.Instance.Info($"[audio] '{Path.GetFileName(referenceClipPath)}': fingerprint extracted, {clipFingerprint.Length} blocks.");
 
-		uint[]? fileFingerprint = ChromaprintEngine.ExtractFingerprint(candidatePath, verboseLogging, ct);
+		uint[]? fileFingerprint = ChromaprintEngine.ExtractFingerprint(candidatePath, verboseLogging, ct, bucketSeconds: bucketSeconds);
 		if (fileFingerprint is not { Length: >= 2 })
 			return new MatchResult(false, 0f, null, "no usable audio track");
 		if (verboseLogging)
 			Logger.Instance.Info($"[audio] '{Path.GetFileName(candidatePath)}': fingerprint extracted, {fileFingerprint.Length} blocks.");
 
-		(int start, int count) = ResolveWindow(fileFingerprint.Length, searchRegion);
+		(int start, int count) = ResolveWindow(fileFingerprint.Length, searchRegion, bucketSeconds);
 		if (count < clipFingerprint.Length)
 			return new MatchResult(false, 0f, null, "search window too short to hold the clip");
 
 		var (similarity, offsetBlocks) = ScanEngine.SlidingWindowCompare(
 			clipFingerprint, fileFingerprint[start..(start + count)], minSim: 0f);
-		int offset = start + offsetBlocks;
+		double offsetSeconds = (start + offsetBlocks) * bucketSeconds;
 		if (verboseLogging)
-			Logger.Instance.Info($"[audio] '{Path.GetFileName(candidatePath)}': sliding-window compare over blocks [{start}, {start + count}) -> similarity={similarity:P1} @ offset {offset}s.");
-		return new MatchResult(similarity >= minSimilarity, similarity, offset, $"audio={similarity:P0}@{offset}s");
+			Logger.Instance.Info($"[audio] '{Path.GetFileName(candidatePath)}': sliding-window compare over blocks [{start}, {start + count}) -> similarity={similarity:P1} @ offset {offsetSeconds:0.###}s.");
+		return new MatchResult(similarity >= minSimilarity, similarity, offsetSeconds, $"audio={similarity:P0}@{offsetSeconds:0.#}s");
 	}
 
 	/// <summary>
@@ -90,8 +91,12 @@ public sealed class AudioBumperMatcher : IBumperMatcher {
 	/// comment) needs a public entry point into the exact same extraction <see cref="Match"/> uses
 	/// internally, rather than a second, divergent implementation.
 	/// </summary>
-	public static uint[]? ExtractFingerprint(string path, bool verboseLogging = false, CancellationToken ct = default) =>
-		ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct);
+	/// <param name="bucketSeconds">Null (the default) reads <c>VbrConfig.Current.Audio.BucketSeconds</c>
+	/// at call time — every real caller omits this and gets whatever's currently configured; an
+	/// explicit value exists only for tests that want a specific bucket size independent of
+	/// <c>VbrConfig.Current</c>.</param>
+	public static uint[]? ExtractFingerprint(string path, bool verboseLogging = false, CancellationToken ct = default, double? bucketSeconds = null) =>
+		ChromaprintEngine.ExtractFingerprint(path, verboseLogging, ct, bucketSeconds: bucketSeconds ?? Configuration.VbrConfig.Current.Audio.BucketSeconds);
 
 	/// <summary>
 	/// Same comparison as <see cref="Match"/>, but takes two already-computed whole-file
@@ -102,28 +107,41 @@ public sealed class AudioBumperMatcher : IBumperMatcher {
 	/// <see cref="ChromaprintEngine.ExtractFingerprint"/> call <see cref="Match"/> makes, so reusing
 	/// them here is equivalent to (but far cheaper than) re-extracting. Static and state-free, same
 	/// reasoning as <see cref="VisualBumperMatcher.MatchMixedDensity"/>.
+	///
+	/// <paramref name="bucketSeconds"/> is used only to interpret block indices into seconds and
+	/// resolve the search window (<see cref="ResolveWindow"/>) — it does <b>not</b> verify the two
+	/// fingerprints were actually built at this bucket size. A stored fingerprint built under a
+	/// different <c>audio.bucketSeconds</c> than what's currently configured is not meaningfully
+	/// comparable at all (see <c>VbrConfig.AudioConfig</c>'s own doc comment); catching that is
+	/// <c>FrameQualitySnapshot.DescribeMismatchFromCurrent</c>'s job at the catalog/database level,
+	/// not this method's.
 	/// </summary>
-	public static MatchResult MatchFingerprints(uint[]? clipFingerprint, uint[]? fileFingerprint, ClipRegion searchRegion, float minSimilarity) {
+	/// <param name="bucketSeconds">Null (the default) reads <c>VbrConfig.Current.Audio.BucketSeconds</c>
+	/// at call time, same convention as <see cref="ExtractFingerprint"/>.</param>
+	public static MatchResult MatchFingerprints(uint[]? clipFingerprint, uint[]? fileFingerprint, ClipRegion searchRegion, float minSimilarity, double? bucketSeconds = null) {
 		if (clipFingerprint is not { Length: >= 2 })
 			return new MatchResult(false, 0f, null, "no usable audio fingerprint on the reference clip");
 		if (fileFingerprint is not { Length: >= 2 })
 			return new MatchResult(false, 0f, null, "no usable audio track");
 
-		(int start, int count) = ResolveWindow(fileFingerprint.Length, searchRegion);
+		double effectiveBucketSeconds = bucketSeconds ?? Configuration.VbrConfig.Current.Audio.BucketSeconds;
+		(int start, int count) = ResolveWindow(fileFingerprint.Length, searchRegion, effectiveBucketSeconds);
 		if (count < clipFingerprint.Length)
 			return new MatchResult(false, 0f, null, "search window too short to hold the clip");
 
 		var (similarity, offsetBlocks) = ScanEngine.SlidingWindowCompare(
 			clipFingerprint, fileFingerprint[start..(start + count)], minSim: 0f);
-		int offset = start + offsetBlocks;
-		return new MatchResult(similarity >= minSimilarity, similarity, offset, $"audio={similarity:P0}@{offset}s");
+		double offsetSeconds = (start + offsetBlocks) * effectiveBucketSeconds;
+		return new MatchResult(similarity >= minSimilarity, similarity, offsetSeconds, $"audio={similarity:P0}@{offsetSeconds:0.#}s");
 	}
 
-	// Chroma fingerprint blocks are ~1s each, so seconds ≈ block index.
-	static (int start, int count) ResolveWindow(int fileLengthBlocks, ClipRegion region) {
-		int durationBlocks = Math.Max(1, (int)Math.Round(region.Duration.TotalSeconds));
+	// Chroma fingerprint blocks are bucketSeconds each (docs/iterativeplan.md, "Audio bucket
+	// phase-alignment" entry, 2026-08-14 -- was a hardcoded "~1s each, so seconds ≈ block index"
+	// before that entry's fix).
+	static (int start, int count) ResolveWindow(int fileLengthBlocks, ClipRegion region, double bucketSeconds) {
+		int durationBlocks = Math.Max(1, (int)Math.Round(region.Duration.TotalSeconds / bucketSeconds));
 		if (region.Start is { } start) {
-			int startBlocks = Math.Clamp((int)Math.Round(start.TotalSeconds), 0, fileLengthBlocks);
+			int startBlocks = Math.Clamp((int)Math.Round(start.TotalSeconds / bucketSeconds), 0, fileLengthBlocks);
 			return (startBlocks, Math.Min(durationBlocks, fileLengthBlocks - startBlocks));
 		}
 		int count = Math.Min(durationBlocks, fileLengthBlocks);

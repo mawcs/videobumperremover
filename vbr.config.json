@@ -30,6 +30,19 @@
 		"darkRejectPercent": 99.0
 	},
 
+	"audio": {
+		// How much audio each Chromaprint fingerprint element encodes, seconds. Lowering this
+		// shrinks the worst-case timing-phase error between an independently-extracted reference
+		// clip and where it actually sits in a candidate file (a reference clip almost never starts
+		// exactly on a whole-bucket boundary relative to the candidate's own decode -- see
+		// docs/iterativeplan.md's "Audio bucket phase-alignment" entry, 2026-08-14) at the cost of a
+		// proportionally larger stored fingerprint per file. This is a fingerprint RECIPE, like
+		// frameQuality above -- changing it invalidates already-stored AudioFingerprint data
+		// (re-scan / re-add affected bumpers; a mismatch triggers the same staleness warning
+		// frameQuality changes already do). Range: > 0. Default: 1.0
+		"bucketSeconds": 1.0
+	},
+
 	"matching": {
 		// Visual: cosine similarity (0-1] at or above which a single clip frame counts as "present"
 		// in a candidate. This is the exact number your false-positive data showed can be beaten by

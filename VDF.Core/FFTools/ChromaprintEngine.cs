@@ -52,7 +52,12 @@ namespace VDF.Core.FFTools {
 		/// Returns <c>null</c> when the file has no audio stream or extraction fails.
 		/// Returns an empty array when the file has no usable audio.
 		/// </summary>
-		internal static uint[]? ExtractFingerprint(string filePath, bool extendedLogging, CancellationToken ct = default, Action<double>? onProgress = null) {
+		/// <param name="bucketSeconds">Forwarded to <see cref="ChromaContext"/> — see its own doc
+		/// comment. Defaults to 1.0 (the original hardcoded bucket size) so every caller that
+		/// predates this parameter, including VDF's own <c>ScanEngine.cs</c> partial-clip-audio dedup
+		/// feature, is unaffected; VBR.Core's callers pass <c>VbrConfig.Current.Audio.BucketSeconds</c>
+		/// explicitly (VDF.Core cannot reference VBR.Core.Configuration directly — ADR 0005's layering).</param>
+		internal static uint[]? ExtractFingerprint(string filePath, bool extendedLogging, CancellationToken ct = default, Action<double>? onProgress = null, double bucketSeconds = 1.0) {
 			// Was FfmpegEngine.UseNativeBinding (the raw, ungated toggle) until 2026-08-14 -- that
 			// skipped both the CanLoadNativeLibraries probe and the session circuit breaker every
 			// other native call site uses, so on a machine where the shared libraries are present
@@ -62,7 +67,7 @@ namespace VDF.Core.FFTools {
 			// mechanism FfmpegEngine's own native call sites already use for exactly this reason.
 			if (FfmpegEngine.ShouldUseNativeBinding) {
 				try {
-					uint[]? result = ExtractFingerprintNative(filePath, extendedLogging, ct, onProgress);
+					uint[]? result = ExtractFingerprintNative(filePath, extendedLogging, ct, onProgress, bucketSeconds);
 					FfmpegEngine.RecordNativeSuccess();
 					return result;
 				}
@@ -70,11 +75,11 @@ namespace VDF.Core.FFTools {
 					FfmpegEngine.RecordNativeFailure(filePath, e);
 				}
 			}
-			return ExtractFingerprintProcess(filePath, extendedLogging, ct);
+			return ExtractFingerprintProcess(filePath, extendedLogging, ct, bucketSeconds);
 		}
 
 		/// <summary>Native path: uses FFmpeg.AutoGen bindings — no process spawning.</summary>
-		private static uint[]? ExtractFingerprintNative(string filePath, bool extendedLogging, CancellationToken ct, Action<double>? onProgress) {
+		private static uint[]? ExtractFingerprintNative(string filePath, bool extendedLogging, CancellationToken ct, Action<double>? onProgress, double bucketSeconds) {
 			var sw = extendedLogging ? Stopwatch.StartNew() : null;
 
 			// Suppress noisy FFmpeg warnings (e.g. AAC "Could not update timestamps
@@ -89,7 +94,7 @@ namespace VDF.Core.FFTools {
 				if (!decoder.HasAudioStream)
 					return Array.Empty<uint>();
 
-				var ctx = new ChromaContext();
+				var ctx = new ChromaContext(bucketSeconds);
 				ctx.Start();
 				int totalSamples = decoder.DecodeAll(samples => ctx.Feed(samples), ct, onProgress);
 
@@ -116,7 +121,7 @@ namespace VDF.Core.FFTools {
 		}
 
 		/// <summary>CLI fallback: spawns an FFmpeg process and streams PCM from stdout.</summary>
-		private static uint[]? ExtractFingerprintProcess(string filePath, bool extendedLogging, CancellationToken ct) {
+		private static uint[]? ExtractFingerprintProcess(string filePath, bool extendedLogging, CancellationToken ct, double bucketSeconds) {
 			var psi = new ProcessStartInfo {
 				FileName = FfmpegEngine.FFmpegPath,
 				CreateNoWindow = true,
@@ -157,7 +162,7 @@ namespace VDF.Core.FFTools {
 				// Stream PCM directly into ChromaContext in small chunks instead of
 				// buffering the entire audio into memory.  This allows Chromaprint to
 				// process frames in parallel with FFmpeg's decode and keeps memory flat.
-				var ctx = new ChromaContext();
+				var ctx = new ChromaContext(bucketSeconds);
 				ctx.Start();
 
 				var stream = process.StandardOutput.BaseStream;

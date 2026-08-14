@@ -4,6 +4,87 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Audio bucket phase-alignment — root cause, fix, and config knob (2026-08-14)
+
+**Status: built and live-verified.** The maintainer reported three independently-extracted 8s clips
+of the same bumper music, audibly identical (confirmed by Czkawka, Shazam, and Google Gemini song ID
+all agreeing), scoring only 68-70% via `vbr`'s own audio matching — including the *literal source
+file* the bumper was extracted from, which should have scored near 100%. Concluded (correctly) that
+this was a real bug, not an inherent Chromaprint limitation.
+
+**Root cause:** `ChromaContext` (VDF.Core/Chromaprint/ChromaContext.cs) aggregates ~8 per-frame
+fingerprints (each ~124ms) into one majority-vote `uint` per whole second, with bucket boundaries
+anchored to `Math.Floor(frameSec)` — i.e. anchored to wherever *that specific decode* started, not to
+any absolute time reference. `ScanEngine.SlidingWindowCompare` then only searches whole-integer-second
+offsets. A reference bumper clip is extracted independently (`ffmpeg -ss ...`, decoded fresh from its
+own t=0) while a candidate file decodes continuously from its own BOF — the bumper's real-world
+insertion point inside a candidate is essentially never an exact whole second, so the two sides'
+1-second buckets covering "the same" audio are almost always phase-shifted by some sub-second amount
+that the whole-integer-offset search can never correct for. Majority-vote aggregation is very
+sensitive to which frames land in which bucket, so even a small phase offset silently degrades every
+compared block.
+
+**Reproduced directly** by embedding the same 8s clip in a synthetic file at different sub-second
+offsets and comparing via the exact code path `vbr match --detection-mode audio` uses:
+
+| Embed offset (sub-second phase error) | Similarity (bucketSeconds=1.0, original) |
+| --- | --- |
+| 5.000s (none) | 95% |
+| 5.437s (437ms) | 82% |
+| 5.500s (~500ms, near-worst-case) | 79% |
+
+**Fix — chosen by the maintainer over two other options presented (multi-phase matching; full
+frame-level fingerprint storage — see below), explicitly to start simple and configurable:** the
+aggregation bucket size is now a config value, `audio.bucketSeconds` in `vbr.config.json`
+(`VbrConfig.AudioConfig.BucketSeconds`, default `1.0` — unchanged behavior unless touched). Shrinking
+it shrinks the worst-case phase error proportionally, since `SlidingWindowCompare`'s existing
+exhaustive whole-bucket-offset search becomes correspondingly finer "for free." Re-verified the same
+437ms-phase-offset case at smaller bucket sizes: **96% at 0.25s, 97% at 0.125s** — both close to the
+zero-phase-error ceiling (95-98%), up from 82% at the original 1.0s.
+
+**Implementation:**
+
+- `ChromaContext` gains a `bucketSeconds` constructor parameter (default 1.0, so every caller that
+  predates this — including VDF.Core's own `ScanEngine.cs` partial-clip-audio dedup feature, which has
+  no knowledge of VBR's config and must not be affected by it — is unchanged).
+- `ChromaprintEngine.ExtractFingerprint`/`ExtractFingerprintNative`/`ExtractFingerprintProcess` (all
+  VDF.Core) thread a `bucketSeconds` parameter through (same 1.0 default) rather than reading
+  `VbrConfig` directly — VDF.Core cannot reference `VBR.Core.Configuration` (ADR 0005's layering:
+  VBR.Core depends on VDF.Core, never the reverse).
+- `AudioBumperMatcher` (VBR.Core) reads `VbrConfig.Current.Audio.BucketSeconds` and passes it through
+  to extraction, `ResolveWindow` (converting a requested `TimeSpan` region into block indices — was
+  hardcoded "seconds ≈ block index," now `/ bucketSeconds`), and the reported offset (`block *
+  bucketSeconds`, was a bare block-index-as-seconds). `LibraryScanner`/`BumperCatalogBuilder`
+  (VBR.Core) pass the same config value at their own extraction call sites.
+- `MatchResult.BestOffsetSeconds` was already `double?` — no type change needed, just correct scaling.
+- **Recipe staleness**: `audio.bucketSeconds` changes what gets *encoded* into a stored
+  `AudioFingerprint`, exactly like `frameQuality` changes what gets embedded — two fingerprints built
+  at different bucket sizes aren't meaningfully comparable at all, not just less precise (unlike
+  `Sampling`'s knobs, deliberately not stamped — see `VbrConfig`'s own doc comment). Reused the
+  existing `FrameQualitySnapshot` mechanism (2026-08-12/13 entries) rather than inventing a second
+  parallel one: it now also captures/compares `AudioBucketSeconds` (`MemoryPackOrder(3)`, defaulting
+  to 0 for pre-existing snapshots — treated as "unknown, not provably stale," same convention a
+  wholly-null stamp already gets, so this doesn't false-alarm on every catalog/database that predates
+  the field). The type keeps its `FrameQualitySnapshot` name despite now covering audio too, to avoid
+  a mechanical rename across the ten-plus files already using it.
+- New unconditional (no real-media/env-var gating needed) regression test,
+  `VDF.Core.Tests/Chromaprint/ChromaContextTests.cs`, using pure synthetic PCM: asserts a smaller
+  bucket produces a proportionally longer fingerprint array, and — the actual behavioral guarantee —
+  that a 437ms-phase-shifted copy of the same synthetic audio scores measurably higher similarity at
+  a smaller bucket than at 1.0s, plus a control case confirming a whole-bucket-multiple phase offset
+  scores high at either size (isolating the win to the sub-bucket remainder specifically).
+
+**Not done, explicitly deferred by the maintainer** ("I'm considering a future implementation of the
+[frame-level fingerprints] and I'm not ruling it out"):
+
+- **Multi-phase matching** (reprocess the short reference clip's PCM at a handful of phase offsets,
+  keep the best score) — no storage format change, but only helps the ad hoc `--clip-from` path; a
+  cached catalog `AudioFingerprint` still has one phase baked in.
+- **Frame-level (not bucket-level) fingerprint storage + comparison** — the technically "correct" fix
+  matching how real AcoustID/Chromaprint tooling compares audio (frame-granularity cross-correlation,
+  not whole-second blocks). ~8x larger stored fingerprints; rewrites comparison/offset-reporting math
+  throughout. Left as a live future option, not started.
+
 ## Per-bumper matching strategy — concrete design (2026-08-13, revised, built)
 
 **Status: built and live-verified (2026-08-13); extended 2026-08-14 with an ad hoc `--matching-strategy`

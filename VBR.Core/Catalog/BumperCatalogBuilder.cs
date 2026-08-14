@@ -130,7 +130,8 @@ public static class BumperCatalogBuilder {
 		MediaInfo? clipInfo = FFProbeEngine.GetMediaInfo(clipDestination, extendedLogging: verboseLogging);
 		TimeSpan measuredDuration = clipInfo is not null && clipInfo.Duration > TimeSpan.Zero ? clipInfo.Duration : clipLength;
 
-		uint[]? audioFingerprint = ChromaprintEngine.ExtractFingerprint(clipDestination, verboseLogging, ct);
+		uint[]? audioFingerprint = ChromaprintEngine.ExtractFingerprint(clipDestination, verboseLogging, ct,
+			bucketSeconds: Configuration.VbrConfig.Current.Audio.BucketSeconds);
 
 		byte[] thumbnail = Array.Empty<byte>();
 		try {

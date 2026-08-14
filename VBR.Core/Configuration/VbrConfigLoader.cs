@@ -148,6 +148,8 @@ public static class VbrConfigLoader {
 		if (config.FrameQuality.DarkRejectPercent < 0 || config.FrameQuality.DarkRejectPercent > 100)
 			errors.Add($"frameQuality.darkRejectPercent: must be between 0 and 100 (got {config.FrameQuality.DarkRejectPercent}).");
 
+		Positive(config.Audio.BucketSeconds, "audio.bucketSeconds");
+
 		Unit(config.Matching.PresenceThreshold, "matching.presenceThreshold");
 		Unit(config.Matching.RigidHitThreshold, "matching.rigidHitThreshold");
 		Unit(config.Matching.PHashPresenceThreshold, "matching.phashPresenceThreshold");
