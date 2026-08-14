@@ -4,117 +4,203 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
-## Per-bumper matching strategy — concrete design (2026-08-13)
+## Per-bumper matching strategy — concrete design (2026-08-13, revised)
 
-**Status: design, not yet built — the maintainer has confirmed intent to proceed, this entry is the
-concrete shape to build against, not a decision that's already final.** Supersedes/narrows the
-2026-08-12 "Per-bumper matching profiles" sketch: that entry's `isHighRisk` auto-flagging, temporal
-clustering, and rigid-matcher-adaptation ideas are **not** part of this — none of this round's
-testing motivated them. What real testing *did* motivate, confirmed with `--dump-frames` evidence
-gathered for every one of 101 bumpers (the Analysis entry above): three genuinely different bumpers
-need three genuinely different *strategies*, not just different thresholds on one shared strategy.
+**Status: design, fully specified, not yet built.** Revised twice per the maintainer's own
+read-throughs: the first pass reshaped all four changes (below); a second pass corrected two things
+in that draft — `Trim` moved from a `remove` mode to its own standalone top-level command, and
+Group B of the threshold-override change turned out to be a metadata/provenance request that I'd
+misread as a live matching override, now fixed to the simpler, already-buildable shape. No open
+blocking decisions remain. `--dump-frames` for library-backed candidates was raised and explicitly
+shelved in the same conversation ("doesn't feel that much better... let's put that on the shelf for
+now") — not part of this entry, not forgotten, just deliberately parked.
 
-### Motivation (see the Analysis entry above for the full evidence; summarized here)
+### Motivation (see the Analysis entry below for the full evidence; summarized here)
 
 1. **Thin/flowing-text bumpers**: dumped-frame analysis on every candidate concluded, with real
    evidence, that current visual detection (DINOv2 frame embeddings) cannot identify this content —
    confirmed, not assumed. Audio identifies it cleanly (100%/98% similarity). Visual/pHash need to
    be *excludable* per bumper, not just corroborators that sometimes lose a vote.
 2. **All-black/near-black trailing segments** (the 14.7s case): nothing to fingerprint at all —
-   this was never a matching problem. Needs a mode that skips content detection entirely and just
-   cuts a known duration from a known set of files, at the user's explicit request.
+   this was never a matching problem.
 3. **Cross-fades**: the region needed to *identify* a bumper reliably (13s) can differ from the
    region that needs to be *removed* to fully strip a transition (15s) — one `Duration` field
    serving both purposes today is the gap.
+4. **"Dark Motion End Bumpers"/"Content Music"/"Content Audio"**: overwhelming visual+pHash
+   agreement vetoed by a single global `audioMinSimilarity` that doesn't fit every bumper's real
+   audio characteristics — motivates per-bumper threshold overrides, not just strategy selection.
 
-### Schema: `BumperCatalogEntry` gains a strategy and two new fields
+### Change 1 — `Trim` is a standalone top-level command, not a `remove` mode or a catalog concept
+
+**Revised again per the maintainer: "The trim functionality should probably be its own top-level
+command instead of a subset of `remove`. There are enough differences in the command structure for
+the user to see it as a separate command."** Correct, and consistent with how this project already
+treats genuinely different operations (`match`/`remove`/`commit`/`scan`/`add-bumper`/`list-bumpers`
+are all separate commands, not modes bolted onto one another) — `remove`'s existing option surface
+(`--detection-mode`, `--presence-threshold`, `--dump-frames`, `--catalog-db`, ...) is entirely
+irrelevant to an unconditional trim, and a dedicated command means the `--help` output for this
+feature only ever shows options that actually apply.
+
+**New top-level command, working name `vbr trim`:**
+
+- `--length <duration>` (required) — how much to cut.
+- `--region begin|end` (required) — which edge.
+- `--paths <semicolon-delimited list>` (required) — **replaces `--library`/`--file`/`--library-db`
+  entirely for this command**, per the maintainer's own simplification: "instead of supporting
+  'library' or anything like that, it should just support a semicolon-delimited list of paths of
+  either files, or parent folders." One option, mixed freely — each entry is checked for
+  `File.Exists` (used directly, no extension filter, same trust convention `--file` already uses
+  elsewhere) vs. `Directory.Exists` (walked for recognized video files, same as `--library` does
+  today) — needs a new parser (not a reuse of `SharedOptions.ParseFolderListArg`, which only
+  understands folders), deduplicated across overlapping entries the same way `ResolveCandidates`
+  already does.
+- `--no-recurse` — applies to any folder entries in `--paths`.
+- `--exclude-folders` — still useful if a `--paths` folder entry has a subfolder to skip; reuses the
+  existing shared option/`IsUnderAny` mechanism.
+- `--re-encode`/`--output`/`--verbose`/`--hardware-accel`/`--no-native-ffmpeg-binding` — reused as-is,
+  since a real cut still happens via `ClipRemover.Remove`.
+- **Not present at all**: `--clip-from`, `--bumper-label`, `--catalog-db`, `--library-db`,
+  `--detection-mode`, `--dump-frames`, `--sample-interval`, and every presence-threshold option —
+  none of the matching surface exists for this command, by design.
+
+Execution is simple by construction: resolve `--paths` to a candidate file list, and for every one
+of them, call `ClipRemover.Remove` directly with `--length`/`--region` — no `MatchingSession`, no
+fingerprints, no ONNX/ffmpeg decode beyond the cut itself. The same real trade-off from the first
+draft still applies and is still worth being deliberate about, just now scoped to whatever
+`--paths` names rather than `--library`: every resolved candidate is trimmed unconditionally, with
+zero content verification, so a folder entry containing files that don't actually have the
+described segment would be silently truncated too. That's inherent to what "no matching, on
+purpose" means, not a flaw to design around.
+
+### Change 2 — `BumperMatchingStrategy` expanded to seven values
 
 ```csharp
 public enum BumperMatchingStrategy {
-    Corroborated,  // today's default and only behavior: visual + pHash (mandatory when it ran) +
-                    // audio (mandatory when it ran AND ReferenceHasUsableAudio) must all agree.
-    AudioOnly,     // visual/pHash never sampled or consulted for this bumper; audio alone decides.
-    Trim,          // no content matching at all -- unconditionally "present" for each of an
-                    // explicit TargetFiles list, nothing else.
+    Corroborated,  // default: every signal that ran and applies must agree (today's behavior)
+    VisualOnly,
+    AudioOnly,
+    PhashOnly,
+    NoVisual,
+    NoAudio,
+    NoPhash,
 }
 ```
 
-New `BumperCatalogEntry` fields (`MemoryPackOrder(14)`/`(15)`/`(16)` — next free slots; all
-additive, so existing entries deserialize with `MatchingStrategy = Corroborated`,
-`RemovalLength = null`, `TargetFiles = []`, i.e. today's exact behavior, unchanged):
+Implementation note: rather than a seven-way switch spreading through matching code, this maps
+cleanly onto three independent internal flags — `UseVisual`/`UseAudio`/`UsePHash`, each defaulting
+`true` for `Corroborated` — resolved once, where `MatchingSession.PrepareFromCatalogEntry` reads the
+entry, into the same `Wants*` overrides the first draft's `AudioOnly` already used:
 
-- `MatchingStrategy` (default `Corroborated`).
-- `RemovalLength` (`TimeSpan?`, default `null` = falls back to `Duration`) — the cross-fade fix.
-  Orthogonal to `MatchingStrategy`: any strategy can set it, since "how much to cut" is a separate
-  question from "how to decide presence."
-- `TargetFiles` (`string[]`, default empty) — only meaningful for `Trim`; the explicit,
-  maintainer-supplied file list a trim entry applies to. Deliberately explicit paths, not a
-  folder/glob: a `Trim` entry has no content-based safety net at all (nothing is compared, ever), so
-  an accidentally-broad target list would silently cut unrelated files with zero verification. Being
-  explicit here is a correctness requirement, not just today's simplest option.
+| Strategy | UseVisual | UseAudio | UsePHash |
+| --- | --- | --- | --- |
+| `Corroborated` | ✓ | ✓ | ✓ |
+| `VisualOnly` | ✓ | ✗ | ✗ |
+| `AudioOnly` | ✗ | ✓ | ✗ |
+| `PhashOnly` | ✗ | ✗ | ✓ |
+| `NoVisual` | ✗ | ✓ | ✓ |
+| `NoAudio` | ✓ | ✗ | ✓ |
+| `NoPhash` | ✓ | ✓ | ✗ |
 
-### Behavior per strategy
+Every one of the seven leaves at least one signal active by construction, so no "excluded
+everything" validation is needed for this specific value set — worth a defensive comment if an
+eighth value is ever added carelessly. **Overrides `--detection-mode` outright for this bumper**,
+same as the first draft's `AudioOnly` already did (e.g. a `VisualOnly` bumper samples/consults only
+visual even under `--detection-mode all`) — kept consistent across all seven rather than trying to
+*intersect* with whatever `--detection-mode` separately requested, which would create dead
+combinations (e.g. `--detection-mode visual` + a bumper strategy of `AudioOnly` would leave nothing
+able to decide at all if the two didn't override cleanly).
 
-**`Corroborated`** — no change from the previous entry's implementation.
+### Change 3 — per-bumper threshold overrides: two genuinely different groups, one with a real catch
 
-**`AudioOnly`** — `MatchingSession.PrepareFromCatalogEntry` reads `entry.MatchingStrategy` and
-overrides `WantsVisual`/`WantsPHash` to false and `WantsAudio` to true for *this session*,
-regardless of `--detection-mode`. No video frames get sampled/embedded for this bumper at all (a
-real efficiency win alongside the correctness one — this content wasn't matchable anyway).
-`SignalResult.Present` reduces to `Audio?.Present ?? false`, same as today's `audio`-only mode. Ad
-hoc bumpers (`--clip-from`, no catalog entry) have no strategy to read — `AudioOnly` is
-catalog-entry-only, same scoping as everything else in this design.
+**"I want all the parameters and thresholds stored in the bumper... If we're doing this, we're doing
+this."** Seven new nullable fields on `BumperCatalogEntry`, each `null` = inherit
+`VbrConfig.Current`'s global value, non-null = override for this bumper specifically: `MinDetail`,
+`DarkOverrideDetail`, `DarkRejectPercent` (`double?`), `PresenceThreshold`, `RigidHitThreshold`,
+`PHashPresenceThreshold`, `AudioMinSimilarity` (`float?`). These split into two groups that behave
+very differently, and the difference matters enough to call out explicitly rather than build both
+the same way:
 
-**`Trim`** — structurally different enough that it doesn't fit `MatchingSession`'s loop at all, and
-isn't forced to: `RemoveCommand`, on resolving a `--bumper-label` entry with
-`MatchingStrategy == Trim`, takes an early, separate branch — candidates come from
-`entry.TargetFiles` directly (not `--library`/`--file`/`--library-db`; giving any of those alongside
-a `Trim` entry is a validation error, to avoid two conflicting candidate sources), each file is
-unconditionally treated as a match (no `MatchingSession`, no fingerprints, no ONNX/ffmpeg decode for
-matching purposes at all), and `ClipRemover.Remove` is called directly with `entry.RemovalLength ??
-entry.Duration` as the cut length. `vbr match` against a `Trim` entry is a legitimate, if
-degenerate, dry-run — reports every target file as present with a `"trim: unconditional"`-style
-detail, useful for previewing what a `remove` run would touch before actually cutting.
+**Group A — comparison-time thresholds (`PresenceThreshold`, `RigidHitThreshold`,
+`PHashPresenceThreshold`, `AudioMinSimilarity`): clean, no caveats.** These only decide whether an
+*already-computed* similarity score counts as "present" — they never affect what gets sampled or
+stored. `entry.PresenceThreshold ?? VbrConfig.Current.Matching.PresenceThreshold` (etc.) at the
+point `MatchingSession.PrepareFromCatalogEntry` builds its comparison thresholds is the whole
+implementation. Works identically for ad hoc and database-backed candidates, since nothing about how
+candidate fingerprints were *computed* changes — directly fixes the Finding-3-style "audio veto"
+false negatives with no structural downside.
 
-### `add-bumper` needs a genuinely different flow for `Trim`
+**Group B — `frameQuality` values (`MinDetail`, `DarkOverrideDetail`, `DarkRejectPercent`): corrected
+— this is a provenance/metadata request, not a live override, and I initially misread it.** The
+maintainer's own clarification: *"These are 'knobs' I played with during `--add-bumper` and they had
+an effect. If they are modified for the purpose of 1 bumper within a catalog, those values need to
+be recorded in the bumper... I get that they don't change how the detection works, but they do
+affect how the bumper is created, and therefore, how they are stored. They absolutely must be in the
+bumper file, if for nothing else, but to serve as metadata. I was not suggesting that they somehow
+magically become part of detection."*
 
-Every other strategy still samples fingerprints from `--clip-from` the normal way. A `Trim` entry
-has no source content to sample at all — it needs a new, explicit path: something like
-`add-bumper --trim --region end --remove-length 14.7s --target-files "a.mkv;b.mkv;..."` that skips
-`--clip-from`/`--label`'s normal requiredness and the whole `BumperCatalogBuilder.AddBumper`
-sampling pipeline, writing an entry with empty `Fingerprints`/`AudioFingerprint` and
-`Status="active"` directly. Exact flag names not decided — listed here as a placeholder shape, not
-a final API.
+This is a materially simpler ask than a live per-bumper override, and it's **not new scope** — it's
+the exact same mechanism as `FrameQualitySnapshot` (2026-08-12/13 entries), just recorded per-*entry*
+instead of only per-*file*. `add-bumper` already knows the effective `frameQuality` values at the
+moment it samples a bumper's reference clip; the fix is simply to also capture and store them:
 
-### Open questions before/while building (real decisions, not yet made)
+- `BumperCatalogEntry` gains a `FrameQualitySnapshot? FrameQualitySnapshot` field, reusing the
+  existing `Configuration.FrameQualitySnapshot` type verbatim — no new type needed.
+- `BumperCatalogBuilder.AddBumper` calls `FrameQualitySnapshot.CaptureCurrent()` once, alongside
+  building the rest of the entry, and stores it — purely descriptive, never read back to influence
+  matching in any way, exactly as specified.
+- This closes a gap the `FrameQualitySnapshot` entry already named and deliberately deferred at the
+  time: *"a catalog with ten bumpers added under old settings and one just added under current
+  settings reports 'current' for the whole file — the ten old entries' staleness isn't individually
+  caught... deferred as real additional scope beyond this minimum bar."* That scope is now in play.
+- **Natural, low-cost follow-on worth proposing (not decided — the maintainer's own ask stops at
+  "metadata"):** since `remove`/`match` already resolve one specific `BumperCatalogEntry` per run
+  (`RemoveCommand.cs`/`MatchCommand.cs` pick a single entry, per the 2026-08-13 entries), the
+  existing staleness warning could compare *that entry's own* stamp instead of the whole catalog's —
+  strictly more precise, for free, once the per-entry field exists. Flagged as a candidate
+  enhancement to confirm, not assumed.
 
-- Exact CLI flag names/shapes for all three (`--matching-strategy`? separate `--audio-only`/`--trim`
-  switches? `--remove-length`?) — not bikeshedded yet.
-- Should `Trim` support a *rescan*-style refresh if `TargetFiles` needs to grow later, or is
-  re-running `add-bumper --trim` with a fresh full list (overwrite, not append) enough for v1?
-- Does `list-bumpers` need new output to show `MatchingStrategy`/`RemovalLength`/`TargetFiles`, or
-  is that a fast-follow once the fields exist?
-- `Trim` entries have no fingerprints and thus no `FrameQualitySnapshot` staleness concern at all —
-  confirm the staleness-warning code path (`FrameQualitySnapshot.DescribeMismatchFromCurrent`)
-  degrades harmlessly (it already treats a null snapshot as "unknown, don't warn," which is exactly
-  right here — `Trim` entries would just never carry one, same as any pre-2026-08-12 entry).
+No blocking decision remains here — Group A and Group B are both fully specified now.
+
+### Change 4 — `RemovalLength` default, made explicit
+
+**"If the user doesn't specify `RemovalLength` it should default to the `clipLength` like it
+currently does. I think this might be the intention, I just want to call it out explicitly."**
+Confirmed: this was already the design (`RemovalLength` nullable, `null` → `entry.Duration`, i.e.
+today's exact single-length behavior) — restated here in plain terms since it's easy to read past a
+`?? Duration` in code and not register it as *the* default, not just *a* fallback. No change from
+the first draft; only Change 1 (removing `Trim`) affects `RemovalLength`'s scope, and it doesn't —
+`RemovalLength` still applies to any catalog-matched bumper (`Corroborated` and all six new
+strategies alike), independent of which strategy decides presence.
+
+### Open questions before/while building
+
+- Exact CLI flag names/shapes (`--matching-strategy`? per-strategy switches? `--remove-length`? the
+  final name for the new `trim` command and its options?) — not bikeshedded yet.
+- Does `list-bumpers` need new output for `MatchingStrategy`/the seven override fields/
+  `RemovalLength`/the per-entry `FrameQualitySnapshot`, or is that a fast-follow once the fields
+  exist?
+- Whether the staleness warning should compare a resolved catalog entry's own `FrameQualitySnapshot`
+  instead of the whole catalog's (Group B's proposed follow-on) — not decided, worth confirming.
 
 ### TODO — suggested build order
 
-1. Add `BumperMatchingStrategy` enum + the three new `BumperCatalogEntry` fields (additive,
-   version-tolerant, zero behavior change until something sets them).
-2. `AudioOnly`: wire `MatchingSession.PrepareFromCatalogEntry`'s `Wants*` override — smallest,
-   lowest-risk slice, directly fixes the thin-text-bumper finding, no new CLI command shape needed
-   beyond however the strategy gets set on the entry.
-3. `RemovalLength`: thread through `RemoveCommand`'s `ClipRemover.Remove` call, separate from the
-   matching-side `clipLength` — fixes the cross-fade finding, independent of the other two.
-4. `Trim`: the `add-bumper --trim` flow, `RemoveCommand`'s early-branch execution path, and
-   `match`'s dry-run behavior — largest, most structurally different slice, do last.
-5. Tests: `VBR.Tests` still can't reach `MatchingSession`/`RemoveCommand` (the pre-existing,
+1. Add `BumperMatchingStrategy` enum (seven values) + `RemovalLength` + the seven override fields +
+   the per-entry `FrameQualitySnapshot` field on `BumperCatalogEntry` (additive, version-tolerant,
+   zero behavior change until something sets them).
+2. `MatchingStrategy`: wire the `UseVisual`/`UseAudio`/`UsePHash` table into
+   `MatchingSession.PrepareFromCatalogEntry` — directly fixes the thin-text-bumper finding via
+   `AudioOnly`.
+3. Group A threshold overrides: clean, no open questions, do alongside item 2.
+4. `RemovalLength`: thread through `RemoveCommand`'s `ClipRemover.Remove` call, independent of 2/3.
+5. Group B: `BumperCatalogBuilder.AddBumper` captures `FrameQualitySnapshot.CaptureCurrent()` onto
+   the new entry — small, independent, no design ambiguity left.
+6. New standalone `trim` command (Change 1) — fully independent of everything else in this entry,
+   could be built and shipped first if it's the most urgent of the four.
+7. Tests: `VBR.Tests` still can't reach `MatchingSession`/`RemoveCommand` (the pre-existing,
    already-tracked `VBR.Tests`→`VBR.CLI` project-reference gap) — at minimum, unit-test
-   `BumperMatchingStrategy`'s serialization round-trip and any pure logic that can be pulled into
-   `VBR.Core` (e.g. `RemovalLength ?? Duration` resolution), and rely on live smoke-testing for the
-   CLI wiring itself, consistent with how this project has verified CLI changes all along.
+   `BumperMatchingStrategy`'s table resolution and `RemovalLength ?? Duration` if pulled into
+   `VBR.Core`, and rely on live smoke-testing for the CLI wiring itself, consistent with how this
+   project has verified CLI changes all along.
 
 ## Analysis: real-library testing findings, `testing_202608131708.md` (2026-08-13)
 
