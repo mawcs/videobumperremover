@@ -121,6 +121,7 @@ internal static class RemoveCommand {
 		cmd.Options.Add(PHashPresenceThreshold);
 		cmd.Options.Add(MinSimilarity);
 		cmd.Options.Add(Mode);
+		cmd.Options.Add(MatchingStrategyOverride);
 		cmd.Options.Add(Library);
 		cmd.Options.Add(ExcludeFolders);
 		cmd.Options.Add(TargetFile);
@@ -156,6 +157,7 @@ internal static class RemoveCommand {
 			float phashPresenceThreshold = parseResult.GetValue(PHashPresenceThreshold);
 			float minSimilarity = parseResult.GetValue(MinSimilarity);
 			DetectionMode mode = parseResult.GetValue(Mode);
+			BumperMatchingStrategy? matchingStrategyOverride = parseResult.GetValue(MatchingStrategyOverride);
 			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
 			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
 			var targetFile = parseResult.GetValue(TargetFile);
@@ -183,6 +185,11 @@ internal static class RemoveCommand {
 			}
 			if (catalogDbArg is not null && !catalogRefGiven) {
 				Console.Error.WriteLine("Error: --catalog-db must be accompanied by --bumper-label.");
+				return 1;
+			}
+			if (matchingStrategyOverride is not null && catalogRefGiven) {
+				Console.Error.WriteLine("Error: --matching-strategy is invalid together with --bumper-label -- " +
+					"the catalog entry's own stored strategy is used instead.");
 				return 1;
 			}
 			if (!catalogRefGiven) {
@@ -357,7 +364,7 @@ internal static class RemoveCommand {
 				? MatchingSession.PrepareFromCatalogEntry(mode, catalogEntry, profile, presenceThreshold,
 					phashPresenceThreshold, minSimilarity, dumpFrames?.FullName, verbose)
 				: await MatchingSession.PrepareAsync(mode, clipFromArg!, region, clipLength, profile, presenceThreshold,
-					phashPresenceThreshold, minSimilarity, dumpFrames?.FullName, verbose, ct);
+					phashPresenceThreshold, minSimilarity, matchingStrategyOverride, dumpFrames?.FullName, verbose, ct);
 			if (session is null) {
 				Console.Error.WriteLine(prepareError);
 				return 1;

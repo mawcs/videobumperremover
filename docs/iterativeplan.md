@@ -6,7 +6,20 @@ reference rather than deleted or overwritten.
 
 ## Per-bumper matching strategy — concrete design (2026-08-13, revised, built)
 
-**Status: built and live-verified (2026-08-13).** Revised twice per the maintainer's own
+**Status: built and live-verified (2026-08-13); extended 2026-08-14 with an ad hoc `--matching-strategy`
+override on `match`/`remove` themselves** ("we have ad-hoc scenarios with `--clip-from` I will want
+to do ad-hoc strategies") — `SharedOptions.MatchingStrategyOverride`
+(`Option<BumperMatchingStrategy?>`, nullable/no default, same idiom `Region` already uses for
+"omitted is observable"), invalid together with `--bumper-label` (whose catalog entry already has
+its own stored strategy). `MatchingSession.PrepareAsync` gained a `matchingStrategyOverride`
+parameter and calls the same `ApplyMatchingStrategy` a catalog entry already uses, but only when the
+flag is actually given — omitted, ad hoc behavior is byte-for-byte what it was before this addition
+(`--detection-mode` alone decides). Live-verified: `match --clip-from ... --detection-mode audio
+--matching-strategy visualonly` loaded the ONNX model and sampled/embedded visual frames with zero
+`[audio]` log lines — the override correctly beat `--detection-mode` for an ad hoc run, exactly the
+same "outrank, don't intersect" rule a catalog entry's own stored strategy already followed.
+
+Revised twice per the maintainer's own
 read-throughs before implementation started: the first pass reshaped all four changes (below); a
 second pass corrected two things in that draft — `Trim` moved from a `remove` mode to its own
 standalone top-level command, and Group B of the threshold-override change turned out to be a

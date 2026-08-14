@@ -63,13 +63,20 @@ namespace VDF.Core.FFTools {
 		static bool _nativeDisabledForSession;
 		const int NativeFailureThreshold = 5;
 
-		/// <summary>True when a native FFmpeg operation should be attempted.</summary>
-		static bool ShouldUseNativeBinding =>
+		/// <summary>True when a native FFmpeg operation should be attempted. Internal (not just
+		/// used within this class) since <see cref="ChromaprintEngine"/> needs the same gating
+		/// (2026-08-14 fix — it previously checked the raw <see cref="UseNativeBinding"/> toggle
+		/// directly, skipping both the <see cref="FFmpegNative.FFmpegHelper.CanLoadNativeLibraries"/>
+		/// probe and the session circuit breaker below, so on a machine where the shared libraries
+		/// can't actually be loaded it attempted (and logged a warning for) native decode on every
+		/// single file instead of falling back cleanly once, the exact class of bug this gate and
+		/// the circuit breaker were built to prevent for every other native call site).</summary>
+		internal static bool ShouldUseNativeBinding =>
 			UseNativeBinding && !_nativeDisabledForSession && FFmpegNative.FFmpegHelper.CanLoadNativeLibraries;
 
-		static void RecordNativeSuccess() => _nativeConsecutiveFailures = 0;
+		internal static void RecordNativeSuccess() => _nativeConsecutiveFailures = 0;
 
-		static void RecordNativeFailure(string file, Exception e) {
+		internal static void RecordNativeFailure(string file, Exception e) {
 			if (_nativeDisabledForSession)
 				return;
 			int n = ++_nativeConsecutiveFailures;

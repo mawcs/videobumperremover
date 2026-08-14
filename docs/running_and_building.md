@@ -73,6 +73,14 @@ Key options (run `--help` for the full list):
 - `--phash-presence-threshold` (default 0.96) — pHash's own presence gate, only relevant with
   `--detection-mode phash|all`. Treat `phash` mode as experimental: on real testing it's had a
   much narrower true/false-positive margin than visual and has missed real matches visual caught.
+- `--matching-strategy` (added 2026-08-14, ad hoc only — invalid together with `--bumper-label`,
+  whose catalog entry already has its own stored strategy) — the ad hoc counterpart to
+  `add-bumper`'s own `--matching-strategy` (see that section below): which signal(s) must agree for
+  *this run's* bumper, overriding `--detection-mode` outright when given (same values:
+  `corroborated`/`visualonly`/`audioonly`/`phashonly`/`novisual`/`noaudio`/`nophash`). Default:
+  unset — `--detection-mode` alone decides, today's exact behavior for every run that doesn't pass
+  this flag. For a one-off `--clip-from` investigation where a bumper needs a different strategy
+  than the rest of a catalog would use, without adding it to a catalog first.
 - **Exactly one of `--library <folder(s)>` or `--file <path>` is required.** `--library` accepts
   one or more semicolon-delimited folders (e.g. `"D:\Show;D:\Extras"`) — video files under every
   one are combined into a single candidate list (deduplicated, so overlapping/nested folders don't

@@ -174,10 +174,12 @@ internal sealed class MatchingSession : IDisposable {
 		this.verboseLogging = verboseLogging;
 	}
 
-	/// <summary>Resolves a catalog entry's <see cref="BumperMatchingStrategy"/> onto the three
-	/// internal <c>Wants*</c>-overriding flags — called exactly once, only by
-	/// <see cref="PrepareFromCatalogEntry"/>, right after construction and before anything checks
-	/// <see cref="WantsVisual"/>/<see cref="WantsAudio"/>/<see cref="WantsPHash"/>. Every named
+	/// <summary>Resolves a <see cref="BumperMatchingStrategy"/> onto the three internal
+	/// <c>Wants*</c>-overriding flags — called at most once, right after construction and before
+	/// anything checks <see cref="WantsVisual"/>/<see cref="WantsAudio"/>/<see cref="WantsPHash"/>,
+	/// by <see cref="PrepareFromCatalogEntry"/> (always, from the resolved entry's own stored value)
+	/// or by <see cref="PrepareAsync"/> (only when its own <c>matchingStrategyOverride</c> parameter
+	/// is non-null — the ad hoc <c>--matching-strategy</c> CLI flag, added 2026-08-14). Every named
 	/// <see cref="BumperMatchingStrategy"/> value leaves at least one flag <c>true</c> by
 	/// construction (see that enum's own doc comment) — the <c>_ =&gt;</c> arm below is a defensive
 	/// fallback to the safest behavior, not a reachable case for any value defined today.</summary>
@@ -201,12 +203,21 @@ internal sealed class MatchingSession : IDisposable {
 	/// any failure a caller should print and exit nonzero for — same failure messages as before
 	/// this refactor (clip produced no usable frames, extraction failed, etc.).
 	/// </summary>
+	/// <param name="matchingStrategyOverride">Ad hoc counterpart to a catalog entry's own stored
+	/// <see cref="BumperMatchingStrategy"/> (docs/iterativeplan.md, "Per-bumper matching strategy"
+	/// entry; ad hoc override added 2026-08-14) — null (the default, i.e. the CLI flag was omitted)
+	/// leaves <paramref name="mode"/> in sole control, today's exact behavior for every ad hoc call
+	/// site that predates this parameter. When given, resolved via the same
+	/// <see cref="ApplyMatchingStrategy"/> a catalog entry uses, overriding <paramref name="mode"/>
+	/// outright rather than intersecting with it.</param>
 	internal static async Task<(MatchingSession? session, string? error)> PrepareAsync(
 			DetectionMode mode, FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, EdgeDensityProfile profile,
 			float presenceThreshold, float phashPresenceThreshold, float minSimilarity,
-			string? dumpFramesDir, bool verbose, CancellationToken ct) {
+			BumperMatchingStrategy? matchingStrategyOverride, string? dumpFramesDir, bool verbose, CancellationToken ct) {
 		var session = new MatchingSession(mode, region, profile, presenceThreshold,
 			VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold, phashPresenceThreshold, minSimilarity, dumpFramesDir, verbose);
+		if (matchingStrategyOverride is { } strategy)
+			session.ApplyMatchingStrategy(strategy);
 		try {
 			if (session.WantsVisual || session.WantsPHash) {
 				session.sampler = new MixedDensitySampler(verbose);

@@ -53,14 +53,21 @@ namespace VDF.Core.FFTools {
 		/// Returns an empty array when the file has no usable audio.
 		/// </summary>
 		internal static uint[]? ExtractFingerprint(string filePath, bool extendedLogging, CancellationToken ct = default, Action<double>? onProgress = null) {
-			if (FfmpegEngine.UseNativeBinding) {
+			// Was FfmpegEngine.UseNativeBinding (the raw, ungated toggle) until 2026-08-14 -- that
+			// skipped both the CanLoadNativeLibraries probe and the session circuit breaker every
+			// other native call site uses, so on a machine where the shared libraries are present
+			// but can't actually be loaded/called (issues #793/#795), this attempted -- and logged a
+			// fresh warning for -- native decode on every single file instead of falling back once.
+			// ShouldUseNativeBinding + RecordNativeSuccess/RecordNativeFailure is the same shared
+			// mechanism FfmpegEngine's own native call sites already use for exactly this reason.
+			if (FfmpegEngine.ShouldUseNativeBinding) {
 				try {
-					return ExtractFingerprintNative(filePath, extendedLogging, ct, onProgress);
+					uint[]? result = ExtractFingerprintNative(filePath, extendedLogging, ct, onProgress);
+					FfmpegEngine.RecordNativeSuccess();
+					return result;
 				}
 				catch (Exception e) {
-					Logger.Instance.Warn(
-						$"[ChromaprintEngine] Native binding failed on '{Path.GetFileName(filePath)}', " +
-						$"falling back to process mode. Exception: {e.Message}");
+					FfmpegEngine.RecordNativeFailure(filePath, e);
 				}
 			}
 			return ExtractFingerprintProcess(filePath, extendedLogging, ct);

@@ -18,6 +18,7 @@ using System.CommandLine;
 using System.CommandLine.Parsing;
 using System.Globalization;
 using System.Linq;
+using VBR.Core.Catalog;
 using VBR.Core.Configuration;
 using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
@@ -234,6 +235,25 @@ internal static class SharedOptions {
 			"narrower true/false-positive margin than visual in real testing -- see " +
 			"--phash-presence-threshold's note before relying on it standalone.",
 		DefaultValueFactory = _ => DetectionMode.all,
+	};
+
+	// Ad hoc counterpart to add-bumper's own --matching-strategy (which stores the same enum on a
+	// catalog entry) -- added 2026-08-14 per the maintainer: "we have ad-hoc scenarios with
+	// --clip-from I will want to do ad-hoc strategies." Option<BumperMatchingStrategy?> (nullable, no
+	// DefaultValueFactory), not Option<BumperMatchingStrategy>, specifically so "omitted" is
+	// observable as null and MatchingSession.PrepareAsync can leave today's exact --detection-mode-only
+	// behavior completely untouched when this flag isn't given -- same reasoning Region (Option<ClipEdge?>)
+	// already documents for itself. When given, it overrides --detection-mode outright for this run,
+	// the same "not an intersection" rule a catalog entry's own stored strategy already applies (see
+	// BumperMatchingStrategy's own doc comment) -- so it's invalid together with --bumper-label, whose
+	// catalog entry already has its own curated strategy that would otherwise silently compete with it.
+	internal static readonly Option<BumperMatchingStrategy?> MatchingStrategyOverride = new("--matching-strategy") {
+		Description = "Ad hoc only (invalid with --bumper-label, whose catalog entry already has its " +
+			"own stored strategy): which signal(s) must agree for this run's bumper to count as " +
+			"present, overriding --detection-mode outright when given (corroborated|visualonly|" +
+			"audioonly|phashonly|novisual|noaudio|nophash). Default: unset, i.e. --detection-mode " +
+			"alone decides (today's exact behavior). Same enum add-bumper's own --matching-strategy " +
+			"stores on a catalog entry, made available here for one-off ad hoc runs.",
 	};
 
 	// Not Required: exactly one of Library/TargetFile must be given, validated in each command's
