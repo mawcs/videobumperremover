@@ -231,6 +231,40 @@ the bumper). Both are documented, accepted v1 stream-copy characteristics (see t
 **Re-encode cut points are frame-accurate** (~28ms off in testing) — this is the main practical
 reason to prefer it beyond subtitle correctness.
 
+### Run — `vbr trim`
+
+```sh
+dotnet run --project VBR.CLI -- trim --help
+```
+
+Cuts a fixed `--length` from the `--region` edge of every file under `--paths`, **unconditionally —
+no matching, no fingerprints, no catalog concept at all** (docs/iterativeplan.md, "Per-bumper
+matching strategy" entry, Change 1). A standalone top-level command, not a `remove` mode — `remove`'s
+entire matching surface (`--detection-mode`, `--presence-threshold`, `--catalog-db`, ...) is
+meaningless here, so it doesn't exist on this command at all. For when you already know exactly what
+needs to come off (e.g. a fixed-length intro every file in a folder shares) and don't need presence
+detection. Uses the same `ClipRemover.Remove` cut mechanism `remove` does, so everything in that
+section above about `--re-encode`'s two modes, stream-copy's keyframe-bound cut points, and
+re-encode's frame-accuracy applies here unchanged.
+
+```sh
+dotnet run --project VBR.CLI -- trim --length 4.5s --region begin --paths "D:\Media\Show\S01E01.mkv;D:\Media\Extras"
+```
+
+Key options:
+
+- `--length` (required) / `--region begin|end` (required) — how much to cut, and from which edge.
+- `--paths` (required) — semicolon-delimited list of files **and/or** folders, replacing
+  `--library`/`--file`/`--library-db` entirely for this command: a file entry is trimmed as-is (no
+  extension filter, same trust convention `--file` uses elsewhere); a folder entry is walked for
+  recognized video files, same as `--library`. Every entry must exist (a missing path is a
+  parse-time error). `--no-recurse`/`--exclude-folders` apply to any folder entries, same meaning as
+  everywhere else.
+- Every resolved candidate is trimmed **with zero content verification** — a folder entry
+  containing files that don't actually have the described segment is silently truncated too.
+  That's inherent to "no matching, on purpose," not a flaw to design around.
+- `--output <file>` — write the trim report to a file, same shape as `match`/`remove`'s own.
+
 ### Run — `vbr commit`
 
 ```sh
@@ -410,6 +444,27 @@ Key options:
   counts, and exact ffmpeg commands run, to the console and `log.txt`.
 - `--hardware-accel` / `--no-native-ffmpeg-binding` — same shared GPU/native-decode options as
   `match` (see above).
+- **Per-bumper overrides, stored on the new entry and read back by `match`/`remove` whenever this
+  bumper is resolved via `--bumper-label`** (docs/iterativeplan.md, "Per-bumper matching strategy"
+  entry, 2026-08-13) — all optional, all default to "inherit the global behavior," so a bumper added
+  without any of these behaves exactly as before:
+  - `--matching-strategy` (default `corroborated`) — which signal(s) must agree for *this* bumper to
+    count as present, overriding `--detection-mode` outright when it's resolved (not intersecting
+    with it): `corroborated` (today's behavior) / `visualonly` / `audioonly` / `phashonly` /
+    `novisual` / `noaudio` / `nophash`. E.g. `audioonly` for a bumper visual detection can't reliably
+    identify (thin/flowing motion graphics) but that has clear, distinguishing audio.
+  - `--removal-length` — how much to actually cut on `remove`, when it differs from `--clip-length`
+    (the region used to *identify* the bumper) — e.g. a cross-fade needing a few extra seconds
+    stripped beyond what's needed to match reliably. Default: same as `--clip-length`.
+  - `--presence-threshold-override` / `--rigid-hit-threshold-override` /
+    `--phash-presence-threshold-override` / `--audio-min-similarity-override` (each `(0, 1]`) —
+    per-bumper overrides of the matching global values in `vbr.config.json`, for a bumper whose real
+    characteristics don't fit the same threshold every other bumper in the catalog uses (e.g. an
+    audio veto that's too strict for one specific bumper's music/audio profile).
+  - The `frameQuality` values active at the moment this bumper was sampled are captured
+    automatically (no flag) as pure provenance — never read back to influence matching, only to let
+    `match`/`remove`'s staleness warning compare against *this entry's own* recipe rather than the
+    whole catalog's.
 
 **Verified live (2026-07-28)** against a real Daredevil episode's Netflix end-card (`--region end
 --clip-length 8s`, the same length ADR 0007 independently measured for it): 17 usable fingerprints,

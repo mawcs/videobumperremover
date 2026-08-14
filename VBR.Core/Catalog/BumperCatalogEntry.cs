@@ -106,4 +106,51 @@ public sealed partial class BumperCatalogEntry {
 	/// it — adding a bumper doesn't remove anything itself.</summary>
 	[MemoryPackOrder(13)]
 	public int OccurrenceCount { get; set; }
+
+	/// <summary>Which signal(s) must agree for this bumper to count as present — default
+	/// <see cref="BumperMatchingStrategy.Corroborated"/> preserves today's exact behavior for every
+	/// entry that predates this field (docs/iterativeplan.md, "Per-bumper matching strategy" entry,
+	/// 2026-08-13).</summary>
+	[MemoryPackOrder(14)]
+	public BumperMatchingStrategy MatchingStrategy { get; set; } = BumperMatchingStrategy.Corroborated;
+
+	/// <summary>How much to cut on an actual <c>remove</c>, when it differs from <see cref="Duration"/>
+	/// (the region used to *identify* this bumper) — e.g. a cross-fade that needs a few extra seconds
+	/// stripped beyond what's needed to match reliably. Null (the default) falls back to
+	/// <see cref="Duration"/>, i.e. today's exact single-length behavior for every entry that
+	/// predates this field.</summary>
+	[MemoryPackOrder(15)]
+	public TimeSpan? RemovalLength { get; set; }
+
+	/// <summary>Per-bumper override of <c>VbrConfig.Current.Matching.PresenceThreshold</c> — null uses
+	/// the global config value. This and the other three "matching" overrides below ("Group A") are
+	/// genuine, live, comparison-time overrides (they judge an already-computed similarity score,
+	/// never what got sampled) — contrast <see cref="FrameQualitySnapshot"/> below ("Group B"), which
+	/// is provenance/metadata only, never read back to influence anything. See docs/iterativeplan.md's
+	/// "Per-bumper matching strategy" entry.</summary>
+	[MemoryPackOrder(19)]
+	public float? PresenceThreshold { get; set; }
+
+	/// <summary>Per-bumper override of <c>VbrConfig.Current.Matching.RigidHitThreshold</c>.</summary>
+	[MemoryPackOrder(20)]
+	public float? RigidHitThreshold { get; set; }
+
+	/// <summary>Per-bumper override of <c>VbrConfig.Current.Matching.PHashPresenceThreshold</c>.</summary>
+	[MemoryPackOrder(21)]
+	public float? PHashPresenceThreshold { get; set; }
+
+	/// <summary>Per-bumper override of <c>VbrConfig.Current.Matching.AudioMinSimilarity</c>.</summary>
+	[MemoryPackOrder(22)]
+	public float? AudioMinSimilarity { get; set; }
+
+	/// <summary>The <c>frameQuality</c> config values active when this specific entry was added —
+	/// pure provenance/metadata (docs/iterativeplan.md's "Per-bumper matching strategy" entry,
+	/// "Group B" — deliberately never read back to influence matching itself, only to explain how
+	/// this entry's own <see cref="Fingerprints"/> came to be, and to let the staleness warning
+	/// compare against *this entry's own* recipe rather than the whole catalog's). Null for any
+	/// entry added before this field existed, or before the per-entry stamp was wired in — treated
+	/// as "unknown, not provably stale," same convention as <see cref="Catalog.BumperCatalog"/>'s own
+	/// whole-file <c>FrameQualitySnapshot</c>.</summary>
+	[MemoryPackOrder(23)]
+	public Configuration.FrameQualitySnapshot? FrameQualitySnapshot { get; set; }
 }

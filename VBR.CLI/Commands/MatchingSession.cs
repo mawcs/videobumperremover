@@ -122,10 +122,17 @@ internal sealed class MatchingSession : IDisposable {
 	readonly ClipEdge region;
 	readonly EdgeDensityProfile profile;
 	readonly float presenceThreshold;
+	readonly float rigidHitThreshold;
 	readonly float phashPresenceThreshold;
 	readonly float minSimilarity;
 	readonly string? dumpFramesDir;
 	readonly bool verboseLogging;
+
+	// Per-bumper BumperMatchingStrategy resolution (docs/iterativeplan.md, "Per-bumper matching
+	// strategy" entry, 2026-08-13) -- all three null means "no override," i.e. an ad hoc session
+	// (PrepareAsync), which falls through to mode-based Wants* below. Set together, only by
+	// PrepareFromCatalogEntry via ApplyMatchingStrategy, right after construction.
+	bool? strategyUseVisual, strategyUseAudio, strategyUsePHash;
 
 	MixedDensitySampler? sampler; // only used for ad hoc (fresh-sampled) candidates -- never touched by CompareUsingDatabase
 	VisualBumperMatcher? visualForPresence; // carries presenceThreshold for MatchMixedDensity; never opens an ONNX session on its own
@@ -135,9 +142,14 @@ internal sealed class MatchingSession : IDisposable {
 	IReadOnlyList<TimedFrame>? clipEmbeddings;
 	IReadOnlyList<TimedPHash>? clipHashes;
 
-	bool WantsVisual => mode is DetectionMode.visual or DetectionMode.both or DetectionMode.all;
-	bool WantsAudio => mode is DetectionMode.audio or DetectionMode.both or DetectionMode.all;
-	bool WantsPHash => mode is DetectionMode.phash or DetectionMode.all;
+	// A per-bumper strategy overrides --detection-mode outright when set, rather than intersecting
+	// with it -- docs/iterativeplan.md's own reasoning: intersecting two independently-chosen sets
+	// could leave a bumper with nothing able to decide at all (e.g. --detection-mode visual paired
+	// with a stored AudioOnly bumper). Ad hoc sessions have no strategy to read, so these always
+	// fall through to the mode-based check unchanged from before this entry.
+	bool WantsVisual => strategyUseVisual ?? (mode is DetectionMode.visual or DetectionMode.both or DetectionMode.all);
+	bool WantsAudio => strategyUseAudio ?? (mode is DetectionMode.audio or DetectionMode.both or DetectionMode.all);
+	bool WantsPHash => strategyUsePHash ?? (mode is DetectionMode.phash or DetectionMode.all);
 
 	/// <summary>Whether the reference clip's own audio carries enough real content for a comparison
 	/// against it to mean anything — exactly the predicate <see cref="Matching.AudioBumperMatcher.MatchFingerprints"/>
@@ -149,15 +161,36 @@ internal sealed class MatchingSession : IDisposable {
 	bool ReferenceHasUsableAudio => referenceAudioFingerprint is { Length: >= 2 };
 
 	MatchingSession(DetectionMode mode, ClipEdge region, EdgeDensityProfile profile,
-			float presenceThreshold, float phashPresenceThreshold, float minSimilarity, string? dumpFramesDir, bool verboseLogging) {
+			float presenceThreshold, float rigidHitThreshold, float phashPresenceThreshold, float minSimilarity,
+			string? dumpFramesDir, bool verboseLogging) {
 		this.mode = mode;
 		this.region = region;
 		this.profile = profile;
 		this.presenceThreshold = presenceThreshold;
+		this.rigidHitThreshold = rigidHitThreshold;
 		this.phashPresenceThreshold = phashPresenceThreshold;
 		this.minSimilarity = minSimilarity;
 		this.dumpFramesDir = dumpFramesDir;
 		this.verboseLogging = verboseLogging;
+	}
+
+	/// <summary>Resolves a catalog entry's <see cref="BumperMatchingStrategy"/> onto the three
+	/// internal <c>Wants*</c>-overriding flags — called exactly once, only by
+	/// <see cref="PrepareFromCatalogEntry"/>, right after construction and before anything checks
+	/// <see cref="WantsVisual"/>/<see cref="WantsAudio"/>/<see cref="WantsPHash"/>. Every named
+	/// <see cref="BumperMatchingStrategy"/> value leaves at least one flag <c>true</c> by
+	/// construction (see that enum's own doc comment) — the <c>_ =&gt;</c> arm below is a defensive
+	/// fallback to the safest behavior, not a reachable case for any value defined today.</summary>
+	void ApplyMatchingStrategy(BumperMatchingStrategy strategy) {
+		(strategyUseVisual, strategyUseAudio, strategyUsePHash) = strategy switch {
+			BumperMatchingStrategy.VisualOnly => (true, false, false),
+			BumperMatchingStrategy.AudioOnly => (false, true, false),
+			BumperMatchingStrategy.PhashOnly => (false, false, true),
+			BumperMatchingStrategy.NoVisual => (false, true, true),
+			BumperMatchingStrategy.NoAudio => (true, false, true),
+			BumperMatchingStrategy.NoPhash => (true, true, false),
+			_ => (true, true, true), // Corroborated, and any future/unknown value.
+		};
 	}
 
 	/// <summary>
@@ -172,12 +205,13 @@ internal sealed class MatchingSession : IDisposable {
 			DetectionMode mode, FileInfo clipFrom, ClipEdge region, TimeSpan clipLength, EdgeDensityProfile profile,
 			float presenceThreshold, float phashPresenceThreshold, float minSimilarity,
 			string? dumpFramesDir, bool verbose, CancellationToken ct) {
-		var session = new MatchingSession(mode, region, profile, presenceThreshold, phashPresenceThreshold, minSimilarity, dumpFramesDir, verbose);
+		var session = new MatchingSession(mode, region, profile, presenceThreshold,
+			VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold, phashPresenceThreshold, minSimilarity, dumpFramesDir, verbose);
 		try {
 			if (session.WantsVisual || session.WantsPHash) {
 				session.sampler = new MixedDensitySampler(verbose);
 				session.visualForPresence = new VisualBumperMatcher(
-					presenceThreshold: presenceThreshold, rigidHitThreshold: VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold);
+					presenceThreshold: session.presenceThreshold, rigidHitThreshold: session.rigidHitThreshold);
 
 				if (session.WantsVisual)
 					await SharedOptions.EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
@@ -241,12 +275,24 @@ internal sealed class MatchingSession : IDisposable {
 			DetectionMode mode, BumperCatalogEntry entry, EdgeDensityProfile profile,
 			float presenceThreshold, float phashPresenceThreshold, float minSimilarity,
 			string? dumpFramesDir, bool verboseLogging) {
-		var session = new MatchingSession(mode, entry.Region, profile, presenceThreshold, phashPresenceThreshold, minSimilarity, dumpFramesDir, verboseLogging);
+		// Group A per-bumper overrides (docs/iterativeplan.md, "Per-bumper matching strategy" entry)
+		// -- entry.X wins when set, otherwise falls back to whatever the caller already resolved
+		// from config/CLI. Safe here and only here: these judge an already-computed similarity
+		// score, never what got sampled, so there's nothing to reconcile against a database
+		// candidate's own already-persisted fingerprints.
+		float effectivePresenceThreshold = entry.PresenceThreshold ?? presenceThreshold;
+		float effectiveRigidHitThreshold = entry.RigidHitThreshold ?? VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold;
+		float effectivePHashPresenceThreshold = entry.PHashPresenceThreshold ?? phashPresenceThreshold;
+		float effectiveMinSimilarity = entry.AudioMinSimilarity ?? minSimilarity;
+
+		var session = new MatchingSession(mode, entry.Region, profile, effectivePresenceThreshold,
+			effectiveRigidHitThreshold, effectivePHashPresenceThreshold, effectiveMinSimilarity, dumpFramesDir, verboseLogging);
+		session.ApplyMatchingStrategy(entry.MatchingStrategy);
 
 		if (session.WantsVisual || session.WantsPHash) {
 			session.sampler = new MixedDensitySampler(verboseLogging);
 			session.visualForPresence = new VisualBumperMatcher(
-					presenceThreshold: presenceThreshold, rigidHitThreshold: VBR.Core.Configuration.VbrConfig.Current.Matching.RigidHitThreshold);
+					presenceThreshold: session.presenceThreshold, rigidHitThreshold: session.rigidHitThreshold);
 			session.clipEmbeddings = ToTimedFrames(entry.Fingerprints);
 			session.clipHashes = ToTimedPHashes(entry.Fingerprints);
 			if (session.clipEmbeddings.Count < 1) {

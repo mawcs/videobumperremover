@@ -15,6 +15,8 @@
 //
 
 using System.CommandLine;
+using System.CommandLine.Parsing;
+using System.Globalization;
 using VBR.Core.Catalog;
 using VBR.Core.Configuration;
 using VBR.Core.Extraction;
@@ -77,6 +79,86 @@ internal static class AddBumperCommand {
 		CustomParser = r => ParseDurationArg(r, TimeSpan.FromSeconds(VbrConfig.Current.Sampling.AddBumperSampleIntervalSeconds)),
 	};
 
+	// Six options, all optional/null-default, storing per-bumper overrides onto the new entry
+	// (docs/iterativeplan.md, "Per-bumper matching strategy" entry, 2026-08-13) -- distinctly named
+	// (not reusing SharedOptions.PresenceThreshold/PHashPresenceThreshold/MinSimilarity's own names)
+	// since these mean something different here: "store this as an override for future match/remove
+	// runs against this bumper," not "use this threshold for the current run." Exact flag names were
+	// explicitly left open in that entry ("not bikeshedded yet") -- resolved here.
+	static readonly Option<BumperMatchingStrategy> MatchingStrategyOption = new("--matching-strategy") {
+		Description = "Which signal(s) must agree for this bumper to count as present -- overrides " +
+			"--detection-mode outright for this bumper on match/remove (corroborated|visualonly|" +
+			"audioonly|phashonly|novisual|noaudio|nophash). Default 'corroborated': every signal that " +
+			"runs and applies must agree (today's behavior). Use e.g. 'audioonly' for a bumper visual " +
+			"detection can't reliably identify but that has clear, distinguishing audio.",
+		DefaultValueFactory = _ => BumperMatchingStrategy.Corroborated,
+	};
+
+	static readonly Option<TimeSpan?> RemovalLengthOption = new("--removal-length") {
+		Description = "How much to actually cut on 'remove', when it differs from --clip-length " +
+			"(the region used to identify this bumper) -- e.g. a cross-fade that needs a few extra " +
+			"seconds stripped beyond what's needed to match reliably. A plain number of seconds, or " +
+			"suffixed like '8s' / '5.1s'. Default: unset, i.e. same as --clip-length (today's exact " +
+			"single-length behavior).",
+		CustomParser = ParseNullableDurationArg,
+	};
+
+	static readonly Option<float?> PresenceThresholdOverride = new("--presence-threshold-override") {
+		Description = "Per-bumper override of matching.presenceThreshold (0-1] for this bumper on " +
+			"match/remove -- null (default, i.e. omitted) inherits vbr.config.json's global value.",
+		CustomParser = ParseNullableInvariantFloat,
+	};
+
+	static readonly Option<float?> RigidHitThresholdOverride = new("--rigid-hit-threshold-override") {
+		Description = "Per-bumper override of matching.rigidHitThreshold (0-1] for this bumper -- " +
+			"null (default, i.e. omitted) inherits vbr.config.json's global value.",
+		CustomParser = ParseNullableInvariantFloat,
+	};
+
+	static readonly Option<float?> PHashPresenceThresholdOverride = new("--phash-presence-threshold-override") {
+		Description = "Per-bumper override of matching.phashPresenceThreshold (0-1] for this bumper " +
+			"on match/remove -- null (default, i.e. omitted) inherits vbr.config.json's global value.",
+		CustomParser = ParseNullableInvariantFloat,
+	};
+
+	static readonly Option<float?> AudioMinSimilarityOverride = new("--audio-min-similarity-override") {
+		Description = "Per-bumper override of matching.audioMinSimilarity (0-1] for this bumper on " +
+			"match/remove -- null (default, i.e. omitted) inherits vbr.config.json's global value. " +
+			"Directly fixes an audio veto that's too strict for one specific bumper's real audio " +
+			"characteristics, without loosening the global threshold for every other bumper.",
+		CustomParser = ParseNullableInvariantFloat,
+	};
+
+	static TimeSpan? ParseNullableDurationArg(ArgumentResult result) {
+		if (result.Tokens.Count == 0) return null;
+		try { return ParseDuration(result.Tokens[0].Value); }
+		catch (FormatException ex) {
+			result.AddError(ex.Message);
+			return null;
+		}
+	}
+
+	// Same (0, 1] range VbrConfigLoader enforces on the matching global values these override --
+	// checked here too since an out-of-range override would otherwise sail through and silently
+	// misbehave the first time a match/remove run actually reads it back.
+	static bool UnitRangeOrNull(float? value, string flagName, out string? error) {
+		if (value is not { } v || (v > 0 && v <= 1)) {
+			error = null;
+			return true;
+		}
+		error = $"{flagName} must be in (0, 1] (got {v}).";
+		return false;
+	}
+
+	static float? ParseNullableInvariantFloat(ArgumentResult result) {
+		if (result.Tokens.Count == 0) return null;
+		string token = result.Tokens[0].Value;
+		if (float.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out float value))
+			return value;
+		result.AddError($"'{token}' is not a valid number (use '.' as the decimal separator, e.g. 0.8).");
+		return null;
+	}
+
 	internal static Command Build() {
 		var cmd = new Command("add-bumper",
 			"Add one bumper to a named catalog -- samples --clip-from's requested region, extracts " +
@@ -90,6 +172,12 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(TagsOption);
 		cmd.Options.Add(CatalogDb);
 		cmd.Options.Add(SampleInterval);
+		cmd.Options.Add(MatchingStrategyOption);
+		cmd.Options.Add(RemovalLengthOption);
+		cmd.Options.Add(PresenceThresholdOverride);
+		cmd.Options.Add(RigidHitThresholdOverride);
+		cmd.Options.Add(PHashPresenceThresholdOverride);
+		cmd.Options.Add(AudioMinSimilarityOverride);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
 		cmd.Options.Add(HardwareAccel);
@@ -104,6 +192,12 @@ internal static class AddBumperCommand {
 			string? tagsArg = parseResult.GetValue(TagsOption);
 			FileInfo? catalogDbArg = parseResult.GetValue(CatalogDb);
 			TimeSpan sampleInterval = parseResult.GetValue(SampleInterval);
+			BumperMatchingStrategy matchingStrategy = parseResult.GetValue(MatchingStrategyOption);
+			TimeSpan? removalLength = parseResult.GetValue(RemovalLengthOption);
+			float? presenceThresholdOverride = parseResult.GetValue(PresenceThresholdOverride);
+			float? rigidHitThresholdOverride = parseResult.GetValue(RigidHitThresholdOverride);
+			float? phashPresenceThresholdOverride = parseResult.GetValue(PHashPresenceThresholdOverride);
+			float? audioMinSimilarityOverride = parseResult.GetValue(AudioMinSimilarityOverride);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
@@ -139,6 +233,17 @@ internal static class AddBumperCommand {
 			}
 			if (description is not null && description.Length > MaxDescriptionLength) {
 				Console.Error.WriteLine($"Error: --description must be {MaxDescriptionLength} characters or fewer (got {description.Length}).");
+				return 1;
+			}
+			if (removalLength is { } rl && rl <= TimeSpan.Zero) {
+				Console.Error.WriteLine("Error: --removal-length must be positive.");
+				return 1;
+			}
+			if (!UnitRangeOrNull(presenceThresholdOverride, "--presence-threshold-override", out string? unitError)
+					|| !UnitRangeOrNull(rigidHitThresholdOverride, "--rigid-hit-threshold-override", out unitError)
+					|| !UnitRangeOrNull(phashPresenceThresholdOverride, "--phash-presence-threshold-override", out unitError)
+					|| !UnitRangeOrNull(audioMinSimilarityOverride, "--audio-min-similarity-override", out unitError)) {
+				Console.Error.WriteLine($"Error: {unitError}");
 				return 1;
 			}
 			// Same class of mistake --library-db/--log-file guard against elsewhere (docs/
@@ -207,6 +312,16 @@ internal static class AddBumperCommand {
 				return 1;
 			}
 
+			// Catalog/CLI-level concerns, not part of clip sampling -- BumperCatalogBuilder.AddBumper
+			// only knows how to turn a clip request into fingerprints/thumbnail/reference clip, per
+			// its own doc comment (docs/iterativeplan.md, "Per-bumper matching strategy" entry).
+			entry.MatchingStrategy = matchingStrategy;
+			entry.RemovalLength = removalLength;
+			entry.PresenceThreshold = presenceThresholdOverride;
+			entry.RigidHitThreshold = rigidHitThresholdOverride;
+			entry.PHashPresenceThreshold = phashPresenceThresholdOverride;
+			entry.AudioMinSimilarity = audioMinSimilarityOverride;
+
 			catalog.Entries[entry.Id] = entry;
 			try {
 				BumperCatalogStore.Save(catalog, catalogPath);
@@ -220,6 +335,22 @@ internal static class AddBumperCommand {
 			Console.WriteLine($"  Region: {entry.Region}, Duration: {entry.Duration.TotalSeconds:0.###}s, " +
 				$"Fingerprints: {entry.Fingerprints.Length}, Thumbnail: {(entry.Thumbnail.Length > 0 ? $"{entry.Thumbnail.Length:N0} bytes" : "none")}");
 			Console.WriteLine($"  Reference clip: {Path.Combine(clipsFolder, entry.Id + ".mkv")}");
+			// Only printed when something actually deviates from the all-inherited default -- a
+			// Corroborated bumper with no overrides at all (the common case) gets no extra noise.
+			bool hasOverrides = matchingStrategy != BumperMatchingStrategy.Corroborated || removalLength is not null
+				|| presenceThresholdOverride is not null || rigidHitThresholdOverride is not null
+				|| phashPresenceThresholdOverride is not null || audioMinSimilarityOverride is not null;
+			if (hasOverrides) {
+				Console.WriteLine($"  Matching strategy: {matchingStrategy}" +
+					(removalLength is { } removalLengthValue ? $", removal-length: {removalLengthValue.TotalSeconds:0.###}s" : string.Empty));
+				var overrideParts = new List<string>(4);
+				if (presenceThresholdOverride is { } pt) overrideParts.Add($"presence-threshold: {pt:0.###}");
+				if (rigidHitThresholdOverride is { } rht) overrideParts.Add($"rigid-hit-threshold: {rht:0.###}");
+				if (phashPresenceThresholdOverride is { } pht) overrideParts.Add($"phash-presence-threshold: {pht:0.###}");
+				if (audioMinSimilarityOverride is { } ams) overrideParts.Add($"audio-min-similarity: {ams:0.###}");
+				if (overrideParts.Count > 0)
+					Console.WriteLine($"  Threshold overrides: {string.Join(", ", overrideParts)}");
+			}
 			Console.WriteLine($"Catalog: {catalogPath}");
 			return 0;
 		});

@@ -43,6 +43,7 @@ catch (System.InvalidOperationException ex) {
 var root = new RootCommand("vbr-cli — Video Bumper Remover command-line interface");
 root.Subcommands.Add(MatchCommand.Build());
 root.Subcommands.Add(RemoveCommand.Build());
+root.Subcommands.Add(TrimCommand.Build());
 root.Subcommands.Add(CommitCommand.Build());
 root.Subcommands.Add(ScanCommand.Build());
 root.Subcommands.Add(AddBumperCommand.Build());

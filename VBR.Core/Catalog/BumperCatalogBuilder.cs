@@ -157,6 +157,7 @@ public static class BumperCatalogBuilder {
 			SourceVideoPath = Path.GetFullPath(sourcePath),
 			DateAdded = DateTime.UtcNow,
 			OccurrenceCount = 0,
+			FrameQualitySnapshot = Configuration.FrameQualitySnapshot.CaptureCurrent(),
 		};
 	}
 

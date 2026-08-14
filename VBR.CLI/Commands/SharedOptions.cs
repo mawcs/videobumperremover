@@ -334,6 +334,20 @@ internal static class SharedOptions {
 			"troubleshooting) rather than trust that fallback.",
 	};
 
+	// Shared by remove and trim (moved here from RemoveCommand 2026-08-13, docs/iterativeplan.md,
+	// "Per-bumper matching strategy" entry, Change 1: "reused as-is, since a real cut still happens
+	// via ClipRemover.Remove") -- identical semantics both places, so one Option instance keeps their
+	// help text and parsing from drifting apart, same rationale as every other option in this file.
+	internal static readonly Option<bool> ReEncode = new("--re-encode") {
+		Description = "Re-encode (Mode B: frame-accurate, correctly realigns subtitle cues) vs. " +
+			"stream-copy (Mode A: much faster — no decode/encode — but keyframe-bound, and " +
+			"begin-region cuts do NOT realign subtitle cues). Default true. Re-encode decodes " +
+			"and re-encodes the entire kept portion of the file, not just the trimmed region, so " +
+			"it is far slower than stream-copy — expect it to take roughly as long as encoding " +
+			"the video normally would.",
+		DefaultValueFactory = _ => true,
+	};
+
 	// commit-only, but defined here alongside Verbose/TargetFile/Library rather than in
 	// CommitCommand — SharedOptions is this project's one place option definitions live,
 	// per its own doc comment above, even though this one option isn't shared with match/remove.

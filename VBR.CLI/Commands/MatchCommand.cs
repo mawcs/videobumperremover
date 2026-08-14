@@ -230,14 +230,6 @@ internal static class MatchCommand {
 					Console.Error.WriteLine($"Error: {ex.Message}");
 					return 1;
 				}
-				// Recipe-staleness check (docs/iterativeplan.md, "File-path DB options" entry, Part 3)
-				// -- unconditional, not gated on --verbose: a stale frameQuality recipe can produce
-				// silently wrong match results, not just a cosmetic difference.
-				string? catalogStalenessWarning = FrameQualitySnapshot.DescribeMismatchFromCurrent(
-					catalog.FrameQualitySnapshot, $"Catalog '{resolvedCatalogName}'");
-				if (catalogStalenessWarning is not null)
-					Console.Error.WriteLine($"Warning: {catalogStalenessWarning}");
-
 				catalogEntry = catalog.Entries.Values.FirstOrDefault(
 					e => string.Equals(e.Label, bumperLabel, StringComparison.OrdinalIgnoreCase));
 				if (catalogEntry is null) {
@@ -246,6 +238,17 @@ internal static class MatchCommand {
 				}
 				region = catalogEntry.Region;
 				clipLength = catalogEntry.Duration;
+
+				// Recipe-staleness check (docs/iterativeplan.md, "File-path DB options" entry, Part 3;
+				// switched to per-entry 2026-08-13, "Per-bumper matching strategy" entry) -- unconditional,
+				// not gated on --verbose: a stale frameQuality recipe can produce silently wrong match
+				// results, not just a cosmetic difference. Compares the resolved bumper's own stamp, not
+				// the whole catalog file's, since different entries can have been added under different
+				// frameQuality settings.
+				string? catalogStalenessWarning = FrameQualitySnapshot.DescribeMismatchFromCurrent(
+					catalogEntry.FrameQualitySnapshot, $"Bumper '{bumperLabel}' in catalog '{resolvedCatalogName}'");
+				if (catalogStalenessWarning is not null)
+					Console.Error.WriteLine($"Warning: {catalogStalenessWarning}");
 			}
 			else {
 				region = regionArg!.Value;

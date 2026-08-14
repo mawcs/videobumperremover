@@ -79,16 +79,6 @@ internal sealed record RemoveRow(string File, bool Present, string? VisualDetail
 /// implemented.
 /// </summary>
 internal static class RemoveCommand {
-	static readonly Option<bool> ReEncode = new("--re-encode") {
-		Description = "Re-encode (Mode B: frame-accurate, correctly realigns subtitle cues) vs. " +
-			"stream-copy (Mode A: much faster — no decode/encode — but keyframe-bound, and " +
-			"begin-region cuts do NOT realign subtitle cues). Default true. Re-encode decodes " +
-			"and re-encodes the entire kept portion of the file, not just the trimmed region, so " +
-			"it is far slower than stream-copy — expect it to take roughly as long as encoding " +
-			"the video normally would.",
-		DefaultValueFactory = _ => true,
-	};
-
 	static readonly Option<FileInfo> Output = new("--output") {
 		Description = "Also write the removal report to this file: the same per-file rows and " +
 			"summary as the console, plus a header recording the run's parameters.",
@@ -244,6 +234,11 @@ internal static class RemoveCommand {
 			// ---- Resolve the reference (bumper): region + length + (if catalog) the entry itself ----
 			ClipEdge region;
 			TimeSpan clipLength;
+			// How much to actually cut -- distinct from clipLength (which drives matching/search-window
+			// sizing) only when a catalog entry sets RemovalLength (docs/iterativeplan.md, "Per-bumper
+			// matching strategy" entry, Change 4). Ad hoc bumpers have no such override, so this always
+			// equals clipLength for them.
+			TimeSpan removalLength;
 			BumperCatalogEntry? catalogEntry = null;
 			string? resolvedCatalogName = null;
 			string? catalogPath = null;
@@ -258,14 +253,6 @@ internal static class RemoveCommand {
 					Console.Error.WriteLine($"Error: {ex.Message}");
 					return 1;
 				}
-				// Recipe-staleness check (docs/iterativeplan.md, "File-path DB options" entry, Part 3)
-				// -- unconditional, not gated on --verbose: a stale frameQuality recipe can produce
-				// silently wrong match/removal results, not just a cosmetic difference.
-				string? catalogStalenessWarning = FrameQualitySnapshot.DescribeMismatchFromCurrent(
-					catalog.FrameQualitySnapshot, $"Catalog '{resolvedCatalogName}'");
-				if (catalogStalenessWarning is not null)
-					Console.Error.WriteLine($"Warning: {catalogStalenessWarning}");
-
 				catalogEntry = catalog.Entries.Values.FirstOrDefault(
 					e => string.Equals(e.Label, bumperLabel, StringComparison.OrdinalIgnoreCase));
 				if (catalogEntry is null) {
@@ -274,10 +261,23 @@ internal static class RemoveCommand {
 				}
 				region = catalogEntry.Region;
 				clipLength = catalogEntry.Duration;
+				removalLength = catalogEntry.RemovalLength ?? clipLength;
+
+				// Recipe-staleness check (docs/iterativeplan.md, "File-path DB options" entry, Part 3;
+				// switched to per-entry 2026-08-13, "Per-bumper matching strategy" entry) -- unconditional,
+				// not gated on --verbose: a stale frameQuality recipe can produce silently wrong
+				// match/removal results, not just a cosmetic difference. Compares the resolved bumper's
+				// own stamp, not the whole catalog file's, since different entries can have been added
+				// under different frameQuality settings.
+				string? catalogStalenessWarning = FrameQualitySnapshot.DescribeMismatchFromCurrent(
+					catalogEntry.FrameQualitySnapshot, $"Bumper '{bumperLabel}' in catalog '{resolvedCatalogName}'");
+				if (catalogStalenessWarning is not null)
+					Console.Error.WriteLine($"Warning: {catalogStalenessWarning}");
 			}
 			else {
 				region = regionArg!.Value;
 				clipLength = clipLengthArg;
+				removalLength = clipLength;
 			}
 			if (searchLength <= TimeSpan.Zero)
 				searchLength = clipLength + TimeSpan.FromSeconds(VbrConfig.Current.Sampling.SearchLengthSlackSeconds);
@@ -402,7 +402,7 @@ internal static class RemoveCommand {
 								Console.Error.Write($"\r    {fraction:P0}  ({FormatSeconds(p.Processed)} / {FormatSeconds(p.Total)}, {speedText} realtime)   ");
 							}
 							try {
-								var removed = ClipRemover.Remove(file, region, clipLength, removalMode,
+								var removed = ClipRemover.Remove(file, region, removalLength, removalMode,
 									result.CombinedDetail, verbose, OnRemovalProgress, ct);
 								if (printedProgress) Console.Error.WriteLine();
 								outputPath = removed.OutputPath;
