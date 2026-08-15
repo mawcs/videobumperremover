@@ -415,7 +415,11 @@ internal static class RemoveCommand {
 								outputPath = removed.OutputPath;
 								removedCount++;
 							}
-							catch (Exception ex) {
+							// OperationCanceledException must NOT be caught here (2026-08-15, same fix as
+							// TrimCommand's identical per-file loop -- see its own comment) -- swallowing
+							// it as an ordinary per-file removal error lets the loop carry on to the next
+							// candidate instead of actually stopping in response to Ctrl+C.
+							catch (Exception ex) when (ex is not OperationCanceledException) {
 								if (printedProgress) Console.Error.WriteLine();
 								removalError = ex.Message;
 							}
@@ -423,7 +427,7 @@ internal static class RemoveCommand {
 						row = new RemoveRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail,
 							null, outputPath, removalError);
 					}
-					catch (Exception ex) {
+					catch (Exception ex) when (ex is not OperationCanceledException) {
 						row = new RemoveRow(display, false, null, null, null, ex.Message, null, null);
 					}
 					rows.Add(row);

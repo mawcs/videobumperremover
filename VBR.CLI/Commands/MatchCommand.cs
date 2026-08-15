@@ -358,7 +358,10 @@ internal static class MatchCommand {
 						if (result.Present) matchCount++;
 						row = new MatchRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail, null);
 					}
-					catch (Exception ex) {
+					// OperationCanceledException must NOT be caught here (2026-08-15, same fix as
+					// RemoveCommand/TrimCommand's identical per-file loops) -- swallowing it as an
+					// ordinary per-file error lets the loop carry on instead of actually stopping.
+					catch (Exception ex) when (ex is not OperationCanceledException) {
 						row = new MatchRow(display, false, null, null, null, ex.Message);
 					}
 					rows.Add(row);

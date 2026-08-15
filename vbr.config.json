@@ -40,7 +40,7 @@
 		// frameQuality above -- changing it invalidates already-stored AudioFingerprint data
 		// (re-scan / re-add affected bumpers; a mismatch triggers the same staleness warning
 		// frameQuality changes already do). Range: > 0. Default: 1.0
-		"bucketSeconds": 1.0
+		"bucketSeconds": 0.25
 	},
 
 	"matching": {

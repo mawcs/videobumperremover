@@ -110,17 +110,27 @@ internal static class TrimCommand {
 		cmd.Options.Add(HardwareAccel);
 		cmd.Options.Add(NoNativeFfmpegBinding);
 
-		cmd.SetAction((parseResult, ct) => {
+		cmd.SetAction(async (parseResult, ct) => {
+			// Genuinely async (2026-08-15), not a sync body wrapped in Task.FromResult -- this was
+			// the one command in the codebase built that way, and it matters: an exception thrown
+			// inside a plain (non-async) delegate propagates SYNCHRONOUSLY out of the delegate call
+			// itself, whereas an async method's compiler-generated state machine always captures any
+			// exception onto the returned Task instead, even with no real "await" inside. Ctrl+C
+			// cancellation ("backgrounds the process with no way to foreground it") relies on
+			// OperationCanceledException reaching System.CommandLine's own invocation pipeline the
+			// normal way every other command's genuinely-async handler already delivers it.
+			await Task.Yield();
+
 			TimeSpan length = parseResult.GetValue(Length);
 			if (length <= TimeSpan.Zero) {
 				Console.Error.WriteLine("Error: --length must be positive.");
-				return Task.FromResult(1);
+				return 1;
 			}
 			ClipEdge region = parseResult.GetValue(Region);
 			string[] rawPaths = parseResult.GetValue(Paths) ?? Array.Empty<string>();
 			if (rawPaths.Length == 0) {
 				Console.Error.WriteLine("Error: --paths is required.");
-				return Task.FromResult(1);
+				return 1;
 			}
 			bool recurse = !parseResult.GetValue(NoRecurse);
 			DirectoryInfo[] excludeFolders = parseResult.GetValue(ExcludeFolders) ?? Array.Empty<DirectoryInfo>();
@@ -163,7 +173,7 @@ internal static class TrimCommand {
 				.ToList();
 			if (candidatePaths.Count == 0) {
 				Console.Error.WriteLine("Error: --paths resolved to no video files.");
-				return Task.FromResult(1);
+				return 1;
 			}
 
 			var rows = new List<TrimRow>(candidatePaths.Count);
@@ -190,7 +200,15 @@ internal static class TrimCommand {
 					trimmedCount++;
 					row = new TrimRow(display, removed.OutputPath, null);
 				}
-				catch (Exception ex) {
+				// OperationCanceledException must NOT be caught here (2026-08-15 -- Ctrl+C "backgrounds
+				// the process with no way to foreground it"): ClipRemover.Remove's own cancellation
+				// path throws it once ffmpeg is killed, and swallowing it as an ordinary per-file error
+				// let the loop carry on to the next --paths entry (or, with a single entry, just finish
+				// normally) instead of actually stopping -- the ffmpeg subprocess was correctly killed
+				// either way, but this process itself never exited in response to the request. Letting
+				// it propagate is what the unguarded ct.ThrowIfCancellationRequested() at the top of
+				// this loop already relies on for every other cancellation point.
+				catch (Exception ex) when (ex is not OperationCanceledException) {
 					if (printedProgress) Console.Error.WriteLine();
 					row = new TrimRow(display, null, ex.Message);
 				}
@@ -204,9 +222,9 @@ internal static class TrimCommand {
 			Console.WriteLine(summary);
 
 			if (output is not null && !WriteReport(output, rows, summary, length, region, rawPaths, excludeFolders, recurse, removalMode))
-				return Task.FromResult(1);
+				return 1;
 
-			return Task.FromResult(0);
+			return 0;
 		});
 
 		return cmd;

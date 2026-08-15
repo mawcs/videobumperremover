@@ -546,8 +546,21 @@ public static class ClipRemover {
 		// still running rather than only once the whole cut is already done (docs/iterativeplan.md,
 		// "CLI feedback during remove" entry: a multi-minute re-encode with zero console output in
 		// the meantime read as "hung," not "working").
+		//
+		// stdoutTask is explicitly Task.Run'd, not just called directly (2026-08-15, "vbr trim
+		// progress line never updates" report) -- calling an async method directly runs its body
+		// synchronously on THIS thread up to its first genuine await, and every later resumption
+		// still depends on the CLR thread pool having a thread free to run it. A caller that already
+		// did real async work before reaching here (remove: AI-component checks, ONNX matching) has
+		// incidentally warmed the pool with extra threads; trim reaches this cold, straight from
+		// argument parsing, with no prior async work of its own. Under thread-pool starvation the
+		// CLR's hill-climbing injector adds new threads slowly, so a cold caller could see onProgress
+		// fire once and then not again until the encode's own multi-minute runtime finally forces a
+		// thread free -- ffmpeg itself was never blocked, only our own progress-reading continuation
+		// was queued and waiting. Task.Run queues the read loop as an explicit work item up front,
+		// independent of whatever the caller happened to warm up beforehand.
 		Task<string> stderrTask = process.StandardError.ReadToEndAsync();
-		Task stdoutTask = ReadProgressAsync(process.StandardOutput, totalKeptDuration, onProgress, ct);
+		Task stdoutTask = Task.Run(() => ReadProgressAsync(process.StandardOutput, totalKeptDuration, onProgress, ct));
 		bool exited = process.WaitForExit((int)timeout.TotalMilliseconds);
 		if (!exited || ct.IsCancellationRequested) {
 			try { process.Kill(entireProcessTree: true); } catch { }
