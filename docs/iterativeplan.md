@@ -4,6 +4,210 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## CLI test coverage — plan (2026-08-17)
+
+**Status: design, not yet built.** Milestone note: as of this week (per-bumper matching strategy,
+the audio bucket phase-alignment fix, `vbr trim`, the Ctrl+C/cancellation fixes), the maintainer
+considers VBR functionally ready to start building a real long-term library/catalog and cleaning up
+their own library with it — the next two self-identified priorities are adapting VDF's build/
+versioning system to VBR's own, and building bumper catalog CRUD. Before/alongside those: `VBR.Tests`
+still cannot reach `VBR.CLI` at all (`PROGRESS.md`, flagged 2026-08-13) — every command class
+(`MatchingSession`, `RemoveCommand`, `MatchCommand`, `TrimCommand`, `AddBumperCommand`, `ScanCommand`,
+`CommitCommand`, `ListBumpersCommand`) has zero automated coverage, verified only by live smoke
+testing each session. This week's three real bugs (the native-binding gate check, Ctrl+C swallowed
+by an over-broad `catch`, the sync-vs-async `SetAction` lambda difference) all lived in exactly this
+layer and were only caught because the maintainer personally exercised them — none had a test that
+could catch a regression automatically. Bumper CRUD is about to add a comparable amount of new
+mutation logic to this same untested layer; closing this gap now, not after, is the point.
+
+**Scope, revised:** real-media and dummy-file/filesystem test tiers were considered and deliberately
+cut (2026-08-17) — impractical for anyone else who might use this project, and fussing with fixtures
+just to keep CI green is exactly the kind of friction not worth taking on. Everything below is pure,
+in-memory logic: no video/audio content, no files ever touching disk, no environment variables, runs
+identically on every machine in every `dotnet test` invocation. This also means `Step 3`/`Step 4`
+(dummy-file and real-media tiers) from the first draft of this entry are gone outright, not deferred.
+
+### Step 1 — Wire up the project reference (small, mechanical)
+
+- Add `<ProjectReference Include="..\VBR.CLI\VBR.CLI.csproj" />` to `VBR.Tests.csproj`'s existing
+  `<ItemGroup>` (alongside its current `VBR.Core`/`VDF.Core` references). The
+  `InternalsVisibleTo("VBR.Tests")` grant already exists on `VBR.CLI.csproj` (confirmed by reading
+  it directly) — this one line is the only missing piece, not a design decision.
+- `VBR.CLI`'s `OutputType` is `Exe` (`Program.cs` uses top-level statements) — referencing an exe
+  project as a library is legal in modern SDK-style projects and needs nothing special, but run
+  `dotnet build VBR.Tests/VBR.Tests.csproj` immediately after adding the reference, before writing
+  a single test against it, in case something exe-specific (top-level-statement-generated `Program`
+  type, assembly attributes) surfaces an unexpected conflict.
+- Immediately after, run the existing `dotnet test VBR.Tests/VBR.Tests.csproj` (all 103 current
+  tests) to confirm the new reference introduced zero behavior change on its own — a clean
+  before/after baseline to build the new tests on top of.
+
+### Step 2 — Enabling refactors (small, behavior-preserving, needed before some tests are practical)
+
+A few of the highest-value targets are currently `private` members of a big `SetAction` lambda or a
+sealed class — reachable only indirectly today, which would force any test to either use reflection
+(fragile, avoid) or drive the entire command end-to-end (defeats the point of a fast, isolated unit
+test, and for several of these would drag real matching/removal machinery back in). Widening
+visibility to `internal` is a pure accessibility change — same assembly-boundary story
+`InternalsVisibleTo` already exists for, zero behavior change, zero public API surface change:
+
+- **`MatchingSession`** (`VBR.CLI/Commands/MatchingSession.cs`): `WantsVisual`, `WantsAudio`,
+  `WantsPHash`, and `ApplyMatchingStrategy` are all implicitly `private` today (confirmed by reading
+  the file — no modifier is written on any of the four). Widen all four to `internal` so
+  `ApplyMatchingStrategy`'s enum-to-flags table can be exercised directly, and `Wants*` asserted on
+  afterward, without needing `PrepareFromCatalogEntry`'s full catalog-entry/profile/threshold
+  argument list or any sampling machinery.
+- **`AddBumperCommand`** (`VBR.CLI/Commands/AddBumperCommand.cs`): `UnitRangeOrNull` is likewise
+  implicitly `private`. Widen to `internal` — it's already a pure `(float?, string, out string?) ->
+  bool` function with no dependencies, the cheapest possible thing to unit test directly once
+  reachable.
+- **A shared "run one candidate, don't swallow cancellation" helper** — new code, not a visibility
+  change. `TrimCommand`, `RemoveCommand` (twice), and `MatchCommand` each currently duplicate the
+  same `try { ... } catch (Exception ex) when (ex is not OperationCanceledException) { ... }` shape
+  inline inside their `foreach` loops (this week's `OperationCanceledException`-swallowing bug lived
+  in exactly this duplicated shape). Extract it once, e.g. a new
+  `VBR.CLI/Commands/CandidateWork.cs`:
+
+  ```csharp
+  internal static class CandidateWork {
+      internal static TRow Run<TRow>(Func<TRow> work, Func<Exception, TRow> onError) {
+          try {
+              return work();
+          }
+          catch (Exception ex) when (ex is not OperationCanceledException) {
+              return onError(ex);
+          }
+      }
+  }
+  ```
+
+  Then have each command's loop call `CandidateWork.Run(() => /* existing try body */, ex => /*
+  existing catch body */)` instead of its own inline try/catch. This is a pure refactor (same
+  behavior, same call sites, less duplication) that turns "does cancellation propagate" from an
+  untestable property of an inline lambda into a two-line, always-in-suite unit test against a
+  standalone static method — and removes the exact duplicated shape that let this bug exist in three
+  places instead of one.
+
+### Step 3 — The tests themselves
+
+All of these are new files under a new `VBR.Tests/CLI/Commands/` folder (mirroring
+`VBR.CLI/Commands/`, the same shadowing convention `VBR.Tests`'s existing `Matching/`/`Catalog/`/
+`Database/` folders already use for `VBR.Core`).
+
+**`VBR.Tests/CLI/Commands/SignalResultTests.cs`** — `SignalResult` is already `internal`, no Step 2
+change needed. Construct `MatchResult` values directly (`new MatchResult(present, score, offset,
+detail)`) and assert `.Present`:
+
+- `Present_VisualOnly_ReturnsVisualResult` — Visual set, Audio/PHash null; true and false cases.
+- `Present_AudioOnly_ReturnsAudioResult` — Visual/PHash null, Audio set (exercises the `Audio?.Present
+  ?? PHash?.Present ?? false` fallback branch); true and false cases.
+- `Present_PHashOnly_ReturnsPHashResult` — same fallback branch, PHash set alone.
+- `Present_AllSignalsAgree_ReturnsTrue` — Visual/Audio/PHash all `Present:true`, `AudioApplicable:true`.
+- `Present_AudioDisagrees_VetoesMatch` — Visual/PHash true, Audio false, `AudioApplicable:true` ->
+  false (the corroboration rule's whole point — this is the exact case docs/iterativeplan.md's
+  2026-08-13 "multi-signal" entry was written to fix).
+- `Present_PHashDisagrees_VetoesMatch` — Visual/Audio true, PHash false -> false.
+- `Present_VisualDisagrees_VetoesMatchRegardlessOfOthers` — Visual false, Audio/PHash true -> false
+  (visual is the anchor signal whenever it ran at all).
+- `Present_SilentBumper_AudioNotApplicable_DoesNotVeto` — Visual/PHash true, Audio false,
+  `AudioApplicable:false` -> true (the silent-bumper exemption).
+- `CombinedDetail_OnlyIncludesNonNullSignals_InVisualAudioPHashOrder` and
+  `CombinedDetail_AllNull_ReturnsNull`.
+
+**`VBR.Tests/CLI/Commands/MatchingSessionStrategyTests.cs`** — depends on Step 2's `internal` widening:
+
+- One test per `BumperMatchingStrategy` value (`Corroborated`, `VisualOnly`, `AudioOnly`,
+  `PhashOnly`, `NoVisual`, `NoAudio`, `NoPhash` — 7 cases) constructing a session, calling
+  `ApplyMatchingStrategy(strategy)`, and asserting the exact `WantsVisual`/`WantsAudio`/`WantsPHash`
+  triple against the table in docs/iterativeplan.md's "Per-bumper matching strategy" entry. Since
+  `MatchingSession`'s constructor is itself `private`, this will need either widening it too (small,
+  same-story change) or driving it through the smallest already-`internal` factory available —
+  worth a quick look at exactly which is less invasive once this step starts, not a blocking
+  decision now.
+- One test confirming an ad hoc session (no `ApplyMatchingStrategy` call at all) leaves `WantsVisual`/
+  `WantsAudio`/`WantsPHash` on the `--detection-mode`-derived fallback — i.e. that the nullable
+  override fields genuinely default to "unset," not to some strategy value.
+
+**`VBR.Tests/CLI/Commands/CandidateWorkTests.cs`** — the cancellation-propagation regression test,
+against Step 2's new `CandidateWork.Run` helper:
+
+- `Run_WorkSucceeds_ReturnsWorkResult`.
+- `Run_WorkThrowsOrdinaryException_ReturnsOnErrorResult` — confirms the existing "one file's error
+  becomes a row, not a crash" behavior is preserved.
+- `Run_WorkThrowsOperationCanceledException_PropagatesUncaught` —
+  `Assert.Throws<OperationCanceledException>(() => CandidateWork.Run<int>(() => throw new
+  OperationCanceledException(), ex => -1))`. This is the actual regression test for this week's bug:
+  it fails immediately if the `when (ex is not OperationCanceledException)` filter is ever
+  accidentally reverted to a bare `catch (Exception ex)`.
+
+**`VBR.Tests/CLI/Commands/AddBumperValidationTests.cs`** — against Step 2's newly-`internal`
+`UnitRangeOrNull`:
+
+- In-range value (e.g. `0.85f`) -> returns `true`, `error` is `null`.
+- `null` (omitted flag) -> returns `true`, `error` is `null` (the "inherit config" default).
+- Out-of-range values (`0f`, negative, `> 1f`) -> returns `false`, `error` contains the flag name
+  and the offending value.
+
+**`VBR.Tests/CLI/Commands/*ArgumentValidationTests.cs`** (one per command — `RemoveCommandTests.cs`,
+`MatchCommandTests.cs`, `TrimCommandTests.cs`) — the mutual-exclusivity/requiredness checks, tested
+via real, in-process CLI parsing rather than reaching into private state: call the command's own
+(already-`internal`) `Build()`, `.Parse(args)` a real argument array, and `Invoke()`/`InvokeAsync()`
+it directly — no subprocess, no `dotnet run`. This works safely here specifically because every
+target check is the *first* thing each handler does, before any file, catalog, or network access —
+`Console.SetOut`/`Console.SetError` redirection (restored in each test's `finally`) captures the
+printed message, and the return value is the exit code:
+
+- `RemoveCommand`/`MatchCommand`: `--bumper-label` together with `--clip-from`/`--region`/
+  `--clip-length` -> exit 1, "invalid together with" message. Neither ad hoc nor `--bumper-label`
+  given -> exit 1, "required" message. `--library` together with `--file` (or `--library-db`) ->
+  exit 1. `--matching-strategy` together with `--bumper-label` (the 2026-08-14 addition) -> exit 1.
+- `TrimCommand`: `--length` omitted or non-positive -> exit 1. `--paths` omitted -> exit 1 (the
+  parser-level "path not found" case needs a real path and stays out of scope per this entry's
+  revised scope above — only the *presence* of `--paths` is tested here, not what's inside it).
+
+**Not in this plan, and already independently reachable today (no Step 1 needed):**
+`AudioBumperMatcher.ResolveWindow`'s bucket-size-aware block math and `BumperCatalogEntry`'s Group A
+`entry.X ?? config` resolution both live in `VBR.Core`, already referenced by `VBR.Tests` — a real,
+smaller, independent gap worth its own pass, just not blocked on anything above.
+
+### Step 4 — Docs
+
+Once Step 3 lands, add a short paragraph to `running_and_building.md`'s "Test" section naming the
+new `VBR.Tests/CLI/Commands/` tests and noting (for anyone wondering) that they're plain, always-on,
+no-media, no-environment-variable tests — worth being explicit about that given the existing "Test"
+section's next paragraph is entirely about the real-media tests that *do* need env vars, so a reader
+skimming shouldn't assume the new ones do too.
+
+## Build/versioning system — outline (2026-08-17)
+
+**Status: outline only, not yet planned in detail — the maintainer's next self-identified step.**
+VDF's actual mechanism (`Directory.Build.props`) is not a conventional incrementing-version scheme:
+`VersionPrefix` is pinned at a static `4.1.0` that deliberately never bumps; the real per-build
+identity is the git commit hash + build date, baked into `AssemblyMetadata` via an `EmbedBuildInfo`
+MSBuild target; CI (`.github/workflows/releases.yml`) rebuilds on every `master` push and republishes
+to *one* rolling GitHub release tag (`4.1.x`), replacing the previous assets each time — not a
+sequence of numbered releases. `VBR.CLI`/`VBR.Core` currently inherit this untouched (no version
+properties of their own). Before implementing, worth an explicit decision: does VBR actually want
+VDF's rolling-single-tag model, or a real incrementing-version/numbered-tag scheme (which is what
+"numbered builds and git tags" sounds like it's asking for) — these are meaningfully different
+philosophies, not a reskin of the same mechanism. Related, surfaced during this same investigation:
+VBR.CLI has no ffmpeg/ffprobe acquisition mechanism of its own (`PROGRESS.md`, flagged 2026-08-04) —
+worth having in view before treating any numbered build as distribution-ready for a machine that
+doesn't already have ffmpeg discoverable on PATH.
+
+## Bumper CRUD — outline (2026-08-17)
+
+**Status: outline only, not yet planned in detail — the maintainer's other self-identified next
+step.** Explicitly deferred earlier this week (see the "Per-bumper matching strategy" entry's own
+follow-up conversation) rather than patched piecemeal: no update-in-place or delete command exists
+for a `BumperCatalogEntry` today, which already bit once (a bumper needing its `AudioFingerprint`
+regenerated after an `audio.bucketSeconds` config change had no path other than re-adding under a
+new label, since labels must stay unique and there's no rename/edit). Also still open from the same
+"Per-bumper matching strategy" entry: `list-bumpers` doesn't yet surface `MatchingStrategy`, the four
+Group A override fields, `RemovalLength`, or the per-entry `FrameQualitySnapshot` — natural to fold
+into this same batch of work rather than treat as separate, since CRUD work will already be touching
+bumper display/editing.
+
 ## Audio bucket phase-alignment — root cause, fix, and config knob (2026-08-14)
 
 **Status: built and live-verified.** The maintainer reported three independently-extracted 8s clips
