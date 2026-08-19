@@ -141,7 +141,11 @@ internal static class AddBumperCommand {
 	// Same (0, 1] range VbrConfigLoader enforces on the matching global values these override --
 	// checked here too since an out-of-range override would otherwise sail through and silently
 	// misbehave the first time a match/remove run actually reads it back.
-	static bool UnitRangeOrNull(float? value, string flagName, out string? error) {
+	//
+	// internal (not private) -- a pure accessibility widening (docs/iterativeplan.md, "CLI test
+	// coverage" entry, 2026-08-17) so VBR.Tests can unit-test this pure function directly, without
+	// needing to drive the whole add-bumper pipeline just to exercise one validation rule.
+	internal static bool UnitRangeOrNull(float? value, string flagName, out string? error) {
 		if (value is not { } v || (v > 0 && v <= 1)) {
 			error = null;
 			return true;

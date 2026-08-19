@@ -387,49 +387,49 @@ internal static class RemoveCommand {
 					// both run for a long time with nothing else to show for it otherwise, which reads
 					// as "hung," not "working" (docs/iterativeplan.md, "CLI feedback during remove").
 					Console.Error.WriteLine($"[{++fileIndex}/{candidatePaths.Count}] Checking: {display}");
-					RemoveRow row;
-					try {
-						SignalResult result = candidateDbEntries is not null
-							? session.CompareUsingDatabase(candidateDbEntries[Path.GetFullPath(file)], searchLength)
-							: session.Compare(file, searchLength, dumpLabel, ct);
-						comparedCount++;
-						string? outputPath = null;
-						string? removalError = null;
-						if (result.Present) {
-							matchCount++;
-							string modeDescription = removalMode == RemovalMode.ReEncode
-								? "re-encode -- this may take a while for large files"
-								: "stream-copy -- fast";
-							Console.Error.WriteLine($"  Match found ({result.CombinedDetail}) — removing bumper ({modeDescription})...");
-							bool printedProgress = false;
-							void OnRemovalProgress(RemovalProgress p) {
-								printedProgress = true;
-								double fraction = p.Total > TimeSpan.Zero ? Math.Clamp(p.Processed.TotalSeconds / p.Total.TotalSeconds, 0, 1) : 0;
-								string speedText = p.SpeedMultiplier is { } s ? $"{s:0.##}x" : "?";
-								Console.Error.Write($"\r    {fraction:P0}  ({FormatSeconds(p.Processed)} / {FormatSeconds(p.Total)}, {speedText} realtime)   ");
+					// CandidateWork.Run (docs/iterativeplan.md, "CLI test coverage" entry, 2026-08-17) --
+					// deliberately does NOT catch OperationCanceledException; see its own doc comment.
+					// Nested here, same as before: the inner Run covers just the removal step (its own
+					// failure becomes removalError, not the whole row), the outer covers comparison.
+					RemoveRow row = CandidateWork.Run(
+						work: () => {
+							SignalResult result = candidateDbEntries is not null
+								? session.CompareUsingDatabase(candidateDbEntries[Path.GetFullPath(file)], searchLength)
+								: session.Compare(file, searchLength, dumpLabel, ct);
+							comparedCount++;
+							string? removalError = null;
+							string? outputPath = null;
+							if (result.Present) {
+								matchCount++;
+								string modeDescription = removalMode == RemovalMode.ReEncode
+									? "re-encode -- this may take a while for large files"
+									: "stream-copy -- fast";
+								Console.Error.WriteLine($"  Match found ({result.CombinedDetail}) — removing bumper ({modeDescription})...");
+								bool printedProgress = false;
+								void OnRemovalProgress(RemovalProgress p) {
+									printedProgress = true;
+									double fraction = p.Total > TimeSpan.Zero ? Math.Clamp(p.Processed.TotalSeconds / p.Total.TotalSeconds, 0, 1) : 0;
+									string speedText = p.SpeedMultiplier is { } s ? $"{s:0.##}x" : "?";
+									Console.Error.Write($"\r    {fraction:P0}  ({FormatSeconds(p.Processed)} / {FormatSeconds(p.Total)}, {speedText} realtime)   ");
+								}
+								outputPath = CandidateWork.Run<string?>(
+									work: () => {
+										var removed = ClipRemover.Remove(file, region, removalLength, removalMode,
+											result.CombinedDetail, verbose, OnRemovalProgress, ct);
+										if (printedProgress) Console.Error.WriteLine();
+										removedCount++;
+										return removed.OutputPath;
+									},
+									onError: ex => {
+										if (printedProgress) Console.Error.WriteLine();
+										removalError = ex.Message;
+										return null;
+									});
 							}
-							try {
-								var removed = ClipRemover.Remove(file, region, removalLength, removalMode,
-									result.CombinedDetail, verbose, OnRemovalProgress, ct);
-								if (printedProgress) Console.Error.WriteLine();
-								outputPath = removed.OutputPath;
-								removedCount++;
-							}
-							// OperationCanceledException must NOT be caught here (2026-08-15, same fix as
-							// TrimCommand's identical per-file loop -- see its own comment) -- swallowing
-							// it as an ordinary per-file removal error lets the loop carry on to the next
-							// candidate instead of actually stopping in response to Ctrl+C.
-							catch (Exception ex) when (ex is not OperationCanceledException) {
-								if (printedProgress) Console.Error.WriteLine();
-								removalError = ex.Message;
-							}
-						}
-						row = new RemoveRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail,
-							null, outputPath, removalError);
-					}
-					catch (Exception ex) when (ex is not OperationCanceledException) {
-						row = new RemoveRow(display, false, null, null, null, ex.Message, null, null);
-					}
+							return new RemoveRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail,
+								null, outputPath, removalError);
+						},
+						onError: ex => new RemoveRow(display, false, null, null, null, ex.Message, null, null));
 					rows.Add(row);
 					Console.WriteLine(row.ToLine());
 				}

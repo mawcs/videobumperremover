@@ -147,9 +147,15 @@ internal sealed class MatchingSession : IDisposable {
 	// could leave a bumper with nothing able to decide at all (e.g. --detection-mode visual paired
 	// with a stored AudioOnly bumper). Ad hoc sessions have no strategy to read, so these always
 	// fall through to the mode-based check unchanged from before this entry.
-	bool WantsVisual => strategyUseVisual ?? (mode is DetectionMode.visual or DetectionMode.both or DetectionMode.all);
-	bool WantsAudio => strategyUseAudio ?? (mode is DetectionMode.audio or DetectionMode.both or DetectionMode.all);
-	bool WantsPHash => strategyUsePHash ?? (mode is DetectionMode.phash or DetectionMode.all);
+	//
+	// internal (not private), same as ApplyMatchingStrategy and the constructor below -- a pure
+	// accessibility widening, zero behavior change, so VBR.Tests (docs/iterativeplan.md, "CLI test
+	// coverage" entry, 2026-08-17) can assert the enum-to-flags table directly instead of driving a
+	// full PrepareFromCatalogEntry/PrepareAsync call, which would otherwise drag real sampling/ONNX
+	// machinery into what is otherwise a pure, fast unit test.
+	internal bool WantsVisual => strategyUseVisual ?? (mode is DetectionMode.visual or DetectionMode.both or DetectionMode.all);
+	internal bool WantsAudio => strategyUseAudio ?? (mode is DetectionMode.audio or DetectionMode.both or DetectionMode.all);
+	internal bool WantsPHash => strategyUsePHash ?? (mode is DetectionMode.phash or DetectionMode.all);
 
 	/// <summary>Whether the reference clip's own audio carries enough real content for a comparison
 	/// against it to mean anything — exactly the predicate <see cref="Matching.AudioBumperMatcher.MatchFingerprints"/>
@@ -160,7 +166,10 @@ internal sealed class MatchingSession : IDisposable {
 	/// "essentially nothing was fingerprinted," not "fingerprinted but different."</summary>
 	bool ReferenceHasUsableAudio => referenceAudioFingerprint is { Length: >= 2 };
 
-	MatchingSession(DetectionMode mode, ClipEdge region, EdgeDensityProfile profile,
+	// internal (not private) -- see WantsVisual's own comment above; every parameter here is a plain
+	// value type or a nullable string, so VBR.Tests can construct a minimal session directly with no
+	// real file/matcher/ONNX dependency at all.
+	internal MatchingSession(DetectionMode mode, ClipEdge region, EdgeDensityProfile profile,
 			float presenceThreshold, float rigidHitThreshold, float phashPresenceThreshold, float minSimilarity,
 			string? dumpFramesDir, bool verboseLogging) {
 		this.mode = mode;
@@ -183,7 +192,7 @@ internal sealed class MatchingSession : IDisposable {
 	/// <see cref="BumperMatchingStrategy"/> value leaves at least one flag <c>true</c> by
 	/// construction (see that enum's own doc comment) — the <c>_ =&gt;</c> arm below is a defensive
 	/// fallback to the safest behavior, not a reachable case for any value defined today.</summary>
-	void ApplyMatchingStrategy(BumperMatchingStrategy strategy) {
+	internal void ApplyMatchingStrategy(BumperMatchingStrategy strategy) {
 		(strategyUseVisual, strategyUseAudio, strategyUsePHash) = strategy switch {
 			BumperMatchingStrategy.VisualOnly => (true, false, false),
 			BumperMatchingStrategy.AudioOnly => (false, true, false),

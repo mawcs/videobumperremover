@@ -6,7 +6,8 @@ reference rather than deleted or overwritten.
 
 ## CLI test coverage — plan (2026-08-17)
 
-**Status: design, not yet built.** Milestone note: as of this week (per-bumper matching strategy,
+**Status: Steps 1-2 built and live-verified (2026-08-17); Steps 3-4 not started.** Milestone note:
+as of this week (per-bumper matching strategy,
 the audio bucket phase-alignment fix, `vbr trim`, the Ctrl+C/cancellation fixes), the maintainer
 considers VBR functionally ready to start building a real long-term library/catalog and cleaning up
 their own library with it — the next two self-identified priorities are adapting VDF's build/
@@ -27,7 +28,7 @@ in-memory logic: no video/audio content, no files ever touching disk, no environ
 identically on every machine in every `dotnet test` invocation. This also means `Step 3`/`Step 4`
 (dummy-file and real-media tiers) from the first draft of this entry are gone outright, not deferred.
 
-### Step 1 — Wire up the project reference (small, mechanical)
+### Step 1 — Wire up the project reference (small, mechanical) — DONE
 
 - Add `<ProjectReference Include="..\VBR.CLI\VBR.CLI.csproj" />` to `VBR.Tests.csproj`'s existing
   `<ItemGroup>` (alongside its current `VBR.Core`/`VDF.Core` references). The
@@ -42,7 +43,18 @@ identically on every machine in every `dotnet test` invocation. This also means 
   tests) to confirm the new reference introduced zero behavior change on its own — a clean
   before/after baseline to build the new tests on top of.
 
-### Step 2 — Enabling refactors (small, behavior-preserving, needed before some tests are practical)
+### Step 2 — Enabling refactors (small, behavior-preserving, needed before some tests are practical) — DONE
+
+`MatchingSession`'s constructor was also widened to `internal` alongside `Wants*`/
+`ApplyMatchingStrategy` (all four parameters are plain value types/nullable strings, no real
+file/matcher dependency, so this was the natural choice `MatchingSessionStrategyTests`'s own note
+flagged as "not a blocking decision now" back when this entry was first written). `CandidateWork.Run`
+now backs all three commands' candidate loops (`RemoveCommand` nests it twice, matching its own
+two-layer try/catch shape). Live-verified against real media: `trim` (success), `match` (self-match,
+100% similarity), and `remove` (comparison succeeded, removal step failed on a real arithmetic error,
+correctly surfaced as a per-file row via the *inner* `CandidateWork.Run` while the outer one's own
+success path still returned normally) — all three exactly matching pre-refactor behavior. Full
+solution build clean, `VBR.Tests` 98/103 (5 pre-existing real-media skips), 0 failures.
 
 A few of the highest-value targets are currently `private` members of a big `SetAction` lambda or a
 sealed class — reachable only indirectly today, which would force any test to either use reflection

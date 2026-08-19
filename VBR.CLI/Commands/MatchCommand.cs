@@ -349,21 +349,18 @@ internal static class MatchCommand {
 					ct.ThrowIfCancellationRequested();
 					string display = candidateDbEntries is not null ? Path.GetFileName(file) : DisplayName(file, libraryRoots);
 					string dumpLabel = $"{++dumpIndex:000}-{Path.GetFileNameWithoutExtension(file)}";
-					MatchRow row;
-					try {
-						SignalResult result = candidateDbEntries is not null
-							? session.CompareUsingDatabase(candidateDbEntries[Path.GetFullPath(file)], searchLength)
-							: session.Compare(file, searchLength, dumpLabel, ct);
-						comparedCount++;
-						if (result.Present) matchCount++;
-						row = new MatchRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail, null);
-					}
-					// OperationCanceledException must NOT be caught here (2026-08-15, same fix as
-					// RemoveCommand/TrimCommand's identical per-file loops) -- swallowing it as an
-					// ordinary per-file error lets the loop carry on instead of actually stopping.
-					catch (Exception ex) when (ex is not OperationCanceledException) {
-						row = new MatchRow(display, false, null, null, null, ex.Message);
-					}
+					// CandidateWork.Run (docs/iterativeplan.md, "CLI test coverage" entry, 2026-08-17) --
+					// deliberately does NOT catch OperationCanceledException; see its own doc comment.
+					MatchRow row = CandidateWork.Run(
+						work: () => {
+							SignalResult result = candidateDbEntries is not null
+								? session.CompareUsingDatabase(candidateDbEntries[Path.GetFullPath(file)], searchLength)
+								: session.Compare(file, searchLength, dumpLabel, ct);
+							comparedCount++;
+							if (result.Present) matchCount++;
+							return new MatchRow(display, result.Present, result.Visual?.Detail, result.Audio?.Detail, result.PHash?.Detail, null);
+						},
+						onError: ex => new MatchRow(display, false, null, null, null, ex.Message));
 					rows.Add(row);
 					Console.WriteLine(row.ToLine());
 				}

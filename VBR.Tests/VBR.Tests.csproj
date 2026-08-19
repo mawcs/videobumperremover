@@ -21,6 +21,7 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\VBR.CLI\VBR.CLI.csproj" />
     <ProjectReference Include="..\VBR.Core\VBR.Core.csproj" />
     <ProjectReference Include="..\VDF.Core\VDF.Core.csproj" />
   </ItemGroup>

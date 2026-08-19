@@ -192,26 +192,20 @@ internal static class TrimCommand {
 					string speedText = p.SpeedMultiplier is { } s ? $"{s:0.##}x" : "?";
 					Console.Error.Write($"\r    {fraction:P0}  ({FormatSeconds(p.Processed)} / {FormatSeconds(p.Total)}, {speedText} realtime)   ");
 				}
-				TrimRow row;
-				try {
-					var removed = ClipRemover.Remove(file, region, length, removalMode,
-						matchDetail: null, verbose, OnRemovalProgress, ct);
-					if (printedProgress) Console.Error.WriteLine();
-					trimmedCount++;
-					row = new TrimRow(display, removed.OutputPath, null);
-				}
-				// OperationCanceledException must NOT be caught here (2026-08-15 -- Ctrl+C "backgrounds
-				// the process with no way to foreground it"): ClipRemover.Remove's own cancellation
-				// path throws it once ffmpeg is killed, and swallowing it as an ordinary per-file error
-				// let the loop carry on to the next --paths entry (or, with a single entry, just finish
-				// normally) instead of actually stopping -- the ffmpeg subprocess was correctly killed
-				// either way, but this process itself never exited in response to the request. Letting
-				// it propagate is what the unguarded ct.ThrowIfCancellationRequested() at the top of
-				// this loop already relies on for every other cancellation point.
-				catch (Exception ex) when (ex is not OperationCanceledException) {
-					if (printedProgress) Console.Error.WriteLine();
-					row = new TrimRow(display, null, ex.Message);
-				}
+				// CandidateWork.Run (docs/iterativeplan.md, "CLI test coverage" entry, 2026-08-17) --
+				// deliberately does NOT catch OperationCanceledException; see its own doc comment.
+				TrimRow row = CandidateWork.Run(
+					work: () => {
+						var removed = ClipRemover.Remove(file, region, length, removalMode,
+							matchDetail: null, verbose, OnRemovalProgress, ct);
+						if (printedProgress) Console.Error.WriteLine();
+						trimmedCount++;
+						return new TrimRow(display, removed.OutputPath, null);
+					},
+					onError: ex => {
+						if (printedProgress) Console.Error.WriteLine();
+						return new TrimRow(display, null, ex.Message);
+					});
 				rows.Add(row);
 				Console.WriteLine(row.ToLine());
 			}
