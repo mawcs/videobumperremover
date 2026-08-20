@@ -6,8 +6,7 @@ reference rather than deleted or overwritten.
 
 ## CLI test coverage — plan (2026-08-17)
 
-**Status: Steps 1-2 built and live-verified (2026-08-17); Steps 3-4 not started.** Milestone note:
-as of this week (per-bumper matching strategy,
+**Status: Steps 1-4 built (2026-08-17).** Milestone note: as of this week (per-bumper matching strategy,
 the audio bucket phase-alignment fix, `vbr trim`, the Ctrl+C/cancellation fixes), the maintainer
 considers VBR functionally ready to start building a real long-term library/catalog and cleaning up
 their own library with it — the next two self-identified priorities are adapting VDF's build/
@@ -100,7 +99,20 @@ visibility to `internal` is a pure accessibility change — same assembly-bounda
   standalone static method — and removes the exact duplicated shape that let this bug exist in three
   places instead of one.
 
-### Step 3 — The tests themselves
+### Step 3 — The tests themselves — DONE
+
+Built essentially as specified, with two adjustments made during implementation: (1) `DetectionMode`
+is `internal`, so it can't appear in a `public` xUnit `[Theory]` method's signature (CS0051) — the ad
+hoc fallback cases became five separate `[Fact]`s instead of one `[Theory]`/`[InlineData]` set; (2)
+`TrimCommand`'s "omitted `--length`/`--paths`" cases from the original draft would only have
+exercised System.CommandLine's own `Required=true` enforcement, not `TrimCommand`'s own code — the
+actual custom-logic tests use a *present-but-invalid* value instead (`--length 0s`/`-5s`, and
+`--paths ";  ;"`, which parses successfully but resolves to zero entries after splitting). One new
+shared `VBR.Tests/CLI/Commands/CliInvocation.cs` (not in the original plan, needed once
+implementation started) wraps the in-process `Command.Parse(args)`/`InvokeAsync()` + `Console.SetOut`/
+`SetError` redirection pattern once, reused by all three `*CommandTests.cs` files. Final count: 53
+new tests (8 files), all passing; full suite 151/156 (5 pre-existing real-media skips unchanged), 0
+failures.
 
 All of these are new files under a new `VBR.Tests/CLI/Commands/` folder (mirroring
 `VBR.CLI/Commands/`, the same shadowing convention `VBR.Tests`'s existing `Matching/`/`Catalog/`/

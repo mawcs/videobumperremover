@@ -512,6 +512,13 @@ dotnet test VBR.Tests
 dotnet test VBR.Tests --filter "FullyQualifiedName~AudioBumperMatcherTests"
 ```
 
+`VBR.Tests/CLI/Commands/` (added 2026-08-17, docs/iterativeplan.md's "CLI test coverage" entry)
+covers `MatchingSession`/`RemoveCommand`/`MatchCommand`/`TrimCommand`/`AddBumperCommand` — the layer
+this week's real bugs (native-binding gating, Ctrl+C cancellation, sync-vs-async `SetAction`) all
+lived in, previously with zero automated coverage. Every one of these is plain, always-on, in-memory
+logic — no video/audio content, no files ever touching disk, no environment variables — so they run
+identically on every machine in every `dotnet test` invocation, unlike the two paragraphs below.
+
 `AudioBumperMatcherTests` and `ClipRemoverTests`' real-media case only run against real video
 files, gated by environment variables — they skip cleanly when unset, so a normal `dotnet test`
 run never needs them. Each header comment has the exact recipe; representative examples:
