@@ -377,7 +377,7 @@ was flagged right after the initial scaffold and fixed before anything else was 
   nowhere. Needs either a `--console-info`-style tiered flag mirroring `scan`'s own (bigger, more
   consistent with scan), or a minimal "--verbose implies debug tier too" wiring (smaller, less
   granular) — not decided, not built.
-- [ ] **`VBR.Tests` has no coverage of `SignalResult`/`MatchingSession`'s multi-signal decision
+- [x] ~~**`VBR.Tests` has no coverage of `SignalResult`/`MatchingSession`'s multi-signal decision
   logic (flagged 2026-08-13, docs/iterativeplan.md's "Multi-signal corroboration" entry).** The
   2026-08-13 change making pHash mandatory (when it ran) and audio conditionally mandatory (when it
   ran *and* the bumper has real audio) rewrote `SignalResult.Present` — a real, non-trivial decision
@@ -387,18 +387,19 @@ was flagged right after the initial scaffold and fixed before anything else was 
   Root cause, not just this one gap: `VBR.Tests.csproj` has no `ProjectReference` to
   `VBR.CLI.csproj` at all (`RemoveCommand`/`MatchCommand`/`MatchingSession` all live in `VBR.CLI`),
   even though `VBR.CLI.csproj` already grants it `InternalsVisibleTo` — the access grant exists,
-  the project reference that would make it usable doesn't. Two-part fix: (1) add the missing
-  `VBR.Tests` → `VBR.CLI` project reference (small, mechanical, no known reason it was left off —
-  possibly just never needed until `MatchingSession` became non-trivial internal logic worth unit
-  testing in isolation); (2) write `SignalResult.Present` test cases directly (constructing
-  `MatchResult`/`SignalResult` values by hand, no real media needed) covering at minimum: visual
-  alone (unchanged priority-fallback behavior for `--detection-mode visual`); `all` mode with
-  visual+pHash agreeing and audio silent/inapplicable (should match); `all` mode with visual
-  agreeing but pHash disagreeing (should NOT match); `both`/`all` mode with visual agreeing, real
-  audio present, but audio disagreeing (should NOT match); the same case with audio *silent*
-  (`AudioApplicable=false`) instead of disagreeing (SHOULD match, audio exempted) — that last case
-  is the one most worth locking in, since it's the direct fix for "does audio handle silent bumpers
-  as well as bumpers with sound."
+  the project reference that would make it usable doesn't.~~ **Resolved (2026-08-17) — see
+  docs/iterativeplan.md's "CLI test coverage" entry for the full plan/build record.** The project
+  reference was added; `MatchingSession`'s `Wants*`/`ApplyMatchingStrategy`/constructor and
+  `AddBumperCommand.UnitRangeOrNull` were widened `private` → `internal` (pure accessibility
+  changes) to make them directly unit-testable; the three commands' duplicated cancellation-
+  swallowing `try`/`catch` was extracted into a shared, now-tested `CandidateWork.Run`. 53 new tests
+  across 8 files under `VBR.Tests/CLI/Commands/` — `SignalResultTests.cs` covers every case listed
+  above (visual-alone, all-agree, each signal's individual veto, and the silent-bumper audio
+  exemption) plus `MatchingSessionStrategyTests.cs`, `CandidateWorkTests.cs` (a permanent regression
+  test for the 2026-08-15 Ctrl+C bug), `AddBumperValidationTests.cs`, and argument-validation tests
+  for `RemoveCommand`/`MatchCommand`/`TrimCommand`. All pure in-memory logic, no media, no
+  filesystem fixtures. Full suite: 151/156 (98 baseline + 53 new; 5 pre-existing real-media skips
+  unchanged), 0 failures.
 - [ ] **Removal engine — both modes implemented; re-encode defaults decided (2026-07-27), not yet
   built.** See [ADR 0007](decisions/0007-removal-command.md): `vbr remove`, arithmetic cut point
   (no per-file boundary detection), non-destructive `.vbr.` sibling output, both stream-copy and
