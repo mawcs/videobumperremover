@@ -59,4 +59,17 @@ public class TrimCommandTests {
 		Assert.Equal(1, exitCode);
 		Assert.Contains("--paths is required", output);
 	}
+
+	// docs/iterativeplan.md's CLI logging entry (2026-08-22) -- checked after --length/--paths (both
+	// Required=true), so those need real, parseable values to reach it.
+	[Fact]
+	public async Task LogFilePointingAtExistingDirectory_IsRejected() {
+		Command cmd = TrimCommand.Build();
+		(int exitCode, string output) = await CliInvocation.RunAsync(cmd,
+			"--length", "5s", "--region", "begin", "--paths", Path.GetTempPath(),
+			"--log-file", Path.GetTempPath());
+
+		Assert.Equal(1, exitCode);
+		Assert.Contains("--log-file must name a file, not a directory", output);
+	}
 }

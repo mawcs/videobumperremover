@@ -25,19 +25,6 @@ using static VBR.CLI.Commands.SharedOptions;
 
 namespace VBR.CLI.Commands;
 
-/// <summary>How much reporting detail <c>vbr scan</c> produces, for the console
-/// (<c>--console-info</c>) and the log file (<c>--log-file</c>/<c>--log-level</c>) independently.
-/// Ordered low-to-high so callers can compare with <c>&gt;=</c>. <c>debug</c> adds per-file
-/// diagnostic detail (frame counts, low-information-filter drops, audio-fingerprint stats --
-/// <see cref="VBR.Core.Diagnostics.ScanTelemetry.NoteDebug"/>) on top of its own per-file
-/// name+result line. <c>verbose</c> adds model path/session lifecycle/checkpoint detail on top of
-/// that. <c>trace</c> is one step finer still: execution timing
-/// (<see cref="VBR.Core.Diagnostics.ScanTelemetry.Time"/>) for every measured phase -- AI/DirectML
-/// readiness, per-file ffprobe/sampling/inference, native vs. CLI ffmpeg decode, database
-/// checkpointing -- for diagnosing a slow run by phase instead of guessing. debug/trace are both
-/// off by default (near-zero cost) since most runs don't need them.</summary>
-internal enum ScanReportLevel { quiet, info, debug, verbose, trace }
-
 /// <summary>
 /// <c>vbr scan</c> — builds/updates a named library's cached fingerprint database
 /// (docs/iterativeplan.md, "Library scan — cached fingerprint index"). Samples every candidate
@@ -80,7 +67,7 @@ internal static class ScanCommand {
 		Aliases = { "--force" },
 	};
 
-	static readonly Option<ScanReportLevel?> ConsoleInfo = new("--console-info") {
+	static readonly Option<LogReportLevel?> ConsoleInfo = new("--console-info") {
 		Description = "How much progress detail to print to the console: quiet (nothing); info (a " +
 			"running x/total counter -- the default); debug (each file's name+result on its own " +
 			"line, an x/total progress line, plus per-file diagnostic detail -- frame counts, " +
@@ -98,11 +85,11 @@ internal static class ScanCommand {
 			"history). Default: sibling to the database file, same library name with a .log extension.",
 	};
 
-	static readonly Option<ScanReportLevel> LogLevel = new("--log-level") {
+	static readonly Option<LogReportLevel> LogLevel = new("--log-level") {
 		Description = "How much detail to write to --log-file -- quiet|info|debug|verbose|trace, " +
 			"same meanings as --console-info but applied to the file instead of the console " +
 			"(independently: a quiet console with a verbose log file is the point). Default: verbose.",
-		DefaultValueFactory = _ => ScanReportLevel.verbose,
+		DefaultValueFactory = _ => LogReportLevel.verbose,
 	};
 
 	/// <summary>Compact ETA text for the progress reporting below: seconds under a minute, whole
@@ -148,28 +135,28 @@ internal static class ScanCommand {
 			bool includeVbrOutputs = parseResult.GetValue(IncludeVbrOutputs);
 			bool rescan = parseResult.GetValue(Rescan);
 			bool verboseFlag = parseResult.GetValue(Verbose);
-			ScanReportLevel? consoleInfoArg = parseResult.GetValue(ConsoleInfo);
+			LogReportLevel? consoleInfoArg = parseResult.GetValue(ConsoleInfo);
 			FileInfo? logFileArg = parseResult.GetValue(LogFile);
-			ScanReportLevel fileLevel = parseResult.GetValue(LogLevel);
+			LogReportLevel fileLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 			HardwareAcceleration.ReportDecodeRequest();
 
 			// An explicit --console-info wins; otherwise --verbose is shorthand for "verbose", else
 			// the default is "info" (today's plain x/total counter).
-			ScanReportLevel consoleLevel = consoleInfoArg ?? (verboseFlag ? ScanReportLevel.verbose : ScanReportLevel.info);
+			LogReportLevel consoleLevel = consoleInfoArg ?? (verboseFlag ? LogReportLevel.verbose : LogReportLevel.info);
 
 			// Trace: one step finer than verbose -- execution timing for diagnosing a slow run by
 			// phase, independently requestable per destination just like every other level here.
-			bool traceConsole = consoleLevel >= ScanReportLevel.trace;
-			bool traceFile = fileLevel >= ScanReportLevel.trace;
+			bool traceConsole = consoleLevel >= LogReportLevel.trace;
+			bool traceFile = fileLevel >= LogReportLevel.trace;
 			ScanTelemetry.Enabled = traceConsole || traceFile;
 			var commandStopwatch = System.Diagnostics.Stopwatch.StartNew();
 
 			// Debug: per-file diagnostic detail (frame counts, low-information-filter drops,
 			// audio-fingerprint stats) -- coarser than trace, doesn't need full verbose to be useful.
-			bool debugConsole = consoleLevel >= ScanReportLevel.debug;
-			bool debugFile = fileLevel >= ScanReportLevel.debug;
+			bool debugConsole = consoleLevel >= LogReportLevel.debug;
+			bool debugFile = fileLevel >= LogReportLevel.debug;
 			ScanTelemetry.DebugEnabled = debugConsole || debugFile;
 
 			// Stays >= verbose, not >= debug: VDF's shared Logger bus carries no per-message tier, so
@@ -178,7 +165,7 @@ internal static class ScanCommand {
 			// that only asked for debug. ChromaprintEngine's stats line is reported through
 			// ScanTelemetry.NoteDebug instead (see SampleFile), which -- like every other debug/trace
 			// line -- is correctly isolated per destination without touching this subscription.
-			using IDisposable? consoleLogSubscription = SubscribeVerboseLogging(consoleLevel >= ScanReportLevel.verbose);
+			using IDisposable? consoleLogSubscription = SubscribeVerboseLogging(consoleLevel >= LogReportLevel.verbose);
 
 			if (libraries.Length == 0) {
 				Console.Error.WriteLine("Error: --library is required.");
@@ -220,12 +207,10 @@ internal static class ScanCommand {
 			// (docs/iterativeplan.md, "Post-ship fix #2" / "File-path DB options" entry) -- --log-file
 			// is a *file* path, so a trailing separator or an existing directory there is just as much
 			// a guaranteed, never-going-to-work destination, worth catching up front rather than
-			// discovering only once the first log write silently no-ops.
-			if (logFileArg is not null && (
-					logFileArg.FullName.EndsWith(Path.DirectorySeparatorChar) ||
-					logFileArg.FullName.EndsWith(Path.AltDirectorySeparatorChar) ||
-					Directory.Exists(logFileArg.FullName))) {
-				Console.Error.WriteLine($"Error: --log-file must name a file, not a directory: '{logFileArg.FullName}'.");
+			// discovering only once the first log write silently no-ops. Shared with match/remove/
+			// trim/commit/add-bumper's own --log-file (docs/iterativeplan.md's CLI logging entry).
+			if (ValidateLogFilePath(logFileArg) is { } logFileError) {
+				Console.Error.WriteLine(logFileError);
 				return 1;
 			}
 
@@ -257,7 +242,7 @@ internal static class ScanCommand {
 			// never be allowed to crash the scan the way an unprotected database save once did (fixed
 			// 2026-07-26) -- so it's swallowed the same way Logger's own writes are.
 			void WriteLogLine(string line) {
-				if (fileLevel == ScanReportLevel.quiet) return;
+				if (fileLevel == LogReportLevel.quiet) return;
 				try {
 					using var stream = new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
 					using var writer = new StreamWriter(stream);
@@ -267,7 +252,7 @@ internal static class ScanCommand {
 				catch (UnauthorizedAccessException) { }
 			}
 
-			using IDisposable? fileLogSubscription = SubscribeLogging(fileLevel >= ScanReportLevel.verbose, WriteLogLine);
+			using IDisposable? fileLogSubscription = SubscribeLogging(fileLevel >= LogReportLevel.verbose, WriteLogLine);
 
 			void EmitTrace(string line) {
 				string formatted = $"[trace] {line}";
@@ -288,7 +273,7 @@ internal static class ScanCommand {
 			// either destination is currently listening for it -- so it must be requested if *either*
 			// the console or the file wants it, not just the console the way a plain --verbose bool
 			// used to decide alone.
-			bool emitDetailedLogging = consoleLevel >= ScanReportLevel.verbose || fileLevel >= ScanReportLevel.verbose;
+			bool emitDetailedLogging = consoleLevel >= LogReportLevel.verbose || fileLevel >= LogReportLevel.verbose;
 
 			await EnsureAiComponentsReadyAsync(HardwareAcceleration.PreferDirectML, ct);
 
@@ -353,19 +338,19 @@ internal static class ScanCommand {
 				string avgEtaLine = $"Avg {avgSeconds:0.0} sec per file. ETA: {FormatEta(eta)}";
 				string progressLine = $"{done}/{candidatePaths.Count}";
 
-				if (consoleLevel >= ScanReportLevel.debug) {
+				if (consoleLevel >= LogReportLevel.debug) {
 					Console.WriteLine(resultLine);
 					Console.WriteLine(avgEtaLine);
 					Console.WriteLine(progressLine);
 				}
-				else if (consoleLevel == ScanReportLevel.info) {
+				else if (consoleLevel == LogReportLevel.info) {
 					Console.Error.Write($"\rScanning: {done}/{candidatePaths.Count}  " +
 						$"(sampled {sampledCount}, unchanged {skippedCount}, failed {failedCount}, " +
 						$"avg {avgSeconds:0.0}s, ETA {FormatEta(eta)})   ");
 				}
 				// quiet: nothing to the console.
 
-				if (fileLevel >= ScanReportLevel.debug) {
+				if (fileLevel >= LogReportLevel.debug) {
 					WriteLogLine(resultLine);
 					WriteLogLine(avgEtaLine);
 					WriteLogLine(progressLine);
@@ -389,7 +374,7 @@ internal static class ScanCommand {
 				return 1;
 			}
 
-			if (consoleLevel == ScanReportLevel.info)
+			if (consoleLevel == LogReportLevel.info)
 				Console.Error.WriteLine();
 			string summaryLine = $"{summary.Scanned} sampled, {summary.SkippedUnchanged} unchanged (skipped), " +
 				$"{summary.Failed} failed, {summary.Total} total.";
@@ -404,12 +389,12 @@ internal static class ScanCommand {
 			// enough on its own.
 			if (failures.Count > 0) {
 				WriteLogLine($"Failed file(s) ({failures.Count}):");
-				if (consoleLevel > ScanReportLevel.quiet)
+				if (consoleLevel > LogReportLevel.quiet)
 					Console.WriteLine($"Failed file(s) ({failures.Count}):");
 				foreach ((string path, string reason) in failures) {
 					string line = $"  {path}  ({reason})";
 					WriteLogLine(line);
-					if (consoleLevel > ScanReportLevel.quiet)
+					if (consoleLevel > LogReportLevel.quiet)
 						Console.WriteLine(line);
 				}
 			}

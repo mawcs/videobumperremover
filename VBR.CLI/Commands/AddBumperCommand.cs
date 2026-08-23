@@ -184,6 +184,8 @@ internal static class AddBumperCommand {
 		cmd.Options.Add(AudioMinSimilarityOverride);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(LogFile);
+		cmd.Options.Add(LogLevel);
 		cmd.Options.Add(HardwareAccel);
 		cmd.Options.Add(NoNativeFfmpegBinding);
 
@@ -204,9 +206,20 @@ internal static class AddBumperCommand {
 			float? audioMinSimilarityOverride = parseResult.GetValue(AudioMinSimilarityOverride);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
+			FileInfo? logFileArg = parseResult.GetValue(LogFile);
+			LogReportLevel logLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 			HardwareAcceleration.ReportDecodeRequest();
+
+			if (ValidateLogFilePath(logFileArg) is { } logFileError) {
+				Console.Error.WriteLine(logFileError);
+				return 1;
+			}
+			using var log = new CommandLogFile(logFileArg?.FullName, logLevel);
+			// Raises Logger events whenever EITHER destination wants verbose detail -- a file-only
+			// request (--log-file with --verbose left off) must still see them, not just console.
+			bool detailedLogging = verbose || log.WantsDetailedLogging;
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -305,7 +318,7 @@ internal static class AddBumperCommand {
 			try {
 				entry = BumperCatalogBuilder.AddBumper(
 					clipFrom.FullName, region, clipLength, label, description, tags, clipsFolder,
-					sampleInterval, dumpFrames?.FullName, verbose, ct);
+					sampleInterval, dumpFrames?.FullName, detailedLogging, ct);
 			}
 			catch (OperationCanceledException) {
 				Console.Error.WriteLine("Cancelled — nothing was added.");
@@ -335,17 +348,21 @@ internal static class AddBumperCommand {
 				return 1;
 			}
 
-			Console.WriteLine($"Added bumper '{entry.Label}' (id {entry.Id}) to catalog '{catalogName}'.");
-			Console.WriteLine($"  Region: {entry.Region}, Duration: {entry.Duration.TotalSeconds:0.###}s, " +
+			void Report(string line) {
+				Console.WriteLine(line);
+				log.WriteLine(line);
+			}
+			Report($"Added bumper '{entry.Label}' (id {entry.Id}) to catalog '{catalogName}'.");
+			Report($"  Region: {entry.Region}, Duration: {entry.Duration.TotalSeconds:0.###}s, " +
 				$"Fingerprints: {entry.Fingerprints.Length}, Thumbnail: {(entry.Thumbnail.Length > 0 ? $"{entry.Thumbnail.Length:N0} bytes" : "none")}");
-			Console.WriteLine($"  Reference clip: {Path.Combine(clipsFolder, entry.Id + ".mkv")}");
+			Report($"  Reference clip: {Path.Combine(clipsFolder, entry.Id + ".mkv")}");
 			// Only printed when something actually deviates from the all-inherited default -- a
 			// Corroborated bumper with no overrides at all (the common case) gets no extra noise.
 			bool hasOverrides = matchingStrategy != BumperMatchingStrategy.Corroborated || removalLength is not null
 				|| presenceThresholdOverride is not null || rigidHitThresholdOverride is not null
 				|| phashPresenceThresholdOverride is not null || audioMinSimilarityOverride is not null;
 			if (hasOverrides) {
-				Console.WriteLine($"  Matching strategy: {matchingStrategy}" +
+				Report($"  Matching strategy: {matchingStrategy}" +
 					(removalLength is { } removalLengthValue ? $", removal-length: {removalLengthValue.TotalSeconds:0.###}s" : string.Empty));
 				var overrideParts = new List<string>(4);
 				if (presenceThresholdOverride is { } pt) overrideParts.Add($"presence-threshold: {pt:0.###}");
@@ -353,9 +370,9 @@ internal static class AddBumperCommand {
 				if (phashPresenceThresholdOverride is { } pht) overrideParts.Add($"phash-presence-threshold: {pht:0.###}");
 				if (audioMinSimilarityOverride is { } ams) overrideParts.Add($"audio-min-similarity: {ams:0.###}");
 				if (overrideParts.Count > 0)
-					Console.WriteLine($"  Threshold overrides: {string.Join(", ", overrideParts)}");
+					Report($"  Threshold overrides: {string.Join(", ", overrideParts)}");
 			}
-			Console.WriteLine($"Catalog: {catalogPath}");
+			Report($"Catalog: {catalogPath}");
 			return 0;
 		});
 

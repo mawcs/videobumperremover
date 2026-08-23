@@ -70,6 +70,8 @@ internal static class CommitCommand {
 		cmd.Options.Add(ValidateFiles);
 		cmd.Options.Add(Output);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(LogFile);
+		cmd.Options.Add(LogLevel);
 
 		cmd.SetAction((parseResult, ct) => {
 			DirectoryInfo[] libraries = parseResult.GetValue(Library) ?? Array.Empty<DirectoryInfo>();
@@ -80,6 +82,17 @@ internal static class CommitCommand {
 			bool validateFiles = parseResult.GetValue(ValidateFiles);
 			FileInfo? output = parseResult.GetValue(Output);
 			bool verbose = parseResult.GetValue(Verbose);
+			FileInfo? logFileArg = parseResult.GetValue(LogFile);
+			LogReportLevel logLevel = parseResult.GetValue(LogLevel);
+
+			if (ValidateLogFilePath(logFileArg) is { } logFileError) {
+				Console.Error.WriteLine(logFileError);
+				return Task.FromResult(1);
+			}
+			using var log = new CommandLogFile(logFileArg?.FullName, logLevel);
+			// Raises Logger events whenever EITHER destination wants verbose detail -- a file-only
+			// request (--log-file with --verbose left off) must still see them, not just console.
+			bool detailedLogging = verbose || log.WantsDetailedLogging;
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -115,13 +128,15 @@ internal static class CommitCommand {
 				}
 				// Decided (ADR 0008, Decision 10): --file touches only this one file's own
 				// pairing/marker state, never anything else sharing its directory.
-				var (result, recovery) = LibraryCleaner.CleanSingleFile(targetFile.FullName, validateFiles, verbose, ct);
+				var (result, recovery) = LibraryCleaner.CleanSingleFile(targetFile.FullName, validateFiles, detailedLogging, ct);
 				if (recovery is not null) {
 					recoveries.Add(recovery);
 					Console.WriteLine(ToLine(recovery, Array.Empty<string>()));
+					log.WriteLine(ToLine(recovery, Array.Empty<string>()));
 				}
 				results.Add(result);
 				Console.WriteLine(ToLine(result, Array.Empty<string>()));
+				log.WriteLine(ToLine(result, Array.Empty<string>()));
 			}
 			else if (hasLibraryDb) {
 				databasePath = LibraryDatabaseStore.ResolvePath(libraryDbArg!.FullName);
@@ -156,13 +171,15 @@ internal static class CommitCommand {
 					string markedPath = entry.Path + LibraryCleaner.DeletionMarkerSuffix;
 					if (!File.Exists(vbrPath) && !File.Exists(markedPath)) continue;
 
-					var (result, recovery) = LibraryCleaner.CleanSingleFile(entry.Path, validateFiles, verbose, ct);
+					var (result, recovery) = LibraryCleaner.CleanSingleFile(entry.Path, validateFiles, detailedLogging, ct);
 					if (recovery is not null) {
 						recoveries.Add(recovery);
 						Console.WriteLine(ToLine(recovery, Array.Empty<string>()));
+						log.WriteLine(ToLine(recovery, Array.Empty<string>()));
 					}
 					results.Add(result);
 					Console.WriteLine(ToLine(result, Array.Empty<string>()));
+					log.WriteLine(ToLine(result, Array.Empty<string>()));
 				}
 			}
 			else {
@@ -177,14 +194,16 @@ internal static class CommitCommand {
 						// The same directory can be reached twice if two --library folders overlap
 						// (e.g. one nested in the other) -- process it once.
 						if (!processedDirs.Add(Path.GetFullPath(directory))) continue;
-						CleanupRunResult dirResult = LibraryCleaner.CleanDirectory(directory, validateFiles, verbose, ct);
+						CleanupRunResult dirResult = LibraryCleaner.CleanDirectory(directory, validateFiles, detailedLogging, ct);
 						foreach (RecoveryAction recovery in dirResult.RecoveryActions) {
 							recoveries.Add(recovery);
 							Console.WriteLine(ToLine(recovery, libraryRoots));
+							log.WriteLine(ToLine(recovery, libraryRoots));
 						}
 						foreach (CleanupFileResult result in dirResult.Results) {
 							results.Add(result);
 							Console.WriteLine(ToLine(result, libraryRoots));
+							log.WriteLine(ToLine(result, libraryRoots));
 						}
 					}
 				}
@@ -193,6 +212,7 @@ internal static class CommitCommand {
 			string summary = Summarize(results, recoveries);
 			Console.WriteLine();
 			Console.WriteLine(summary);
+			log.WriteLine(summary);
 
 			if (output is not null && !WriteReport(output, results, recoveries, summary, libraryRoots, libraries, excludeFolders, targetFile, recurse, validateFiles, databasePath is not null ? Path.GetFileNameWithoutExtension(databasePath) : null, databasePath))
 				return Task.FromResult(1);

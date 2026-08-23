@@ -107,6 +107,8 @@ internal static class TrimCommand {
 		cmd.Options.Add(ReEncode);
 		cmd.Options.Add(Output);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(LogFile);
+		cmd.Options.Add(LogLevel);
 		cmd.Options.Add(HardwareAccel);
 		cmd.Options.Add(NoNativeFfmpegBinding);
 
@@ -138,9 +140,20 @@ internal static class TrimCommand {
 			RemovalMode removalMode = reEncode ? RemovalMode.ReEncode : RemovalMode.StreamCopy;
 			FileInfo? output = parseResult.GetValue(Output);
 			bool verbose = parseResult.GetValue(Verbose);
+			FileInfo? logFileArg = parseResult.GetValue(LogFile);
+			LogReportLevel logLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 			HardwareAcceleration.ReportDecodeRequest();
+
+			if (ValidateLogFilePath(logFileArg) is { } logFileError) {
+				Console.Error.WriteLine(logFileError);
+				return 1;
+			}
+			using var log = new CommandLogFile(logFileArg?.FullName, logLevel);
+			// Raises Logger events whenever EITHER destination wants verbose detail -- a file-only
+			// request (--log-file with --verbose left off) must still see them, not just console.
+			bool detailedLogging = verbose || log.WantsDetailedLogging;
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -184,7 +197,9 @@ internal static class TrimCommand {
 				string display = Path.GetFileName(file);
 				// Printed unconditionally, before the cut starts -- same rationale RemoveCommand's own
 				// per-file line documents: a re-encode can run long with nothing else to show for it.
-				Console.Error.WriteLine($"[{++fileIndex}/{candidatePaths.Count}] Trimming: {display}");
+				string trimmingLine = $"[{++fileIndex}/{candidatePaths.Count}] Trimming: {display}";
+				Console.Error.WriteLine(trimmingLine);
+				log.WriteLine(trimmingLine);
 				bool printedProgress = false;
 				void OnRemovalProgress(RemovalProgress p) {
 					printedProgress = true;
@@ -197,7 +212,7 @@ internal static class TrimCommand {
 				TrimRow row = CandidateWork.Run(
 					work: () => {
 						var removed = ClipRemover.Remove(file, region, length, removalMode,
-							matchDetail: null, verbose, OnRemovalProgress, ct);
+							matchDetail: null, detailedLogging, OnRemovalProgress, ct);
 						if (printedProgress) Console.Error.WriteLine();
 						trimmedCount++;
 						return new TrimRow(display, removed.OutputPath, null);
@@ -208,10 +223,12 @@ internal static class TrimCommand {
 					});
 				rows.Add(row);
 				Console.WriteLine(row.ToLine());
+				log.WriteLine(row.ToLine());
 			}
 
 			string summary = $"{trimmedCount}/{candidatePaths.Count} file(s) trimmed" +
 				(trimmedCount < candidatePaths.Count ? $" ({candidatePaths.Count - trimmedCount} failed)." : ".");
+			log.WriteLine(summary);
 			Console.WriteLine();
 			Console.WriteLine(summary);
 

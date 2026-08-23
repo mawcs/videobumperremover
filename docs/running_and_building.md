@@ -117,6 +117,17 @@ Key options (run `--help` for the full list):
   run logs to `log.txt` regardless of `--verbose`, which only controls whether the CLI *also*
   echoes it live. Concrete proof the AI model is real, not just trusted by reading the code —
   see [`PROGRESS.md`](PROGRESS.md) (2026-07-20 entry) for the full reasoning.
+- `--log-file <path>` / `--log-level` (added 2026-08-22, same five levels — `quiet|info|debug|
+  verbose|trace`, default `verbose` — as `vbr scan`'s own, see below) — an independently leveled,
+  appended-to log file, separate from the console. `info` mirrors the same per-file rows/summary
+  already printed to the console into the file *as they happen*, not just in a one-shot `--output`
+  report written at the end — so a crash/Ctrl+C mid-run still leaves partial results on disk.
+  `verbose` adds the same `Logger` detail `--verbose` echoes live, independently of whether
+  `--verbose` itself is given — a quiet console with a fully-detailed log file works exactly like
+  `vbr scan`'s own default. `debug`/`trace` ride the same `ScanTelemetry` hooks scan uses (real
+  detail here too, since matching goes through the same `DenseFrameSampler`/`HardwareAcceleration`
+  code). No default path — unlike scan, there's no natural file to derive one from, so nothing is
+  written unless `--log-file` is given.
 
 Both regions are validated end to end (2026-07-18): begin-region Netflix-ident test 12/12 true
 positives vs 0 false positives across two unrelated libraries, end-stack regression clean — the
@@ -149,7 +160,8 @@ dotnet run --project VBR.CLI -- remove --help
 ```
 
 Finds a bumper (same matching as `vbr match` — reuses all its options, including `--file` for a
-single target and `--verbose` for a full ffmpeg-command/model-load audit trail) and removes it
+single target, `--verbose` for a full ffmpeg-command/model-load audit trail, and `--log-file`/
+`--log-level` for an independently leveled log of the same detail) and removes it
 from every match, non-destructively: writes a sibling `name.vbr.ext` beside the source plus a
 JSON manifest (`name.json`, named after the *original*, not the output), never touching the
 original. See [ADR 0007](decisions/0007-removal-command.md) for the full design.
@@ -274,6 +286,9 @@ Key options:
   containing files that don't actually have the described segment is silently truncated too.
   That's inherent to "no matching, on purpose," not a flaw to design around.
 - `--output <file>` — write the trim report to a file, same shape as `match`/`remove`'s own.
+- `--verbose` and `--log-file`/`--log-level` — same logging convention as every other command (see
+  `match`'s own bullet above) — `debug`/`trace` are a no-op here (`trim` never samples/runs
+  inference), but `info`/`verbose` still mirror the console's per-file rows/summary into the file.
 
 ### Run — `vbr commit`
 
@@ -350,8 +365,9 @@ Key behavior:
   file that fails is reported broken and left completely alone. Off by default because the CLI
   can't enforce that you actually reviewed the output — this assists that, it doesn't replace it.
 - `--output <file>` — also write the commit report to a file, same as `match`/`remove`.
-- `--verbose` — same logging hookup as `match`/`remove`: every mark/promote/delete call and
-  recovery action, to the console and `log.txt`.
+- `--verbose` and `--log-file`/`--log-level` — same logging convention as every other command (see
+  `match`'s own bullet above): every mark/promote/delete call and recovery action. `debug`/`trace`
+  are a no-op here (`commit` never samples/runs inference).
 
 ### Run — `vbr scan`
 
@@ -450,8 +466,9 @@ Key options:
   had). Default when omitted: `default.vbrcat` under a dedicated folder in VBR's own state folder
   (`%LOCALAPPDATA%\VideoBumperRemover\catalog\` on Windows) — a sibling of, not shared with, `vbr
   scan`'s own database folder.
-- `--verbose` — same logging convention as every other command: model path, sampled/usable frame
-  counts, and exact ffmpeg commands run, to the console and `log.txt`.
+- `--verbose` and `--log-file`/`--log-level` — same logging convention as every other command (see
+  `match`'s own bullet above): model path, sampled/usable frame counts, and exact ffmpeg commands
+  run.
 - `--hardware-accel` / `--no-native-ffmpeg-binding` — same shared GPU/native-decode options as
   `match` (see above).
 - **Per-bumper overrides, stored on the new entry and read back by `match`/`remove` whenever this

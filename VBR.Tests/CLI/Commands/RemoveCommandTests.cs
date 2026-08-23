@@ -92,4 +92,16 @@ public class RemoveCommandTests {
 		Assert.Equal(1, exitCode);
 		Assert.Contains("one of --library, --library-db, or --file is required", output);
 	}
+
+	// docs/iterativeplan.md's CLI logging entry (2026-08-22) -- --log-file is checked before any
+	// other validation, so no other option needs to be given at all here.
+	[Fact]
+	public async Task LogFilePointingAtExistingDirectory_IsRejected() {
+		Command cmd = RemoveCommand.Build();
+		(int exitCode, string output) = await CliInvocation.RunAsync(cmd,
+			"--log-file", Path.GetTempPath());
+
+		Assert.Equal(1, exitCode);
+		Assert.Contains("--log-file must name a file, not a directory", output);
+	}
 }

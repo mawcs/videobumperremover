@@ -4,6 +4,58 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## CLI logging — `--log-file`/`--log-level` generalized to match/remove/trim/commit/add-bumper (2026-08-22) — DONE
+
+`vbr scan` already had `--log-file`/`--log-level` (quiet/info/debug/verbose/trace, independent of
+`--console-info`); every other command except `list-bumpers` (read-only, no work to log) only had a
+binary `--verbose` console echo. The maintainer asked for `--log-file`/`--log-level` on "almost all"
+commands — extended to match/remove/trim/commit/add-bumper. Two design questions, both resolved by
+asking the maintainer directly rather than guessing:
+
+- **Tier granularity: full 5-tier parity with scan, not a simpler 3-tier (quiet/info/verbose).**
+  Chosen even though `debug`/`trace` are no-ops for trim/commit (they never sample or run inference)
+  — they're real, non-empty detail for match/remove/add-bumper, since `VisualBumperMatcher` already
+  routes through the same `DenseFrameSampler`/`HardwareAcceleration` `ScanTelemetry` hooks scan uses;
+  those hooks already existed and fired unconditionally, just never had a listener outside `scan`.
+- **No derived default path** (unlike scan, which defaults to a path sibling to its database file):
+  these commands have no natural file to derive one from, so `--log-file` is opt-in-only — omit it
+  and nothing is written, regardless of `--log-level`.
+
+**Shared plumbing, not five reimplementations:**
+
+- `ScanReportLevel` (scan-only enum) renamed to `LogReportLevel` and moved to `SharedOptions.cs` —
+  same five members, shared meaning. `vbr scan` keeps its own local `LogFile`/`LogLevel` `Option`
+  instances (their help text describes the derived-default path, which doesn't apply elsewhere) but
+  now types them with the shared enum.
+- New `SharedOptions.CommandLogFile : IDisposable` bundles exactly what scan's action body did
+  inline: creates the log's directory eagerly (so the first `WriteLine` can't throw
+  `DirectoryNotFoundException`), sets `ScanTelemetry.Enabled`/`DebugEnabled` from the requested tier,
+  and subscribes `Logger`'s verbose tier plus `ScanTelemetry`'s debug/trace tiers to an appended,
+  lock-resilient file write (same open-append-close-per-line pattern as `Logger`'s own writes and
+  scan's `WriteLogLine`). `WriteLine` is also how each command mirrors its own per-row/summary
+  console output into the file at the `info` tier — live, not just a one-shot `--output` report
+  written at the end, so a crash/Ctrl+C mid-run still leaves partial results on disk (verified live:
+  `trim` against a fake `.mkv` produced a `[1/1] Trimming: ...` line, the `ERROR ...` row, and the
+  summary in the file, plus — at `--log-level verbose` with `--verbose` itself *not* given — the
+  underlying `Logger` warning too, proving the file's tier is independent of the console's).
+- New `SharedOptions.ValidateLogFilePath` extracted from scan's own inline directory-conflict check
+  (a trailing separator or an existing directory at the path can never work) — scan now calls it too,
+  a pure, behavior-preserving extraction now that six commands need the identical check.
+- Each of the five commands' `SetAction` bodies gained: read `--log-file`/`--log-level` →
+  `ValidateLogFilePath` → construct `CommandLogFile` → `bool detailedLogging = verbose ||
+  log.WantsDetailedLogging` (the "raise `Logger` events at all" switch passed into VBR.Core in place
+  of the old bare `verbose`, since a file-only verbose request must still raise them even with
+  console `--verbose` off) → mirror each already-printed row/summary/confirmation line into
+  `log.WriteLine(...)` alongside its `Console.WriteLine`. `AddBumperCommand` (no per-file loop) wraps
+  its whole confirmation block in a small local `Report(string)` helper instead of doubling every
+  line by hand.
+
+Verified: full solution build clean; `VBR.Tests` 154/159 (5 pre-existing real-media skips, 0
+failures) — 56 in `CLI.Commands` alone, +3 new (`--log-file` pointed at an existing directory is
+rejected on `match`/`remove`/`trim`, mirroring scan's own untested-until-now guard); live-verified
+via `vbr trim` as described above, including `--log-level quiet` correctly writing nothing at all
+(the file is never even created).
+
 ## CLI test coverage — plan (2026-08-17)
 
 **Status: Steps 1-4 built (2026-08-17).** Milestone note: as of this week (per-bumper matching strategy,

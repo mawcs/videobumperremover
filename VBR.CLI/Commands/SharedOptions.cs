@@ -45,6 +45,19 @@ namespace VBR.CLI.Commands;
 /// pHash are no longer passengers once a mode includes them.</summary>
 internal enum DetectionMode { visual, audio, phash, both, all }
 
+/// <summary>How much detail a command's <c>--log-file</c> (and <c>vbr scan</c>'s own
+/// <c>--console-info</c>) records — shared by every command that has one, so the tiers mean the
+/// same thing everywhere. Originally scan-only (as <c>ScanReportLevel</c>); generalized 2026-08-22
+/// when <c>--log-file</c>/<c>--log-level</c> spread to match/remove/trim/commit/add-bumper
+/// (docs/iterativeplan.md's CLI logging entry). Ordered low-to-high so callers can compare with
+/// <c>&gt;=</c>. <c>info</c> is the same per-file result lines and summary already printed to the
+/// console, mirrored into the file as they happen (crash-resilient, unlike a one-shot
+/// <c>--output</c> report written only at the end). <c>debug</c>/<c>trace</c> ride the same
+/// <see cref="VBR.Core.Diagnostics.ScanTelemetry"/> hooks scan uses — real, non-empty detail for
+/// any command whose work passes through <c>DenseFrameSampler</c>/<c>HardwareAcceleration</c>
+/// (match, remove, add-bumper), a no-op for ones that don't (trim, commit).</summary>
+internal enum LogReportLevel { quiet, info, debug, verbose, trace }
+
 /// <summary>
 /// Option definitions and parsing helpers shared by <c>match</c> and <c>remove</c> — per ADR
 /// 0007 (docs/decisions/0007-removal-command.md), <c>remove</c> reuses <c>match</c>'s parameter
@@ -324,6 +337,31 @@ internal static class SharedOptions {
 			"what's actually happening on a given run, not just the summary line.",
 	};
 
+	// Shared by match/remove/trim/commit/add-bumper (docs/iterativeplan.md's CLI logging entry,
+	// 2026-08-22) -- vbr scan predates this and keeps its own local LogFile/LogLevel (a derived
+	// default path makes sense there; these commands have no library/database file to derive one
+	// from, so file logging here is opt-in only, off unless --log-file is given). No default path:
+	// unlike scan, giving these commands a bare --log-level with no --log-file would otherwise
+	// silently write nowhere, same as scan's own "no effect without --log-file" note already says.
+	internal static readonly Option<FileInfo> LogFile = new("--log-file") {
+		Description = "Also write this run's log to this file (appended, so repeated runs " +
+			"accumulate history) -- independent of the console: --log-level controls its own " +
+			"detail level separately from what --verbose echoes live. Off by default (nothing is " +
+			"written) unless given.",
+	};
+
+	internal static readonly Option<LogReportLevel> LogLevel = new("--log-level") {
+		Description = "How much detail to write to --log-file (no effect without it) -- quiet " +
+			"(nothing); info (the same per-file result lines and summary already printed to the " +
+			"console, mirrored into the file as they happen); debug adds per-file diagnostic " +
+			"detail (frame counts, low-information-filter drops -- meaningful for match/remove/" +
+			"add-bumper, a no-op for trim/commit, which never sample or run inference); verbose " +
+			"adds model-load/session-lifecycle detail (the same detail --verbose echoes live to " +
+			"the console, captured to the file independently of it); trace adds per-phase " +
+			"execution timing. Default: verbose.",
+		DefaultValueFactory = _ => LogReportLevel.verbose,
+	};
+
 	// The single knob for every GPU code path (docs/decisions/0013-gpu-acceleration.md): ffmpeg
 	// decode -hwaccel, GPU re-encode (probe-verified NVENC/QSV/AMF for H.264/HEVC), and ONNX
 	// DirectML inference all gate on this one value via VBR.Core.Extraction.HardwareAcceleration.
@@ -475,6 +513,89 @@ internal static class SharedOptions {
 
 	sealed class Unsubscriber(Action unsubscribe) : IDisposable {
 		public void Dispose() => unsubscribe();
+	}
+
+	/// <summary>Same guard <c>vbr scan</c> applies to its own <c>--log-file</c> (and
+	/// <c>--library-db</c>/<c>--catalog-db</c> apply to themselves) -- a trailing separator or an
+	/// existing directory at this path can never work as a log file, worth catching up front rather
+	/// than discovering only once the first write silently no-ops.</summary>
+	internal static string? ValidateLogFilePath(FileInfo? logFileArg) {
+		if (logFileArg is null) return null;
+		if (logFileArg.FullName.EndsWith(Path.DirectorySeparatorChar) ||
+				logFileArg.FullName.EndsWith(Path.AltDirectorySeparatorChar) ||
+				Directory.Exists(logFileArg.FullName))
+			return $"Error: --log-file must name a file, not a directory: '{logFileArg.FullName}'.";
+		return null;
+	}
+
+	/// <summary>
+	/// The <c>--log-file</c>/<c>--log-level</c> plumbing shared by match/remove/trim/commit/
+	/// add-bumper (docs/iterativeplan.md's CLI logging entry, 2026-08-22) -- wires
+	/// <see cref="Logger"/>'s verbose tier and <see cref="ScanTelemetry"/>'s debug/trace tiers to an
+	/// appended file exactly the way <c>vbr scan</c> already does for its own <c>--log-file</c>, just
+	/// generalized so every command doesn't reimplement it. <see cref="WriteLine"/> is also how a
+	/// command mirrors its own per-file rows/summary into the file at the <c>info</c> tier -- the
+	/// resilience pattern (open-append-close per line, swallowing a transient lock) matches
+	/// <see cref="Logger"/>'s own writes, so another process briefly touching the file (antivirus, a
+	/// tail) never turns a log call into a crash. A null <paramref name="path"/> (the default --
+	/// these commands have no natural default path to derive, unlike scan) makes every member a
+	/// no-op, so callers never need to null-check before using one.
+	/// </summary>
+	internal sealed class CommandLogFile : IDisposable {
+		readonly string? path;
+		readonly LogReportLevel level;
+		readonly IDisposable? verboseSubscription;
+		readonly IDisposable? traceSubscription;
+		readonly IDisposable? debugSubscription;
+
+		/// <summary>Whether <see cref="Logger"/> events need to be raised at all for this run --
+		/// <c>true</c> whenever the file wants <c>verbose</c> or above, independent of whether the
+		/// console (<c>--verbose</c>) also wants them. A caller ORs this with its own console
+		/// <c>--verbose</c> flag before passing the result into VBR.Core as that layer's one
+		/// "raise detailed Logger events" switch — see each command's own call site.</summary>
+		internal bool WantsDetailedLogging => path is not null && level >= LogReportLevel.verbose;
+
+		internal CommandLogFile(string? path, LogReportLevel level) {
+			this.path = path;
+			this.level = level;
+
+			// Directory must exist before the first WriteLine call, same as scan's own -- otherwise
+			// every call before some other code path happens to create it throws
+			// DirectoryNotFoundException, which WriteLine's own catch swallows exactly like a
+			// transient antivirus lock, silently dropping every line instead of just the ones
+			// before that other creation.
+			if (path is not null && Path.GetDirectoryName(path) is { Length: > 0 } dir)
+				Directory.CreateDirectory(dir);
+
+			bool traceOn = path is not null && level >= LogReportLevel.trace;
+			bool debugOn = path is not null && level >= LogReportLevel.debug;
+			ScanTelemetry.Enabled = traceOn;
+			ScanTelemetry.DebugEnabled = debugOn;
+
+			verboseSubscription = SubscribeLogging(WantsDetailedLogging, WriteLine);
+			traceSubscription = traceOn ? ScanTelemetry.Subscribe(line => WriteLine($"[trace] {line}")) : null;
+			debugSubscription = debugOn ? ScanTelemetry.SubscribeDebug(line => WriteLine($"[debug] {line}")) : null;
+		}
+
+		/// <summary>Appends <paramref name="line"/> at the <c>info</c> tier -- a no-op with no
+		/// <c>--log-file</c> or at <c>quiet</c>. Safe to call unconditionally from a command's own
+		/// per-row/summary printing, mirroring exactly what the console already shows.</summary>
+		internal void WriteLine(string line) {
+			if (path is null || level == LogReportLevel.quiet) return;
+			try {
+				using var stream = new FileStream(path, FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
+				using var writer = new StreamWriter(stream);
+				writer.WriteLine($"{DateTime.Now:HH:mm:ss} => {line}");
+			}
+			catch (IOException) { }
+			catch (UnauthorizedAccessException) { }
+		}
+
+		public void Dispose() {
+			verboseSubscription?.Dispose();
+			traceSubscription?.Dispose();
+			debugSubscription?.Dispose();
+		}
 	}
 
 	/// <summary>

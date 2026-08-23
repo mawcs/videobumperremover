@@ -131,6 +131,8 @@ internal static class RemoveCommand {
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(ReEncode);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(LogFile);
+		cmd.Options.Add(LogLevel);
 		cmd.Options.Add(HardwareAccel);
 		cmd.Options.Add(NoNativeFfmpegBinding);
 
@@ -166,9 +168,20 @@ internal static class RemoveCommand {
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
+			FileInfo? logFileArg = parseResult.GetValue(LogFile);
+			LogReportLevel logLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 			HardwareAcceleration.ReportDecodeRequest();
+
+			if (ValidateLogFilePath(logFileArg) is { } logFileError) {
+				Console.Error.WriteLine(logFileError);
+				return 1;
+			}
+			using var log = new CommandLogFile(logFileArg?.FullName, logLevel);
+			// Raises Logger events whenever EITHER destination wants verbose detail -- a file-only
+			// request (--log-file with --verbose left off) must still see them, not just console.
+			bool detailedLogging = verbose || log.WantsDetailedLogging;
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -362,9 +375,9 @@ internal static class RemoveCommand {
 
 			(MatchingSession? session, string? prepareError) = catalogEntry is not null
 				? MatchingSession.PrepareFromCatalogEntry(mode, catalogEntry, profile, presenceThreshold,
-					phashPresenceThreshold, minSimilarity, dumpFrames?.FullName, verbose)
+					phashPresenceThreshold, minSimilarity, dumpFrames?.FullName, detailedLogging)
 				: await MatchingSession.PrepareAsync(mode, clipFromArg!, region, clipLength, profile, presenceThreshold,
-					phashPresenceThreshold, minSimilarity, matchingStrategyOverride, dumpFrames?.FullName, verbose, ct);
+					phashPresenceThreshold, minSimilarity, matchingStrategyOverride, dumpFrames?.FullName, detailedLogging, ct);
 			if (session is null) {
 				Console.Error.WriteLine(prepareError);
 				return 1;
@@ -386,7 +399,9 @@ internal static class RemoveCommand {
 					// (a re-encode can take as long as encoding the whole file normally would) can
 					// both run for a long time with nothing else to show for it otherwise, which reads
 					// as "hung," not "working" (docs/iterativeplan.md, "CLI feedback during remove").
-					Console.Error.WriteLine($"[{++fileIndex}/{candidatePaths.Count}] Checking: {display}");
+					string checkingLine = $"[{++fileIndex}/{candidatePaths.Count}] Checking: {display}";
+					Console.Error.WriteLine(checkingLine);
+					log.WriteLine(checkingLine);
 					// CandidateWork.Run (docs/iterativeplan.md, "CLI test coverage" entry, 2026-08-17) --
 					// deliberately does NOT catch OperationCanceledException; see its own doc comment.
 					// Nested here, same as before: the inner Run covers just the removal step (its own
@@ -404,7 +419,9 @@ internal static class RemoveCommand {
 								string modeDescription = removalMode == RemovalMode.ReEncode
 									? "re-encode -- this may take a while for large files"
 									: "stream-copy -- fast";
-								Console.Error.WriteLine($"  Match found ({result.CombinedDetail}) — removing bumper ({modeDescription})...");
+								string matchFoundLine = $"  Match found ({result.CombinedDetail}) — removing bumper ({modeDescription})...";
+								Console.Error.WriteLine(matchFoundLine);
+								log.WriteLine(matchFoundLine);
 								bool printedProgress = false;
 								void OnRemovalProgress(RemovalProgress p) {
 									printedProgress = true;
@@ -415,7 +432,7 @@ internal static class RemoveCommand {
 								outputPath = CandidateWork.Run<string?>(
 									work: () => {
 										var removed = ClipRemover.Remove(file, region, removalLength, removalMode,
-											result.CombinedDetail, verbose, OnRemovalProgress, ct);
+											result.CombinedDetail, detailedLogging, OnRemovalProgress, ct);
 										if (printedProgress) Console.Error.WriteLine();
 										removedCount++;
 										return removed.OutputPath;
@@ -432,11 +449,13 @@ internal static class RemoveCommand {
 						onError: ex => new RemoveRow(display, false, null, null, null, ex.Message, null, null));
 					rows.Add(row);
 					Console.WriteLine(row.ToLine());
+					log.WriteLine(row.ToLine());
 				}
 
 				string summary = $"{matchCount}/{comparedCount} file(s) matched, {removedCount} removed" +
 					(matchCount > removedCount ? $" ({matchCount - removedCount} failed)." : ".") +
 					(candidatePaths.Count > comparedCount ? $" ({candidatePaths.Count - comparedCount} skipped with errors.)" : "");
+				log.WriteLine(summary);
 				Console.WriteLine();
 				Console.WriteLine(summary);
 

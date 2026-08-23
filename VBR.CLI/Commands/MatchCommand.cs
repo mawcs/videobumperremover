@@ -116,6 +116,8 @@ internal static class MatchCommand {
 		cmd.Options.Add(Output);
 		cmd.Options.Add(DumpFrames);
 		cmd.Options.Add(Verbose);
+		cmd.Options.Add(LogFile);
+		cmd.Options.Add(LogLevel);
 		cmd.Options.Add(HardwareAccel);
 		cmd.Options.Add(NoNativeFfmpegBinding);
 
@@ -148,9 +150,20 @@ internal static class MatchCommand {
 			FileInfo? output = parseResult.GetValue(Output);
 			DirectoryInfo? dumpFrames = parseResult.GetValue(DumpFrames);
 			bool verbose = parseResult.GetValue(Verbose);
+			FileInfo? logFileArg = parseResult.GetValue(LogFile);
+			LogReportLevel logLevel = parseResult.GetValue(LogLevel);
 			HardwareAcceleration.Mode = parseResult.GetValue(HardwareAccel);
 			HardwareAcceleration.NativeFfmpegBinding = !parseResult.GetValue(NoNativeFfmpegBinding);
 			HardwareAcceleration.ReportDecodeRequest();
+
+			if (ValidateLogFilePath(logFileArg) is { } logFileError) {
+				Console.Error.WriteLine(logFileError);
+				return 1;
+			}
+			using var log = new CommandLogFile(logFileArg?.FullName, logLevel);
+			// Raises Logger events whenever EITHER destination wants verbose detail -- a file-only
+			// request (--log-file with --verbose left off) must still see them, not just console.
+			bool detailedLogging = verbose || log.WantsDetailedLogging;
 
 			using IDisposable? logSubscription = SubscribeVerboseLogging(verbose);
 
@@ -332,9 +345,9 @@ internal static class MatchCommand {
 
 			(MatchingSession? session, string? prepareError) = catalogEntry is not null
 				? MatchingSession.PrepareFromCatalogEntry(mode, catalogEntry, profile, presenceThreshold,
-					phashPresenceThreshold, minSimilarity, dumpFrames?.FullName, verbose)
+					phashPresenceThreshold, minSimilarity, dumpFrames?.FullName, detailedLogging)
 				: await MatchingSession.PrepareAsync(mode, clipFromArg!, region, clipLength, profile, presenceThreshold,
-					phashPresenceThreshold, minSimilarity, matchingStrategyOverride, dumpFrames?.FullName, verbose, ct);
+					phashPresenceThreshold, minSimilarity, matchingStrategyOverride, dumpFrames?.FullName, detailedLogging, ct);
 			if (session is null) {
 				Console.Error.WriteLine(prepareError);
 				return 1;
@@ -363,12 +376,14 @@ internal static class MatchCommand {
 						onError: ex => new MatchRow(display, false, null, null, null, ex.Message));
 					rows.Add(row);
 					Console.WriteLine(row.ToLine());
+					log.WriteLine(row.ToLine());
 				}
 
 				string summary = $"{matchCount}/{comparedCount} file(s) matched" +
 					(candidatePaths.Count > comparedCount ? $" ({candidatePaths.Count - comparedCount} skipped with errors)." : ".");
 				Console.WriteLine();
 				Console.WriteLine(summary);
+				log.WriteLine(summary);
 
 				if (output is not null && !WriteReport(output, rows, summary,
 						clipFromArg, region, clipLength, searchLength, sampleInterval, edgeBoundary, sparseInterval, mode,

@@ -368,7 +368,7 @@ was flagged right after the initial scaffold and fixed before anything else was 
 
 ## Open / next steps
 
-- [ ] **`match`/`remove` have no way to surface `ScanTelemetry`'s debug/trace tiers (flagged
+- [x] ~~**`match`/`remove` have no way to surface `ScanTelemetry`'s debug/trace tiers (flagged
   2026-08-13).** `ScanCommand` is the only place that sets `ScanTelemetry.DebugEnabled`/`Enabled`
   and subscribes to `DebugNoted`/`Measured` — `MatchingSession`'s own per-candidate
   `ScanTelemetry.NoteDebug` calls (e.g. the "using cached database fingerprint -- no audio decode"
@@ -376,7 +376,17 @@ was flagged right after the initial scaffold and fixed before anything else was 
   no-ops for `match`/`remove`: nothing ever sets `DebugEnabled`/subscribes, so the line goes
   nowhere. Needs either a `--console-info`-style tiered flag mirroring `scan`'s own (bigger, more
   consistent with scan), or a minimal "--verbose implies debug tier too" wiring (smaller, less
-  granular) — not decided, not built.
+  granular) — not decided, not built.~~ **Resolved (2026-08-22), and extended beyond just
+  match/remove to trim/commit/add-bumper too, per the maintainer's ask — see
+  docs/iterativeplan.md's "CLI logging" entry for the full design/build record.** Went with the
+  bigger, scan-consistent option: `ScanReportLevel` (scan-only) generalized to `LogReportLevel`
+  (`SharedOptions.cs`), and every one of match/remove/trim/commit/add-bumper gained its own
+  `--log-file`/`--log-level`, wiring `ScanTelemetry.Enabled`/`DebugEnabled` the same way `scan`
+  already did — so the `NoteDebug` line above (and any `ScanTelemetry.Time`/`Note` trace call) now
+  reaches a listener outside `scan` for the first time. A shared `SharedOptions.CommandLogFile`
+  bundles the plumbing so none of the five commands reimplements it. 56 `CLI.Commands` tests (53
+  existing + 3 new), 154/159 full suite (5 pre-existing real-media skips), 0 failures; live-verified
+  via `vbr trim`.
 - [x] ~~**`VBR.Tests` has no coverage of `SignalResult`/`MatchingSession`'s multi-signal decision
   logic (flagged 2026-08-13, docs/iterativeplan.md's "Multi-signal corroboration" entry).** The
   2026-08-13 change making pHash mandatory (when it ran) and audio conditionally mandatory (when it
