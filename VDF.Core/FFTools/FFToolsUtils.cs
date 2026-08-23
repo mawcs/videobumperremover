@@ -29,6 +29,32 @@ namespace VDF.Core.FFTools {
 			try { process.PriorityClass = ProcessPriorityClass.Idle; } catch { }
 		}
 
+		// Ctrl+C safety net (docs/iterativeplan.md's "Ctrl+C doesn't kill the encode" entry,
+		// 2026-08-23): a live repro against a real `vbr remove --re-encode true` run showed the
+		// .NET host process exiting within ~0.5s of Ctrl+C while its ffmpeg child kept running
+		// for 30+ seconds untouched -- the existing per-call-site CancellationTokenRegistration
+		// kill-on-cancel wiring (ClipRemover.RunFfmpeg, ClipExtractor.RunFfmpegExtract, etc.) never
+		// got a chance to run before the host process itself was gone. This registry is a second,
+		// independent line of defense: every long-running ffmpeg/ffprobe child this codebase spawns
+		// registers itself here for its own lifetime, and VBR.CLI's Program.cs kills every
+		// registered process directly from a raw OS signal handler -- entirely outside the
+		// CancellationToken/async pipeline, so it can't be starved or skipped by whatever left that
+		// pipeline unreliable. ConcurrentDictionary (not a locked HashSet) since register/unregister
+		// can race a concurrent kill-all from a signal-handler thread.
+		static readonly System.Collections.Concurrent.ConcurrentDictionary<Process, byte> ActiveProcesses = new();
+
+		internal static void TrackActiveProcess(Process process) => ActiveProcesses.TryAdd(process, 0);
+		internal static void UntrackActiveProcess(Process process) => ActiveProcesses.TryRemove(process, out _);
+
+		/// <summary>Force-kills (<see cref="Process.Kill(bool)"/> with <c>entireProcessTree: true</c>)
+		/// every currently-tracked process. Best-effort per process -- one already-exited or
+		/// access-denied process must never stop the rest from being killed.</summary>
+		internal static void KillAllActiveProcesses() {
+			foreach (Process process in ActiveProcesses.Keys) {
+				try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
+			}
+		}
+
 		const string FFprobeExecutableName = "ffprobe";
 		const string FFmpegExecutableName = "ffmpeg";
 		static readonly string ffProbePlatformName;

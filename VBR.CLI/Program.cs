@@ -15,9 +15,27 @@
 //
 
 using System.CommandLine;
+using System.Runtime.InteropServices;
 using VBR.CLI.Commands;
 using VBR.Core.Configuration;
+using VBR.Core.Diagnostics;
 using VBR.Core.Extraction;
+
+// Ctrl+C safety net (docs/iterativeplan.md's "Ctrl+C doesn't kill the encode" entry, 2026-08-23) --
+// registered directly against the raw OS signal, independent of System.CommandLine's own
+// CancellationToken-based cancellation plumbing. A live repro against a real `vbr remove
+// --re-encode true` run showed the .NET host process exiting within ~0.5s of Ctrl+C while its
+// ffmpeg child kept re-encoding for 30+ seconds afterward, completely untouched -- whatever tears
+// the host process down that fast can outrace every per-call-site CancellationTokenRegistration
+// this codebase already had. Doesn't set PosixSignalContext.Cancel, so it never suppresses whatever
+// System.CommandLine/the OS were already going to do -- it only adds "also kill every tracked
+// ffmpeg/ffprobe process" as a side effect, independent of that outcome. `using` keeps both
+// registrations rooted on this method's stack for the whole `InvokeAsync()` call below -- letting
+// either get garbage-collected would silently unregister it.
+using PosixSignalRegistration sigIntGuard =
+	PosixSignalRegistration.Create(PosixSignal.SIGINT, _ => ProcessGuard.KillActiveFfmpegProcesses());
+using PosixSignalRegistration sigTermGuard =
+	PosixSignalRegistration.Create(PosixSignal.SIGTERM, _ => ProcessGuard.KillActiveFfmpegProcesses());
 
 // Hidden, undocumented entry point: a child-process probe target for
 // HardwareAcceleration.ProbeDirectMlInSubprocess (docs/decisions/0013-gpu-acceleration.md) --

@@ -207,6 +207,11 @@ public static class ClipExtractor {
 		if (verbose)
 			Logger.Instance.Info($"[extract] {psi.FileName} {string.Join(' ', psi.ArgumentList)}");
 		using var p = Process.Start(psi)!;
+		FFToolsUtils.TrackActiveProcess(p);
+		// See ClipRemover.RunFfmpeg's own comment on this registration (2026-08-23 amendment) --
+		// it's a real kill-on-cancel path but not a guaranteed one; FFToolsUtils' process registry
+		// (Track/UntrackActiveProcess here) is the independent second line of defense VBR.CLI's
+		// Program.cs kills from directly on a raw OS signal, outside this token/async pipeline.
 		using CancellationTokenRegistration killOnCancel = ct.Register(static s => {
 			var proc = (Process)s!;
 			try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
@@ -227,5 +232,6 @@ public static class ClipExtractor {
 		}
 		catch (OperationCanceledException) { throw; }
 		catch { return false; }
+		finally { FFToolsUtils.UntrackActiveProcess(p); }
 	}
 }

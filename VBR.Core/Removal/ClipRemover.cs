@@ -524,6 +524,7 @@ public static class ClipRemover {
 		var stopwatch = verbose ? Stopwatch.StartNew() : null;
 		using var process = new Process { StartInfo = psi };
 		process.Start();
+		FFToolsUtils.TrackActiveProcess(process);
 
 		// Killing on cancellation must not depend on this thread ever reaching a check below —
 		// it's about to block in ReadToEnd()/WaitForExit(), neither of which return early on
@@ -531,11 +532,22 @@ public static class ClipRemover {
 		// this thread is doing, so Ctrl+C actually reaches ffmpeg instead of leaving it running
 		// as an orphan. Observed live (2026-07-20): killing `vbr remove` mid-encode left ffmpeg
 		// running in the background indefinitely, still fully using a CPU core.
+		//
+		// This alone turned out NOT to be sufficient (2026-08-23 live repro): the .NET host
+		// process itself exited within ~0.5s of Ctrl+C while this exact registration's callback
+		// never ran and ffmpeg kept re-encoding for 30+ seconds afterward, untouched -- whatever
+		// System.CommandLine/the OS does to tear the host process down on Ctrl+C can outrace this
+		// callback entirely. FFToolsUtils' process registry (TrackActiveProcess above,
+		// UntrackActiveProcess in the finally below) is the independent second line of defense:
+		// VBR.CLI's Program.cs kills every tracked process directly from a raw OS signal handler,
+		// outside the CancellationToken/async pipeline altogether, so it can't be starved or
+		// skipped by whatever left this registration unreliable. Kept rather than removed -- it's
+		// still the faster, more targeted path when it *does* win the race.
 		using CancellationTokenRegistration killOnCancel = ct.Register(static s => {
 			var p = (Process)s!;
 			try { if (!p.HasExited) p.Kill(entireProcessTree: true); } catch { }
 		}, process);
-
+		try {
 		// Both streams must be drained concurrently, not sequentially: ffmpeg's progress/log
 		// output goes to stderr, which is large enough to fill the OS pipe buffer — reading one
 		// stream to completion first, while nothing drains the other, risks deadlocking ffmpeg
@@ -572,6 +584,10 @@ public static class ClipRemover {
 			throw new InvalidOperationException($"ffmpeg failed (exit {process.ExitCode}) removing the bumper from '{Path.GetFileName(sourcePath)}': {stderrTask.Result.Trim()}");
 		if (verbose)
 			Logger.Instance.Info($"[remove] ffmpeg completed in {stopwatch!.Elapsed.TotalSeconds:0.#}s.");
+		}
+		finally {
+			FFToolsUtils.UntrackActiveProcess(process);
+		}
 	}
 
 	/// <summary>

@@ -4,6 +4,72 @@ This document catalogs planning concepts as we iterate in development. Newest pl
 top, under its own second-level heading; older plans stay below under theirs, kept for historical
 reference rather than deleted or overwritten.
 
+## Ctrl+C doesn't kill the encode — root cause and fix (2026-08-23) — DONE
+
+**Live bug report (maintainer): `Ctrl+C` during `vbr remove` does not kill the current ffmpeg
+encode process.** The 2026-07-20 fix (`ClipRemover.RunFfmpeg`/`ClipExtractor.Extract`'s
+`CancellationTokenRegistration` kill-on-cancel wiring, per this doc's own history) was real and
+tested at the time, but a fresh live repro today showed it no longer sufficient for at least one
+real scenario.
+
+**Repro method** (no interactive terminal available to the agent, so simulated a genuine keypress
+rather than approximating it): a PowerShell script P/Invokes `AttachConsole`/
+`GenerateConsoleCtrlEvent(CTRL_C_EVENT, 0)` against a real `VBR.CLI.exe` process's own console —
+the actual Win32 mechanism a terminal uses when you press Ctrl+C, not a process kill/close
+substitute. First confirmed the mechanism works at all: `vbr trim --re-encode true` against a real
+650MB Daredevil episode, cancelled mid-encode — both the CLI and its ffmpeg child died within 0.5s.
+Then tried `vbr remove` end-to-end (`--clip-from`/`--file` the same episode, self-matching its own
+end region, `--sample-interval 0.05s` to force a long CPU-bound visual-matching phase before the
+real cut) — polled `Get-Process ffmpeg` continuously until the real removal ffmpeg process had been
+running 5+ seconds (confirmed mid-encode, not caught at start-up), then sent the same real Ctrl+C
+event. Reproduced cleanly, twice in a row: **`VBR.CLI.exe` exited within 0.5s of Ctrl+C, but its
+ffmpeg re-encode child kept running, fully untouched, for the entire 30-second observation window
+and beyond** — exactly the reported symptom.
+
+**Root cause: the existing `CancellationTokenRegistration` kill-on-cancel wiring is real but not
+guaranteed to run before the .NET host process itself exits.** `RunFfmpeg`'s `ct.Register(...)`
+callback should fire the instant the token is cancelled, independent of what the calling thread is
+doing — that part of the 2026-07-20 fix was correct and is still valid. What's different here:
+`VBR.CLI.exe` itself was observed exiting in ~0.5s, consistent with the .NET host process being
+torn down abruptly (by System.CommandLine's own `PosixSignalRegistration`-based SIGINT handling,
+or the OS default disposition, or some combination) faster than our own managed callback can be
+guaranteed to run and complete its `Process.Kill()` call first. Exactly *why* that race goes the
+wrong way wasn't pinned down further (would need decompiling System.CommandLine 2.0.9's internal
+`ProcessTerminationTimeout`/`_sigIntRegistration` sequencing, confirmed present via strings in the
+DLL but not worth the further investment) — the fix below doesn't depend on knowing that answer,
+since it removes the race entirely rather than trying to win it.
+
+**Fix: a second, independent line of defense that never depends on managed cancellation-token
+timing at all.**
+
+- `VDF.Core.FFTools.FFToolsUtils` gained a `ConcurrentDictionary<Process, byte>`-backed registry —
+  `TrackActiveProcess`/`UntrackActiveProcess`/`KillAllActiveProcesses` (all `internal`, alongside
+  its existing `LowerChildPriority`/`GetPath` process helpers).
+- Every long-or-moderate-duration ffmpeg/ffprobe spawn in the pipeline registers itself for its own
+  lifetime (`Track...` right after `Start()`, `Untrack...` in a `finally`): `ClipRemover.RunFfmpeg`
+  (the confirmed-broken one), `ClipExtractor.RunFfmpegExtract`, `DenseFrameSampler`'s CLI ffmpeg
+  fallback, `GpuEncoderProbe.ProbeEncoder`, and VDF.Core's own `ChromaprintEngine.
+  ExtractFingerprintProcess` (audio fingerprinting, already had a cooperative `ct.IsCancellationRequested`
+  polling kill path of its own, but gained the registry hook too as the same defense-in-depth).
+  Existing `CancellationTokenRegistration`/cooperative-polling kill-on-cancel logic at each site was
+  **kept, not replaced** — it's still the faster path when it does win the race.
+- New `VBR.Core.Diagnostics.ProcessGuard.KillActiveFfmpegProcesses()` — a one-method `public` bridge
+  (VBR.CLI has no `InternalsVisibleTo` grant into either VDF.Core or VBR.Core, so this is the only
+  way `Program.cs` can reach the internal registry).
+- `VBR.CLI/Program.cs` registers `PosixSignalRegistration.Create(PosixSignal.SIGINT/SIGTERM, ...)`
+  directly against the raw OS signal — calling `ProcessGuard.KillActiveFfmpegProcesses()` with
+  nothing else in between, entirely outside System.CommandLine's own cancellation pipeline, so it
+  can't be starved or skipped by whatever left that pipeline unreliable here. Doesn't set
+  `PosixSignalContext.Cancel`, so it never suppresses whatever System.CommandLine/the OS were
+  already going to do to the host process — it only adds "kill every tracked process" as a side
+  effect. `using` locals (not fire-and-forget) keep both registrations rooted on `Main`'s stack for
+  the whole run — letting either get garbage-collected would silently unregister it.
+
+**Verified**: full solution build clean, `VBR.Tests` 154/159 unchanged (5 pre-existing real-media
+skips, 0 failures). Re-ran the exact `vbr remove` repro above against the fixed build, twice: both
+times, `VBR.CLI.exe` **and** its ffmpeg child were gone within 0.5s of Ctrl+C — the same clean
+result the `trim` case already had, now true for `remove` too.
+
 ## CLI logging — `--log-file`/`--log-level` generalized to match/remove/trim/commit/add-bumper (2026-08-22) — DONE
 
 `vbr scan` already had `--log-file`/`--log-level` (quiet/info/debug/verbose/trace, independent of

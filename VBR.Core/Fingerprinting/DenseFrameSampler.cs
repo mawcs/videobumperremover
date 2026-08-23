@@ -154,6 +154,11 @@ public static class DenseFrameSampler {
 		Task? readTask = null;
 		try {
 			process.Start();
+			// FFToolsUtils' process registry (2026-08-23) -- VBR.CLI's Program.cs kills every
+			// tracked process directly from a raw OS signal handler as a second, independent line
+			// of defense alongside this method's own catch(OperationCanceledException)/KillQuietly
+			// path below (see ClipRemover.RunFfmpeg's own comment for why that alone isn't enough).
+			FFToolsUtils.TrackActiveProcess(process);
 			var stderr = process.StandardError.ReadToEndAsync();
 			readTask = process.StandardOutput.BaseStream.CopyToAsync(ms, ct);
 			// Full decode of a ≤~40s extract takes seconds; five minutes flags a wedged decode
@@ -182,6 +187,9 @@ public static class DenseFrameSampler {
 		catch (OperationCanceledException) {
 			KillQuietly(process, readTask);
 			throw;
+		}
+		finally {
+			FFToolsUtils.UntrackActiveProcess(process);
 		}
 
 		static string Tail(string stderr) {

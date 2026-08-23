@@ -149,6 +149,7 @@ namespace VDF.Core.FFTools {
 			try {
 				var sw = extendedLogging ? Stopwatch.StartNew() : null;
 				process.Start();
+				FFToolsUtils.TrackActiveProcess(process);
 				FFToolsUtils.LowerChildPriority(process);
 
 				if (extendedLogging) {
@@ -254,6 +255,9 @@ namespace VDF.Core.FFTools {
 				Logger.Instance.Warn($"[ChromaprintEngine] Failed on '{filePath}': {ex.Message}");
 				KillProcess(process);
 				return null;
+			}
+			finally {
+				FFToolsUtils.UntrackActiveProcess(process);
 			}
 		}
 

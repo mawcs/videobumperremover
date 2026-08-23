@@ -112,6 +112,7 @@ public static class GpuEncoderProbe {
 		using var process = new Process { StartInfo = psi };
 		try {
 			process.Start();
+			FFToolsUtils.TrackActiveProcess(process);
 			// Drained concurrently, not sequentially, same rationale as ClipRemover.RunFfmpeg --
 			// a 1-frame probe's own output is tiny, but there's no reason to reintroduce the
 			// deadlock class this codebase has already hit and fixed twice elsewhere.
@@ -132,6 +133,9 @@ public static class GpuEncoderProbe {
 		catch (Exception ex) {
 			try { if (!process.HasExited) process.Kill(entireProcessTree: true); } catch { }
 			return (false, ex.Message);
+		}
+		finally {
+			FFToolsUtils.UntrackActiveProcess(process);
 		}
 	}
 }
