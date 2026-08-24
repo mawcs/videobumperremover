@@ -47,6 +47,46 @@ public class ClipRemoverTests {
 	}
 
 	[Theory]
+	[InlineData("mpegts", true)]
+	[InlineData("MPEGTS", true)]
+	[InlineData("mov,mp4,m4a,3gp,3g2,mj2", false)]
+	[InlineData("mpegts,other", true)]
+	[InlineData(null, false)]
+	[InlineData("", false)]
+	public void IsMpegTransportStream_MatchesOnlyTheMpegtsToken(string? formatName, bool expected) {
+		Assert.Equal(expected, ClipRemover.IsMpegTransportStream(formatName));
+	}
+
+	[Theory]
+	[InlineData(".mp4")]
+	[InlineData(".mkv")]
+	public void BuildMpegTsWarning_NotesTheDisguiseWhenExtensionIsntTs(string extension) {
+		string warning = ClipRemover.BuildMpegTsWarning("show.mp4", extension);
+		Assert.Contains($"'{extension}' extension", warning);
+	}
+
+	[Fact]
+	public void BuildMpegTsWarning_HandlesNoExtensionGracefully() {
+		string warning = ClipRemover.BuildMpegTsWarning("show", null);
+		Assert.Contains("no recognizable extension", warning);
+	}
+
+	[Theory]
+	[InlineData(".ts")]
+	[InlineData(".m2ts")]
+	[InlineData(".mts")]
+	public void BuildMpegTsWarning_OmitsTheDisguiseNoteForRealTsExtensions(string extension) {
+		string warning = ClipRemover.BuildMpegTsWarning("show" + extension, extension);
+		Assert.DoesNotContain("extension", warning);
+	}
+
+	[Fact]
+	public void BuildMpegTsWarning_SpellsOutThePrecisionRisk() {
+		string warning = ClipRemover.BuildMpegTsWarning("show.mp4", ".mp4");
+		Assert.Contains("precision", warning, StringComparison.OrdinalIgnoreCase);
+	}
+
+	[Theory]
 	[InlineData(RemovalMode.StreamCopy)]
 	[InlineData(RemovalMode.ReEncode)]
 	public void Remove_RejectsNonPositiveBumperLength(RemovalMode mode) {

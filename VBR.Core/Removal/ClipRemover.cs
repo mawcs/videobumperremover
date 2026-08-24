@@ -135,9 +135,14 @@ public static class ClipRemover {
 		if (!File.Exists(sourcePath))
 			throw new FileNotFoundException("Source video not found.", sourcePath);
 
-		(TimeSpan sourceDuration, string? sourceCodecName, string? sourcePixelFormat, string? sourceHdrFormat) = ProbeSourceInfo(sourcePath, verbose);
+		(TimeSpan sourceDuration, string? sourceCodecName, string? sourcePixelFormat, string? sourceHdrFormat, string? sourceFormatName) = ProbeSourceInfo(sourcePath, verbose);
 		if (verbose)
-			Logger.Instance.Info($"[remove] '{Path.GetFileName(sourcePath)}': duration={sourceDuration.TotalSeconds:0.###}s, region={region}, bumperLength={bumperLength.TotalSeconds:0.###}s, mode={mode}, codec={sourceCodecName ?? "unknown"}.");
+			Logger.Instance.Info($"[remove] '{Path.GetFileName(sourcePath)}': duration={sourceDuration.TotalSeconds:0.###}s, region={region}, bumperLength={bumperLength.TotalSeconds:0.###}s, mode={mode}, codec={sourceCodecName ?? "unknown"}, format={sourceFormatName ?? "unknown"}.");
+		if (IsMpegTransportStream(sourceFormatName)) {
+			string warning = BuildMpegTsWarning(Path.GetFileName(sourcePath), Path.GetExtension(sourcePath));
+			Console.Error.WriteLine(warning);
+			Logger.Instance.Warn($"[remove] {warning}");
+		}
 		if (bumperLength >= sourceDuration)
 			throw new ArgumentOutOfRangeException(nameof(bumperLength),
 				$"Bumper length ({bumperLength.TotalSeconds:0.###}s) must be shorter than the " +
@@ -224,18 +229,56 @@ public static class ClipRemover {
 		return dir is { Length: > 0 } ? Path.Combine(dir, fileName) : fileName;
 	}
 
-	/// <summary>Duration plus the video stream's codec/pixel-format/HDR info in one ffprobe call —
-	/// all of it already parsed by <see cref="FFProbeEngine"/>/<c>MediaInfo</c>, no new ffprobe
-	/// parsing needed (docs/decisions/0013-gpu-acceleration.md). <c>CodecName</c>/<c>PixelFormat</c>/
+	/// <summary>Duration plus the video stream's codec/pixel-format/HDR info, plus the container
+	/// format ffprobe actually parsed, in one ffprobe call — all of it already parsed by
+	/// <see cref="FFProbeEngine"/>/<c>MediaInfo</c>, no new ffprobe parsing needed
+	/// (docs/decisions/0013-gpu-acceleration.md). <c>CodecName</c>/<c>PixelFormat</c>/
 	/// <c>HdrFormat</c> are null when no video stream was found at all (never expected in
 	/// practice, but not fatal — <see cref="SelectVideoEncoder"/> falls back to the universal CPU
 	/// default when the codec name is unknown).</summary>
-	static (TimeSpan Duration, string? CodecName, string? PixelFormat, string? HdrFormat) ProbeSourceInfo(string path, bool verbose) {
+	static (TimeSpan Duration, string? CodecName, string? PixelFormat, string? HdrFormat, string? FormatName) ProbeSourceInfo(string path, bool verbose) {
 		var info = FFProbeEngine.GetMediaInfo(path, extendedLogging: verbose);
 		if (info is null || info.Duration <= TimeSpan.Zero)
 			throw new InvalidOperationException($"Could not determine duration for '{Path.GetFileName(path)}' (ffprobe failed or reported no duration).");
 		var video = info.Streams.FirstOrDefault(s => s.CodecType == "video");
-		return (info.Duration, video?.CodecName, video?.PixelFormat, video?.HdrFormat);
+		return (info.Duration, video?.CodecName, video?.PixelFormat, video?.HdrFormat, info.FormatName);
+	}
+
+	// Extensions a real MPEG-TS file is expected to carry -- used only to decide whether the
+	// warning below should call out a mismatch, not to gate the detection itself (format_name is
+	// authoritative either way).
+	static readonly string[] MpegTsExtensions = { ".ts", ".m2ts", ".mts", ".tp", ".trp" };
+
+	/// <summary>True when ffprobe's <c>format_name</c> shows the file is actually an MPEG transport
+	/// stream, regardless of its extension. Real-world trigger (dogfooding, 2026-08-24): tools that
+	/// download HLS streams normally "fix up" the raw, concatenated <c>.ts</c> segments into a real
+	/// MP4/MOV container as a final step; when that step is skipped or fails, the result is genuine
+	/// MPEG-TS bytes wearing a <c>.mp4</c>/<c>.mkv</c> name — confirmed live via a <c>timed_id3</c>
+	/// data stream (HLS-specific ad/metadata signaling with no reason to appear in a real rip or
+	/// broadcast capture) alongside <c>format_name=mpegts</c> and a non-zero <c>start_time</c>.
+	/// This matters for <c>remove</c> specifically: MPEG-TS has no sample-accurate index (no
+	/// MP4/MOV-style <c>moov</c> atom), so ffmpeg's <c>-ss</c> seek falls back to PTS/PCR scanning —
+	/// live-verified to land a GOP's worth of frames away from the arithmetic cut point instead of
+	/// exactly at it, independent of everything else in this class (codec matching, encoder choice)
+	/// being correct.</summary>
+	internal static bool IsMpegTransportStream(string? formatName) {
+		if (string.IsNullOrEmpty(formatName)) return false;
+		foreach (string token in formatName.Split(','))
+			if (token.Trim().Equals("mpegts", StringComparison.OrdinalIgnoreCase))
+				return true;
+		return false;
+	}
+
+	internal static string BuildMpegTsWarning(string fileName, string? extension) {
+		bool extensionLooksLikeTs = extension is { Length: > 0 } &&
+			MpegTsExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase);
+		string disguiseNote = extensionLooksLikeTs ? "" :
+			extension is { Length: > 0 } ? $", despite its '{extension}' extension," : ", despite having no recognizable extension,";
+		return $"Warning: '{fileName}' is actually an MPEG transport stream (ffprobe format: mpegts){disguiseNote} -- " +
+			"this container has no sample-accurate index the way a real MP4/MOV file does, so ffmpeg's seek falls " +
+			"back to PTS/PCR scanning instead of an exact per-frame offset. This can cause vbr remove's cut point " +
+			"to land several frames away from where it was asked to cut, instead of exactly on target -- verify " +
+			"this file's output carefully before trusting its precision.";
 	}
 
 	// Finds the largest keyframe timestamp k such that k + EndCutOvershootSafetyMarginSeconds <=

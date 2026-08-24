@@ -166,6 +166,9 @@ namespace VDF.Core.FFTools {
 				}
 			}
 
+			if (format.TryGetValue("format_name", out var formatNameObj) && formatNameObj is string formatNameStr)
+				info.FormatName = formatNameStr;
+
 			var foundBitRate = false;
 			for (int i = 0; i < streams.Count; i++) {
 				info.Streams[i] = new MediaInfo.StreamInfo();

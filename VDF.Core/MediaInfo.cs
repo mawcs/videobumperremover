@@ -28,6 +28,12 @@ namespace VDF.Core {
 		[MemoryPackOrder(1)]
 		public TimeSpan Duration { get; set; }
 
+		/// <summary>FFprobe's <c>format_name</c> (e.g. <c>"mov,mp4,m4a,3gp,3g2,mj2"</c> or
+		/// <c>"mpegts"</c>) — the container ffmpeg actually parsed from the file's bytes, independent
+		/// of its extension. Empty when not read (e.g. probe failure).</summary>
+		[MemoryPackOrder(2)]
+		public string FormatName { get; set; } = string.Empty;
+
 		[MemoryPackable(GenerateType.VersionTolerant)]
 		public partial class StreamInfo {
 
