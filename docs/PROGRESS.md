@@ -425,6 +425,35 @@ was flagged right after the initial scaffold and fixed before anything else was 
   resolved (workflow, not code — see above); `cleanup` command design is no longer open, it's
   proposed in [ADR 0008](decisions/0008-cleanup-command.md) and awaiting the maintainer's review
   before implementation.
+- [ ] **GPU re-encode quality settings need real tuning (found via dogfooding, 2026-08-24) — a
+  deliberate diversion from other in-flight work, not started.** `SelectVideoEncoder`
+  (`ClipRemover.cs`) reuses the CPU CRF numbers (`H264Quality`=22/`HevcQuality`=24) as NVENC/QSV/
+  AMF's own `-cq`/`-global_quality`/`-qp_i`+`-qp_p` value — flagged in the code's own comment as
+  "not a verified equivalence, a reasonable starting point" (ADR 0013), never actually measured.
+  Real evidence it's wrong, not just unverified: the maintainer's own `remove` run against a real
+  H.264 library (broadcast/HLS-sourced, incidentally also how the MPEG-TS-mislabeled-as-.mp4 issue
+  above was found) produced 200%+-larger output at the default `--hardware-accel auto` (GPU)
+  settings; re-running the identical file with `--hardware-accel none` (CPU `libx264 -crf 22
+  -preset medium`) landed within ~5% of the original size (1,389,136 KB -> 1,455,555 KB) — isolating
+  the GPU quality mapping, not codec-matching itself, as the dominant cause. **Decided: hardware
+  acceleration stays on by default** — the fix is tuning/verifying each vendor's quality number
+  against real footage (NVENC/QSV/AMF don't share a quality scale with each other or with x264's
+  CRF any more than CRF does across CPU encoders — see ADR 0012's "CRF-scale trap"), not disabling
+  GPU.
+- [x] **MPEG-TS-mislabeled-as-another-container files flagged in `remove` (2026-08-24).** Dogfooding
+  turned up real library files named `.mp4` that ffprobe actually parses as `format_name=mpegts` —
+  most likely raw HLS-downloaded `.ts` segments that never got their downloader's "fixup" remux into
+  a real MP4 (confirmed via a `timed_id3` data stream, an HLS-specific signaling track with no
+  reason to appear in a genuine rip/broadcast capture). This directly threatens `remove`'s precision:
+  MPEG-TS has no sample-accurate index the way MP4/MOV does, so ffmpeg's `-ss` seek falls back to
+  PTS/PCR scanning — matching a live repro where varying the configured bumper length by 0.3s made
+  no difference to the cut (an 18-frame leftover, unchanged) until crossing a keyframe boundary.
+  `ClipRemover.Remove` now probes `format_name` (new `MediaInfo.FormatName`, populated by
+  `FFProbeJsonReader`) and, when it's MPEG-TS, prints an unconditional console warning and logs it
+  (`Logger.Instance.Warn`) — explicitly naming the precision risk, and calling out the extension
+  mismatch when the file isn't already `.ts`/`.m2ts`/`.mts`/`.tp`/`.trp`. Detection + warning only,
+  no auto-remux — that remains open (see ADR 0012/0007's long-standing "container handling — fully
+  open" note, now partially addressed). 6 new pure unit tests in `ClipRemoverTests.cs`.
 - [ ] ~~Boundary detection. Turn a match offset (~0.2–0.5s resolution) into a precise cut point
   — find the content→junk transition...~~ **Superseded (2026-07-19) — see ADR 0007.** Per-file
   content→junk detection turned out to be unnecessary: bumper duration is empirically constant
